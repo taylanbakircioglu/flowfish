@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp
+.pnp.js
+coverage/
+build/
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+.dockerignore
+
+# Kubernetes
+*.kubeconfig
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated proto files (will be regenerated)
+*_pb2.py
+*_pb2_grpc.py
+*_pb2.pyi
+services/*/proto/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Analysis and deployment documentation with company-specific info
+*_FIX_SUMMARY.md
+*_DEPLOYMENT_*.md
+*_ANALYSIS_*.md
+DEPLOYMENT_*.md
+ANALYSIS_*.md
+
+# Manual setup files with company-specific addresses
+deployment/kubernetes-manifests/*_MANUAL_SETUP.md
+deployment/kubernetes-manifests/INSPEKTOR_GADGET_MANUAL_SETUP.md
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Frontend build
+frontend/build/
+frontend/.cache/
+
+# Nebula data
+data/

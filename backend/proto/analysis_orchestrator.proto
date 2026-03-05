@@ -1,0 +1,208 @@
+syntax = "proto3";
+
+package flowfish.analysis;
+
+import "common.proto";
+
+// Analysis Orchestrator Service
+service AnalysisOrchestrator {
+  // Analysis CRUD
+  rpc CreateAnalysis(CreateAnalysisRequest) returns (Analysis);
+  rpc GetAnalysis(GetAnalysisRequest) returns (Analysis);
+  rpc ListAnalyses(ListAnalysesRequest) returns (AnalysisList);
+  rpc UpdateAnalysis(UpdateAnalysisRequest) returns (Analysis);
+  rpc DeleteAnalysis(DeleteAnalysisRequest) returns (common.Empty);
+  
+  // Analysis control
+  rpc StartAnalysis(StartAnalysisRequest) returns (AnalysisStartResponse);
+  rpc StopAnalysis(StopAnalysisRequest) returns (common.Empty);
+  rpc PauseAnalysis(PauseAnalysisRequest) returns (common.Empty);
+  rpc ResumeAnalysis(ResumeAnalysisRequest) returns (common.Empty);
+  
+  // Status & results
+  rpc GetAnalysisStatus(GetStatusRequest) returns (AnalysisStatus);
+  rpc GetAnalysisResults(GetResultsRequest) returns (AnalysisResults);
+  
+  // Worker coordination
+  rpc AssignCollectorTask(AssignTaskRequest) returns (TaskAssignment);
+  rpc ReportCollectorStatus(CollectorStatusReport) returns (common.Empty);
+}
+
+// Messages
+
+message Analysis {
+  int32 id = 1;
+  string name = 2;
+  string description = 3;
+  repeated int32 cluster_ids = 4;
+  ScopeConfig scope_config = 5;
+  repeated string gadget_modules = 6;
+  TimeConfig time_config = 7;
+  OutputConfig output_config = 8;
+  string status = 9; // pending, running, paused, completed, failed
+  common.Timestamp created_at = 10;
+  common.Timestamp started_at = 11;
+  common.Timestamp completed_at = 12;
+  string error_message = 13;
+  int32 created_by_user_id = 14;
+}
+
+message ScopeConfig {
+  string scope_type = 1; // cluster, namespace, deployment, pod, label
+  repeated string namespaces = 2;
+  repeated string deployments = 3;
+  repeated string statefulsets = 4;
+  repeated string pods = 5;
+  string label_selector = 6;
+}
+
+message TimeConfig {
+  string mode = 1; // continuous, time_range, periodic, baseline
+  int32 duration_seconds = 2;
+  common.Timestamp start_time = 3;
+  common.Timestamp end_time = 4;
+  int32 interval_seconds = 5; // for periodic
+}
+
+message OutputConfig {
+  bool enable_dashboard = 1;
+  bool enable_llm_analysis = 2;
+  bool enable_alarms = 3;
+  repeated string webhook_urls = 4;
+}
+
+message CreateAnalysisRequest {
+  string name = 1;
+  string description = 2;
+  repeated int32 cluster_ids = 3;
+  ScopeConfig scope_config = 4;
+  repeated string gadget_modules = 5;
+  TimeConfig time_config = 6;
+  OutputConfig output_config = 7;
+  int32 user_id = 8;
+}
+
+message GetAnalysisRequest {
+  int32 id = 1;
+}
+
+message ListAnalysesRequest {
+  common.Pagination pagination = 1;
+  int32 cluster_id = 2; // filter by cluster
+  string status = 3; // filter by status
+  int32 user_id = 4; // filter by user
+}
+
+message AnalysisList {
+  repeated Analysis analyses = 1;
+  int32 total = 2;
+}
+
+message UpdateAnalysisRequest {
+  int32 id = 1;
+  string name = 2;
+  string description = 3;
+  ScopeConfig scope_config = 4;
+  TimeConfig time_config = 5;
+}
+
+message DeleteAnalysisRequest {
+  int32 id = 1;
+}
+
+message StartAnalysisRequest {
+  int32 analysis_id = 1;
+}
+
+message AnalysisStartResponse {
+  int32 analysis_id = 1;
+  repeated TaskAssignment task_assignments = 2;
+  string message = 3;
+  common.Timestamp started_at = 4;
+}
+
+message TaskAssignment {
+  string task_id = 1;
+  int32 cluster_id = 2;
+  int32 analysis_id = 3;
+  int32 worker_id = 4;
+  string worker_address = 5;
+  common.Timestamp assigned_at = 6;
+}
+
+message StopAnalysisRequest {
+  int32 analysis_id = 1;
+}
+
+message PauseAnalysisRequest {
+  int32 analysis_id = 1;
+}
+
+message ResumeAnalysisRequest {
+  int32 analysis_id = 1;
+}
+
+message GetStatusRequest {
+  int32 analysis_id = 1;
+}
+
+message AnalysisStatus {
+  int32 analysis_id = 1;
+  string status = 2;
+  int64 events_collected = 3;
+  int64 bytes_written = 4;
+  repeated TaskStatus task_statuses = 5;
+  common.Timestamp last_updated = 6;
+}
+
+message TaskStatus {
+  string task_id = 1;
+  int32 cluster_id = 2;
+  string cluster_name = 3;
+  string status = 4;
+  int64 events_collected = 5;
+  string error_message = 6;
+}
+
+message GetResultsRequest {
+  int32 analysis_id = 1;
+  common.Pagination pagination = 2;
+}
+
+message AnalysisResults {
+  int32 analysis_id = 1;
+  int64 total_events = 2;
+  int64 total_connections = 3;
+  int64 unique_sources = 4;
+  int64 unique_destinations = 5;
+  repeated ConnectionSummary top_connections = 6;
+}
+
+message ConnectionSummary {
+  string source = 1;
+  string destination = 2;
+  string protocol = 3;
+  int32 port = 4;
+  int64 packet_count = 5;
+  int64 byte_count = 6;
+}
+
+// Worker coordination
+
+message AssignTaskRequest {
+  int32 analysis_id = 1;
+  int32 cluster_id = 2;
+  repeated string gadget_modules = 3;
+  ScopeConfig scope = 4;
+  int32 duration_seconds = 5;
+}
+
+message CollectorStatusReport {
+  string task_id = 1;
+  string status = 2;
+  int64 events_collected = 3;
+  int64 bytes_written = 4;
+  string error_message = 5;
+  common.Timestamp reported_at = 6;
+}
+

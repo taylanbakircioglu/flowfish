@@ -1,0 +1,366 @@
+---
+# RabbitMQ Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: rabbitmq
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: flowfish
+    component: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+      protocol: TCP
+      appProtocol: amqp
+    - name: management
+      port: 15672
+      targetPort: 15672
+      protocol: TCP
+      appProtocol: http
+---
+# RabbitMQ ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: rabbitmq
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_prometheus].
+  
+  rabbitmq.conf: |
+    # Networking
+    listeners.tcp.default = 5672
+    management.tcp.port = 15672
+    
+    # Memory & Disk
+    vm_memory_high_watermark.relative = 0.6
+    disk_free_limit.absolute = 2GB
+    
+    # Persistence
+    queue_master_locator = min-masters
+    
+    # Logging
+    log.console = true
+    log.console.level = info
+---
+# RabbitMQ StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: rabbitmq
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowfish
+      component: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: flowfish
+        component: rabbitmq
+    spec:
+      # OpenShift SCC compatibility
+      securityContext: {}
+      
+      # InitContainer to create Erlang cookie with proper permissions
+      initContainers:
+      - name: setup-cookie
+        image: rabbitmq:3.12-management-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          
+          COOKIE_FILE=/var/lib/rabbitmq/.erlang.cookie
+          CURRENT_UID=$(id -u)
+          echo "Setting up Erlang cookie (running as UID: $CURRENT_UID)..."
+          
+          if [ -z "${RABBITMQ_ERLANG_COOKIE:-}" ]; then
+            echo "ERROR: RABBITMQ_ERLANG_COOKIE env var is not set"
+            exit 1
+          fi
+          
+          if [ ! -w /var/lib/rabbitmq ]; then
+            echo "ERROR: /var/lib/rabbitmq is not writable by UID $CURRENT_UID"
+            ls -la /var/lib/ | grep rabbit
+            exit 1
+          fi
+          
+          rm -f "$COOKIE_FILE" || {
+            echo "WARN: rm failed, directory listing:"
+            ls -la /var/lib/rabbitmq/
+            echo "Attempting overwrite..."
+          }
+          
+          # Restrictive umask ensures file is created as 0600 from the start
+          umask 077
+          echo "$RABBITMQ_ERLANG_COOKIE" > "$COOKIE_FILE"
+          chmod 600 "$COOKIE_FILE"
+          
+          # Verify permissions are exactly 600 and owned by current UID
+          PERMS=$(stat -c '%a' "$COOKIE_FILE" 2>/dev/null || stat -f '%Lp' "$COOKIE_FILE")
+          OWNER=$(stat -c '%u' "$COOKIE_FILE" 2>/dev/null || stat -f '%u' "$COOKIE_FILE")
+          
+          if [ "$PERMS" != "600" ]; then
+            echo "ERROR: Cookie permissions are $PERMS, expected 600"
+            echo "Storage backend may not support POSIX permissions"
+            exit 1
+          fi
+          
+          if [ "$OWNER" != "$CURRENT_UID" ]; then
+            echo "ERROR: Cookie owned by UID $OWNER, but running as UID $CURRENT_UID"
+            exit 1
+          fi
+          
+          echo "Erlang cookie ready (owner=$OWNER, perms=$PERMS)"
+        env:
+        - name: RABBITMQ_ERLANG_COOKIE
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-erlang-cookie
+        volumeMounts:
+        - name: rabbitmq-data
+          mountPath: /var/lib/rabbitmq
+      
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:3.12-management-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # RabbitMQ needs write access
+          capabilities:
+            drop:
+            - ALL
+        ports:
+        - name: amqp
+          containerPort: 5672
+          protocol: TCP
+        - name: management
+          containerPort: 15672
+          protocol: TCP
+        env:
+        - name: RABBITMQ_DEFAULT_USER
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-username
+        - name: RABBITMQ_DEFAULT_PASS
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-password
+        - name: RABBITMQ_ERLANG_COOKIE
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-erlang-cookie
+        volumeMounts:
+        - name: rabbitmq-data
+          mountPath: /var/lib/rabbitmq
+        - name: rabbitmq-config
+          mountPath: /etc/rabbitmq/enabled_plugins
+          subPath: enabled_plugins
+        - name: rabbitmq-config
+          mountPath: /etc/rabbitmq/rabbitmq.conf
+          subPath: rabbitmq.conf
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - rabbitmq-diagnostics
+            - -q
+            - ping
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - rabbitmq-diagnostics
+            - -q
+            - check_running
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: rabbitmq-config
+        configMap:
+          name: rabbitmq-config
+  volumeClaimTemplates:
+  - metadata:
+      name: rabbitmq-data
+      labels:
+        app: flowfish
+        component: rabbitmq
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: {{STORAGE_CLASS}}
+      resources:
+        requests:
+          storage: 10Gi
+---
+# RabbitMQ Init Job - Create exchanges and queues
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rabbitmq-init
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: rabbitmq
+    job: init
+spec:
+  template:
+    metadata:
+      labels:
+        app: flowfish
+        component: rabbitmq
+        job: init
+    spec:
+      restartPolicy: OnFailure
+      
+      # Wait for RabbitMQ to be ready before running init
+      initContainers:
+      - name: wait-for-rabbitmq
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for RabbitMQ to be ready..."
+          until nc -z -w 2 rabbitmq 5672; do
+            echo "RabbitMQ not ready, waiting..."
+            sleep 5
+          done
+          echo "RabbitMQ AMQP port is ready"
+          
+          # Wait for management API
+          until nc -z -w 2 rabbitmq 15672; do
+            echo "RabbitMQ Management API not ready, waiting..."
+            sleep 3
+          done
+          echo "RabbitMQ Management API is ready"
+          
+          # Additional stabilization time
+          echo "Waiting 10s for RabbitMQ to fully stabilize..."
+          sleep 10
+          echo "Ready to initialize RabbitMQ!"
+      
+      containers:
+      - name: init
+        image: curlimages/curl:8.5.0
+        command:
+        - /bin/sh
+        - -c
+        - |
+          RABBITMQ_HOST="rabbitmq"
+          RABBITMQ_PORT="15672"
+          RABBITMQ_USER="${RABBITMQ_USERNAME}"
+          RABBITMQ_PASS="${RABBITMQ_PASSWORD}"
+          
+          echo "Verifying RabbitMQ readiness..."
+          until curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/overview > /dev/null; do
+            echo "RabbitMQ API not ready, waiting..."
+            sleep 5
+          done
+          
+          echo "RabbitMQ is ready!"
+          
+          # Create exchanges
+          echo "Creating exchanges..."
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.network_flows \
+            -H "content-type:application/json" \
+            -d '{"type":"topic","durable":true}'
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.dns_queries \
+            -H "content-type:application/json" \
+            -d '{"type":"topic","durable":true}'
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.tcp_connections \
+            -H "content-type:application/json" \
+            -d '{"type":"topic","durable":true}'
+          
+          # Create queues
+          echo "Creating queues..."
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/network_flows.clickhouse \
+            -H "content-type:application/json" \
+            -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/dns_queries.clickhouse \
+            -H "content-type:application/json" \
+            -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/tcp_connections.clickhouse \
+            -H "content-type:application/json" \
+            -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
+          
+          # Create bindings
+          echo "Creating bindings..."
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.network_flows/q/network_flows.clickhouse \
+            -H "content-type:application/json" \
+            -d '{"routing_key":"#"}'
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.dns_queries/q/dns_queries.clickhouse \
+            -H "content-type:application/json" \
+            -d '{"routing_key":"#"}'
+          
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.tcp_connections/q/tcp_connections.clickhouse \
+            -H "content-type:application/json" \
+            -d '{"routing_key":"#"}'
+          
+          echo "RabbitMQ initialization complete!"
+        env:
+        - name: RABBITMQ_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-username
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-password

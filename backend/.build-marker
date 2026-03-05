@@ -1,0 +1,2 @@
+# This file triggers a rebuild when changed
+# Updated: 2026-02-23T19:00:00 - Proto recompilation + worker health fix + ServicePortRegistry SQL fix + namespace stats

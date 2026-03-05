@@ -1,0 +1,114 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timeseries-writer
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: timeseries-writer
+    component: writer
+    tier: microservices
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: timeseries-writer
+  template:
+    metadata:
+      labels:
+        app: timeseries-writer
+        component: writer
+        tier: microservices
+    spec:
+      serviceAccountName: flowfish
+      containers:
+        - name: timeseries-writer
+          image: taylanbakircioglu/flowfish:timeseries-writer-latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: "timeseries-writer"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: RABBITMQ_HOST
+              value: "rabbitmq"
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-user
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-password
+            - name: CLICKHOUSE_HOST
+              value: "clickhouse"
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: clickhouse-user
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: clickhouse-password
+            - name: CLICKHOUSE_DATABASE
+              value: "flowfish"
+            # Redis (for deleted analysis cache)
+            - name: REDIS_HOST
+              value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
+            # PostgreSQL (for workload sync - Phase 8)
+            - name: POSTGRES_HOST
+              value: "postgresql"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: "flowfish"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: postgres-password
+            - name: POSTGRES_DATABASE
+              value: "flowfish"
+            # ClickHouse-only Architecture for Change Events
+            # Consumer writes change events from RabbitMQ to ClickHouse
+            - name: CHANGE_EVENTS_CONSUMER_ENABLED
+              value: "true"
+            # Workload sync writes workload metadata to PostgreSQL (for queries)
+            - name: WORKLOAD_SYNC_ENABLED
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('alive')"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('ready')"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      securityContext:
+        runAsNonRoot: false
+

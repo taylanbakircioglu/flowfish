@@ -1,0 +1,87 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graph-writer
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: graph-writer
+    component: writer
+    tier: microservices
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: graph-writer
+  template:
+    metadata:
+      labels:
+        app: graph-writer
+        component: writer
+        tier: microservices
+    spec:
+      serviceAccountName: flowfish
+      containers:
+        - name: graph-writer
+          image: taylanbakircioglu/flowfish:graph-writer-latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: "graph-writer"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: RABBITMQ_HOST
+              value: "rabbitmq"
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-user
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-password
+            - name: RABBITMQ_VHOST
+              value: "/"
+            - name: NEO4J_BOLT_URI
+              value: "bolt://neo4j:7687"
+            - name: NEO4J_HTTP_URI
+              value: "http://neo4j:7474"
+            - name: NEO4J_USER
+              value: "neo4j"
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: NEO4J_PASSWORD
+            - name: NEO4J_DATABASE
+              value: "neo4j"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('alive')"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('ready')"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      securityContext:
+        runAsNonRoot: false
+

@@ -1,0 +1,136 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion-service
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: ingestion-service
+    component: ingestion
+    tier: microservices
+spec:
+  selector:
+    app: ingestion-service
+  ports:
+    - name: grpc
+      port: 5000
+      targetPort: 5000
+      protocol: TCP
+      appProtocol: grpc
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-service
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: ingestion-service
+    component: ingestion
+    tier: microservices
+spec:
+  # IMPORTANT: Keep replicas=1 to avoid session management issues
+  # Sessions are stored in-memory; multiple replicas would cause session loss
+  # because StartCollection and StopCollection could hit different pods.
+  # Future: Use Redis for shared session state to enable horizontal scaling.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingestion-service
+  template:
+    metadata:
+      labels:
+        app: ingestion-service
+        component: ingestion
+        tier: microservices
+    spec:
+      serviceAccountName: flowfish
+      containers:
+        - name: ingestion-service
+          image: taylanbakircioglu/flowfish:ingestion-service-latest
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 5000
+              protocol: TCP
+          env:
+            - name: SERVICE_NAME
+              value: "ingestion-service"
+            - name: GRPC_PORT
+              value: "5000"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: RABBITMQ_HOST
+              value: "rabbitmq"
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-user
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-password
+            # Cluster Manager gRPC - for Pod/Service discovery
+            - name: CLUSTER_MANAGER_URL
+              value: "cluster-manager:5001"
+            # kubectl-gadget configuration
+            - name: GADGET_PROTOCOL
+              value: "kubectl"
+            - name: GADGET_NAMESPACE
+              value: "{{OPENSHIFT_NAMESPACE}}"
+            - name: GADGET_REGISTRY
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: GADGET_REGISTRY
+            - name: GADGET_IMAGE_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: GADGET_IMAGE_VERSION
+            - name: GADGET_IMAGE_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: GADGET_IMAGE_PREFIX
+            # Encryption key for remote cluster credentials
+            - name: FLOWFISH_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: FLOWFISH_ENCRYPTION_KEY
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi  # Increased for multi-cluster analysis with large service caches
+            limits:
+              cpu: "4"     # Increased for parallel event processing
+              memory: 8Gi  # Increased significantly to prevent OOM during heavy multi-cluster analysis
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; channel = grpc.insecure_channel('localhost:5000'); channel.close()"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; channel = grpc.insecure_channel('localhost:5000'); channel.close()"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: false
+

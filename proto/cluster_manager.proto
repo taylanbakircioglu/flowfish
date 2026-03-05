@@ -1,0 +1,358 @@
+syntax = "proto3";
+
+package flowfish.cluster_manager;
+
+// Note: google/protobuf/timestamp.proto removed - using string for dates
+
+service ClusterManagerService {
+    // Cluster Info
+    rpc GetClusterInfo(GetClusterInfoRequest) returns (ClusterInfoResponse);
+    
+    // Namespace operations
+    rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+    
+    // Deployment operations
+    rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+    
+    // Pod operations
+    rpc ListPods(ListPodsRequest) returns (ListPodsResponse);
+    
+    // Service operations
+    rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
+    
+    // StatefulSet operations
+    rpc ListStatefulSets(ListStatefulSetsRequest) returns (ListStatefulSetsResponse);
+    
+    // ConfigMap operations
+    rpc ListConfigMaps(ListConfigMapsRequest) returns (ListConfigMapsResponse);
+    
+    // Secret operations
+    rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+    
+    // NetworkPolicy operations
+    rpc ListNetworkPolicies(ListNetworkPoliciesRequest) returns (ListNetworkPoliciesResponse);
+    
+    // Ingress operations
+    rpc ListIngresses(ListIngressesRequest) returns (ListIngressesResponse);
+    
+    // OpenShift Route operations
+    rpc ListRoutes(ListRoutesRequest) returns (ListRoutesResponse);
+    
+    // Node operations
+    rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+    
+    // Label operations
+    rpc GetLabels(GetLabelsRequest) returns (GetLabelsResponse);
+    
+    // Health check
+    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+    
+    // Inspector Gadget health check
+    rpc CheckGadgetHealth(CheckGadgetHealthRequest) returns (GadgetHealthResponse);
+}
+
+// Common messages
+message GetClusterInfoRequest {
+    string cluster_id = 1;  // Optional: for multi-cluster support
+}
+
+message ClusterInfoResponse {
+    string k8s_version = 1;
+    int32 total_nodes = 2;
+    int32 total_pods = 3;
+    int32 total_namespaces = 4;
+    string platform = 5;
+    string error = 6;
+}
+
+// Namespace messages
+message ListNamespacesRequest {
+    string cluster_id = 1;
+}
+
+message NamespaceInfo {
+    string name = 1;
+    string uid = 2;
+    string status = 3;
+    map<string, string> labels = 4;
+    string created_at = 5;
+}
+
+message ListNamespacesResponse {
+    repeated NamespaceInfo namespaces = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Deployment messages
+message ListDeploymentsRequest {
+    string cluster_id = 1;
+    string namespace = 2;  // Optional: filter by namespace
+}
+
+message DeploymentInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    int32 replicas = 4;
+    int32 available_replicas = 5;
+    map<string, string> labels = 6;
+    string image = 7;
+    string created_at = 8;
+    string spec_hash = 9;
+    string containers_json = 10;
+}
+
+message ListDeploymentsResponse {
+    repeated DeploymentInfo deployments = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Pod messages
+message ListPodsRequest {
+    string cluster_id = 1;
+    string namespace = 2;  // Optional
+    string label_selector = 3;  // Optional: e.g., "app=nginx"
+}
+
+message PodInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    string status = 4;
+    string node_name = 5;
+    map<string, string> labels = 6;
+    string ip = 7;
+    string created_at = 8;
+}
+
+message ListPodsResponse {
+    repeated PodInfo pods = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Service messages
+message ListServicesRequest {
+    string cluster_id = 1;
+    string namespace = 2;  // Optional
+}
+
+message ServicePort {
+    int32 port = 1;
+    string protocol = 2;        // L4 protocol: TCP, UDP
+    string target_port = 3;
+    string name = 4;            // Port name (grpc, http, https, etc.) - Istio convention
+    string app_protocol = 5;    // Kubernetes appProtocol field (grpc, http2, https, etc.)
+}
+
+message ServiceInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    string type = 4;
+    string cluster_ip = 5;
+    repeated ServicePort ports = 6;
+    map<string, string> labels = 7;
+    map<string, string> selector = 8;
+    string created_at = 9;
+}
+
+message ListServicesResponse {
+    repeated ServiceInfo services = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// StatefulSet messages
+message ListStatefulSetsRequest {
+    string cluster_id = 1;
+    string namespace = 2;
+}
+
+message StatefulSetInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    int32 replicas = 4;
+    int32 ready_replicas = 5;
+    map<string, string> labels = 6;
+    string image = 7;
+    string created_at = 8;
+    string spec_hash = 9;
+    string containers_json = 10;
+}
+
+message ListStatefulSetsResponse {
+    repeated StatefulSetInfo statefulsets = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// ConfigMap messages
+message ListConfigMapsRequest {
+    string cluster_id = 1;
+    string namespace = 2;
+}
+
+message ConfigMapInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    string data_hash = 4;
+    string created_at = 5;
+}
+
+message ListConfigMapsResponse {
+    repeated ConfigMapInfo configmaps = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Secret messages
+message ListSecretsRequest {
+    string cluster_id = 1;
+    string namespace = 2;
+}
+
+message SecretInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    string data_hash = 4;
+    string type = 5;
+    string created_at = 6;
+}
+
+message ListSecretsResponse {
+    repeated SecretInfo secrets = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// NetworkPolicy messages
+message ListNetworkPoliciesRequest {
+    string cluster_id = 1;
+    string namespace = 2;
+}
+
+message NetworkPolicyInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    string spec_hash = 4;
+    string created_at = 5;
+}
+
+message ListNetworkPoliciesResponse {
+    repeated NetworkPolicyInfo network_policies = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Ingress messages
+message ListIngressesRequest {
+    string cluster_id = 1;
+    string namespace = 2;
+}
+
+message IngressInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    string spec_hash = 4;
+    repeated string hosts = 5;
+    string created_at = 6;
+}
+
+message ListIngressesResponse {
+    repeated IngressInfo ingresses = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Route messages (OpenShift)
+message ListRoutesRequest {
+    string cluster_id = 1;
+    string namespace = 2;
+}
+
+message RouteInfo {
+    string name = 1;
+    string namespace = 2;
+    string uid = 3;
+    string spec_hash = 4;
+    string host = 5;
+    string created_at = 6;
+}
+
+message ListRoutesResponse {
+    repeated RouteInfo routes = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Node messages
+message ListNodesRequest {
+    string cluster_id = 1;
+}
+
+message NodeInfo {
+    string name = 1;           // worker1.internal.example.corp
+    string uid = 2;
+    string internal_ip = 3;    // 10.0.1.100
+    string external_ip = 4;    // (if available)
+    string status = 5;         // Ready, NotReady
+    map<string, string> labels = 6;
+    string kubelet_version = 7;
+    string os_image = 8;
+    string container_runtime = 9;
+    string architecture = 10;
+    string created_at = 11;
+}
+
+message ListNodesResponse {
+    repeated NodeInfo nodes = 1;
+    int32 count = 2;
+    string error = 3;
+}
+
+// Label messages
+message GetLabelsRequest {
+    string cluster_id = 1;
+    string resource_type = 2;  // "pods" or "deployments"
+    string namespace = 3;  // Optional
+}
+
+message GetLabelsResponse {
+    repeated string labels = 1;  // Format: "key=value"
+    int32 count = 2;
+    string error = 3;
+}
+
+// Health check
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+    bool healthy = 1;
+    string message = 2;
+    string kubernetes_status = 3;
+}
+
+// Gadget Health Check
+message CheckGadgetHealthRequest {
+    string cluster_id = 1;
+    string gadget_namespace = 2;  // REQUIRED: Namespace where Inspector Gadget is deployed (from UI)
+}
+
+message GadgetHealthResponse {
+    string health_status = 1;  // "healthy", "degraded", "unhealthy", "unknown"
+    string version = 2;
+    string error = 3;
+    int32 pods_ready = 4;
+    int32 pods_total = 5;
+    bool ebpf_capable = 6;
+    int32 total_restarts = 7;
+    repeated string issues = 8;
+}

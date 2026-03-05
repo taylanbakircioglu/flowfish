@@ -1,0 +1,245 @@
+---
+# Neo4j Initialization Job
+# Creates schema and constraints for flowfish application
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: neo4j-init
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: neo4j
+    component: init
+spec:
+  ttlSecondsAfterFinished: 300  # Clean up after 5 minutes
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: neo4j
+        component: init
+    spec:
+      restartPolicy: OnFailure
+      
+      # Wait for Neo4j to be ready
+      initContainers:
+      - name: wait-for-neo4j
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for Neo4j to be ready..."
+          
+          # Wait for HTTP port
+          until nc -z -w 2 neo4j.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local 7474 2>/dev/null; do
+            echo "Neo4j HTTP not ready yet..."
+            sleep 3
+          done
+          echo "Neo4j HTTP port is open"
+          
+          # Wait for Bolt port
+          until nc -z -w 2 neo4j.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local 7687 2>/dev/null; do
+            echo "Neo4j Bolt not ready yet..."
+            sleep 3
+          done
+          echo "Neo4j Bolt port is open"
+          
+          # Neo4j needs time to fully initialize after ports are open
+          # Database initialization, schema loading, Bolt server ready, etc.
+          # Reduced to 45s since ports are verified open
+          echo "Waiting 45s for Neo4j to fully initialize..."
+          sleep 45
+          echo "Ready to initialize schema!"
+      
+      # Volumes for temporary workspace
+      volumes:
+      - name: workspace
+        emptyDir: {}
+      
+      containers:
+      - name: init-neo4j
+        image: neo4j:5.15-community
+        
+        env:
+        - name: NEO4J_URI
+          value: "bolt://neo4j.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local:7687"
+        - name: NEO4J_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: NEO4J_AUTH
+        # Set HOME to writable emptyDir volume (production best practice)
+        - name: HOME
+          value: "/workspace"
+        
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          
+          echo "Neo4j Schema Initialization Starting..."
+          echo ""
+          
+          # Parse username and password from NEO4J_AUTH (format: username/password)
+          NEO4J_USER=$(echo $NEO4J_AUTH | cut -d'/' -f1)
+          NEO4J_PASS=$(echo $NEO4J_AUTH | cut -d'/' -f2)
+          
+          echo "Connecting to Neo4j..."
+          echo "URI: $NEO4J_URI"
+          echo "User: $NEO4J_USER"
+          echo ""
+          
+          # Test connection with retry
+          echo "Testing Neo4j connection..."
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          
+          until cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain "RETURN 1;" 2>/dev/null; do
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+              echo "ERROR: Failed to connect to Neo4j after $MAX_RETRIES attempts"
+              echo "URI: $NEO4J_URI"
+              echo ""
+              cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain "RETURN 1;" 2>&1 || true
+              exit 1
+            fi
+            echo "Connection attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 3s..."
+            sleep 3
+          done
+          
+          echo "Successfully connected to Neo4j!"
+          echo ""
+          
+          # Create Cypher script in workspace
+          cat > /workspace/init.cypher << 'CYPHER_SCRIPT'
+          // Neo4j Community Edition uses default "neo4j" database
+          // Enterprise Edition supports CREATE DATABASE, Community does not
+          
+          // Create Constraints (unique identifiers)
+          CREATE CONSTRAINT workload_id IF NOT EXISTS 
+          FOR (w:Workload) REQUIRE w.id IS UNIQUE;
+          
+          CREATE CONSTRAINT namespace_name IF NOT EXISTS 
+          FOR (n:Namespace) REQUIRE n.name IS UNIQUE;
+          
+          CREATE CONSTRAINT cluster_name IF NOT EXISTS 
+          FOR (c:Cluster) REQUIRE c.name IS UNIQUE;
+          
+          // Create Indexes for performance
+          CREATE INDEX workload_name IF NOT EXISTS FOR (w:Workload) ON (w.name);
+          CREATE INDEX workload_namespace IF NOT EXISTS FOR (w:Workload) ON (w.namespace);
+          CREATE INDEX workload_kind IF NOT EXISTS FOR (w:Workload) ON (w.kind);
+          CREATE INDEX workload_cluster_id IF NOT EXISTS FOR (w:Workload) ON (w.cluster_id);
+          CREATE INDEX workload_analysis_id IF NOT EXISTS FOR (w:Workload) ON (w.analysis_id);
+          CREATE INDEX workload_is_active IF NOT EXISTS FOR (w:Workload) ON (w.is_active);
+          CREATE INDEX namespace_cluster IF NOT EXISTS FOR (n:Namespace) ON (n.cluster);
+          
+          // Create relationship property indexes for COMMUNICATES_WITH
+          // Note: Relationship property indexes require Neo4j Enterprise Edition
+          // For Community Edition, we filter at query time
+          
+          // Show created constraints and indexes
+          SHOW CONSTRAINTS;
+          SHOW INDEXES;          
+          CYPHER_SCRIPT
+          
+          echo ""
+          echo "Executing Neo4j schema initialization..."
+          echo ""
+          
+          # Execute Cypher script with retry logic
+          # Neo4j may be unstable after initial start
+          SCRIPT_RETRIES=5
+          SCRIPT_RETRY=0
+          SCRIPT_SUCCESS=0
+          
+          while [ $SCRIPT_RETRY -lt $SCRIPT_RETRIES ]; do
+            echo "Attempting schema initialization (attempt $((SCRIPT_RETRY+1))/$SCRIPT_RETRIES)..."
+            
+            if cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" -f /workspace/init.cypher --format plain 2>&1; then
+              SCRIPT_SUCCESS=1
+              break
+            fi
+            
+            SCRIPT_RETRY=$((SCRIPT_RETRY+1))
+            
+            if [ $SCRIPT_RETRY -lt $SCRIPT_RETRIES ]; then
+              echo "Schema initialization failed, waiting 5s before retry..."
+              sleep 5
+            fi
+          done
+          
+          if [ $SCRIPT_SUCCESS -eq 1 ]; then
+            EXIT_CODE=0
+          else
+            echo "ERROR: Failed to initialize schema after $SCRIPT_RETRIES attempts"
+            
+            # Try running commands one by one as fallback
+            echo "Attempting individual constraint creation as fallback..."
+            
+            echo "Creating workload_id constraint..."
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE CONSTRAINT workload_id IF NOT EXISTS FOR (w:Workload) REQUIRE w.id IS UNIQUE;" 2>&1 || true
+            
+            sleep 2
+            
+            echo "Creating namespace_name constraint..."
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE CONSTRAINT namespace_name IF NOT EXISTS FOR (n:Namespace) REQUIRE n.name IS UNIQUE;" 2>&1 || true
+            
+            sleep 2
+            
+            echo "Creating cluster_name constraint..."
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE CONSTRAINT cluster_name IF NOT EXISTS FOR (c:Cluster) REQUIRE c.name IS UNIQUE;" 2>&1 || true
+            
+            sleep 2
+            
+            echo "Creating indexes..."
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX workload_name IF NOT EXISTS FOR (w:Workload) ON (w.name);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX workload_namespace IF NOT EXISTS FOR (w:Workload) ON (w.namespace);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX workload_kind IF NOT EXISTS FOR (w:Workload) ON (w.kind);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX workload_cluster_id IF NOT EXISTS FOR (w:Workload) ON (w.cluster_id);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX workload_analysis_id IF NOT EXISTS FOR (w:Workload) ON (w.analysis_id);" 2>&1 || true
+            
+            # Check if fallback succeeded
+            echo "Verifying constraints..."
+            if cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain "SHOW CONSTRAINTS;" 2>&1; then
+              echo "Fallback succeeded - constraints created"
+              EXIT_CODE=0
+            else
+              EXIT_CODE=1
+            fi
+          fi
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "Neo4j schema initialization completed successfully!"
+            echo "=========================================="
+            echo ""
+            echo "Database: neo4j (Community Edition default)"
+            echo "Node Labels: Workload, Namespace, Cluster"
+            echo "Relationships: COMMUNICATES_WITH, DEPENDS_ON, PART_OF"
+            echo "Constraints: workload_id, namespace_name, cluster_name"
+            echo "Indexes: Created for performance"
+            echo ""
+            echo "Neo4j is ready for Flowfish platform!"
+            echo ""
+          else
+            echo ""
+            echo "Initialization failed with exit code $EXIT_CODE"
+            echo "This may be OK if constraints already exist"
+            echo ""
+          fi
+

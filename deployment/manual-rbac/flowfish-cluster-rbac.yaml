@@ -1,0 +1,49 @@
+# Flowfish Cluster RBAC
+# kubectl-gadget için gerekli cross-namespace izinler
+#
+# Uygulama:
+#   oc apply -f flowfish-cluster-rbac.yaml
+#
+# NAMESPACE değişkenini kendi namespace'inizle değiştirin
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flowfish-gadget-reader
+  labels:
+    app: flowfish
+rules:
+  # Read pods and namespaces for scoped analysis
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  # kubectl-gadget requires port-forward to connect to gadget pods
+  - apiGroups: [""]
+    resources: ["pods/portforward", "pods/exec", "pods/log"]
+    verbs: ["create", "get"]
+  # Access Inspektor Gadget traces
+  - apiGroups: ["gadget.kinvolk.io"]
+    resources: ["traces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read deployments, daemonsets for workload identification
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flowfish-gadget-reader-binding
+  labels:
+    app: flowfish
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flowfish-gadget-reader
+subjects:
+  - kind: ServiceAccount
+    name: flowfish
+    namespace: pilot-flowfish  # NAMESPACE'i değiştirin
+

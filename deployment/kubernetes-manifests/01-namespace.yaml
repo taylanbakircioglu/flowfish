@@ -1,0 +1,16 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/instance: flowfish
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: platform
+    app.kubernetes.io/part-of: flowfish
+---
+# NOTE: Inspector Gadget namespace - same as main application
+# Inspector Gadget will run as DaemonSet in the same namespace ({{OPENSHIFT_NAMESPACE}})
+# No separate 'gadget' namespace needed
+

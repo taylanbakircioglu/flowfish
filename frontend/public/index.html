@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐟</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1890ff" />
+    <meta name="description" content="Flowfish - eBPF-based Kubernetes Application Communication and Dependency Mapping Platform" />
+    
+    <title>Flowfish Platform</title>
+    
+    <!-- Preconnect to API -->
+    <link rel="preconnect" href="http://localhost:8000" />
+    
+    <!-- Open Graph meta tags -->
+    <meta property="og:title" content="Flowfish Platform" />
+    <meta property="og:description" content="eBPF-based Kubernetes Application Communication and Dependency Mapping" />
+    <meta property="og:type" content="website" />
+    
+    <!-- Prevent FOUC (Flash of Unstyled Content) -->
+    <style>
+      #root { 
+        opacity: 0; 
+        transition: opacity 0.3s ease-in-out;
+      }
+      #root.loaded { 
+        opacity: 1; 
+      }
+      
+      /* Loading spinner */
+      .loading-container {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      
+      .loading-spinner {
+        width: 24px;
+        height: 24px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #1890ff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run Flowfish Platform.</noscript>
+    
+    <!-- Loading indicator -->
+    <div id="loading" class="loading-container">
+      <div class="loading-spinner"></div>
+      <span>Loading Flowfish...</span>
+    </div>
+    
+    <div id="root"></div>
+    
+    <!-- Hide loading indicator when React loads -->
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        // Hide loading after a short delay to ensure React has mounted
+        setTimeout(() => {
+          const loading = document.getElementById('loading');
+          const root = document.getElementById('root');
+          
+          if (loading) loading.style.display = 'none';
+          if (root) root.classList.add('loaded');
+        }, 1000);
+      });
+    </script>
+  </body>
+</html>

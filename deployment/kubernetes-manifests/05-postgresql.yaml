@@ -1,0 +1,264 @@
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: postgres
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: flowfish
+    component: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+    appProtocol: tcp
+---
+# PostgreSQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: postgres
+spec:
+  serviceName: postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowfish
+      component: postgres
+  template:
+    metadata:
+      labels:
+        app: flowfish
+        component: postgres
+    spec:
+      # OpenShift SCC compatibility: minimal pod-level securityContext
+      securityContext:
+        # Do not specify runAsUser, runAsGroup, fsGroup, seccompProfile - OpenShift SCC will assign
+      
+      initContainers:
+      - name: postgres-init
+        image: postgres:15-alpine
+        command: ['/bin/sh', '-c']
+        args:
+        - |
+          echo "Initializing PostgreSQL directories..."
+          
+          # Create postgresql data subdirectory
+          mkdir -p /var/lib/postgresql/data/pgdata
+          
+          # Create socket directory in emptyDir volume (not /tmp!)
+          # Note: emptyDir is already writable, no chmod needed in OpenShift
+          mkdir -p /var/run/postgresql
+          
+          # Remove lost+found if it exists
+          rm -rf /var/lib/postgresql/data/lost+found 2>/dev/null || true
+          
+          # Check if database already exists
+          if [ -d /var/lib/postgresql/data/pgdata ] && [ "$(ls -A /var/lib/postgresql/data/pgdata 2>/dev/null)" ]; then
+            echo "Existing database found - preserving data"
+            echo "Data will be preserved across pod restarts (PVC mounted)"
+          else
+            echo " Empty database directory - will initialize"
+            echo "PostgreSQL will create database with secure permissions"
+          fi
+          
+          # Note: chown/chmod NOT needed in OpenShift!
+          # - PVCs are already mounted with correct permissions
+          # - OpenShift restricted SCC doesn't allow chown/chmod anyway
+          # - PostgreSQL handles its own directory permissions on first start
+          
+          echo "PostgreSQL directories prepared"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-run
+          mountPath: /var/run/postgresql
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # PostgreSQL needs write access
+          capabilities:
+            drop:
+            - ALL
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          echo "Starting PostgreSQL..."
+          echo "PGDATA: $PGDATA"
+          echo "PGHOST: $PGHOST"
+          echo "POSTGRES_USER: $POSTGRES_USER"
+          echo "POSTGRES_DB: $POSTGRES_DB"
+          if [ -z "$POSTGRES_PASSWORD" ]; then
+            echo "ERROR: POSTGRES_PASSWORD is empty!"
+            exit 1
+          fi
+          echo "POSTGRES_PASSWORD: [SET]"
+          exec docker-entrypoint.sh postgres
+        env:
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: PGHOST
+          value: /var/run/postgresql
+        - name: POSTGRES_INITDB_ARGS
+          value: "--auth-host=md5 --auth-local=trust"
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: postgres-database
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: postgres-user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: postgres-password
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-run
+          mountPath: /var/run/postgresql
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - pg_isready -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - pg_isready -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      # emptyDir for PostgreSQL socket (not ephemeral data, just socket file)
+      # This is production-safe as socket is recreated on each pod restart
+      - name: postgres-run
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+      labels:
+        app: flowfish
+        component: postgres
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: {{STORAGE_CLASS}}
+      resources:
+        requests:
+          storage: 10Gi
+---
+# PostgreSQL initialization job (run schema)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-init
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: postgres
+    job: init
+spec:
+  template:
+    metadata:
+      labels:
+        app: flowfish
+        component: postgres
+        job: init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: postgres-init
+        image: postgres:15-alpine
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for PostgreSQL to be ready..."
+          until PGPASSWORD="$POSTGRES_PASSWORD" psql -h postgresql-0.postgresql -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT 1" > /dev/null 2>&1; do
+            echo "PostgreSQL is not ready yet..."
+            sleep 2
+          done
+          echo "PostgreSQL is ready!"
+          
+          echo "Creating Flowfish schema..."
+          PGPASSWORD="$POSTGRES_PASSWORD" psql -h postgresql-0.postgresql -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+            CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+            CREATE EXTENSION IF NOT EXISTS \"pg_trgm\";
+            CREATE EXTENSION IF NOT EXISTS \"btree_gin\";
+            
+            -- Create basic tables (simplified for local dev)
+            CREATE TABLE IF NOT EXISTS users (
+              id SERIAL PRIMARY KEY,
+              username VARCHAR(100) UNIQUE NOT NULL,
+              email VARCHAR(255) UNIQUE NOT NULL,
+              password_hash VARCHAR(255),
+              is_active BOOLEAN DEFAULT TRUE,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS clusters (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(255) UNIQUE NOT NULL,
+              cluster_type VARCHAR(50) NOT NULL,
+              is_active BOOLEAN DEFAULT TRUE,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            -- Insert default admin user
+            INSERT INTO users (username, email, password_hash, is_active) 
+            VALUES ('admin', 'admin@flowfish.local', '\$2b\$12\$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYIIHDWHFoq', TRUE)
+            ON CONFLICT (username) DO NOTHING;
+            
+            -- Insert local cluster
+            INSERT INTO clusters (name, cluster_type, is_active)
+            VALUES ('pilot-cluster', 'kubernetes', TRUE)
+            ON CONFLICT (name) DO NOTHING;
+            
+            SELECT 'Flowfish schema initialized successfully' as result;
+          "
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: postgres-user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: postgres-password
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: postgres-database

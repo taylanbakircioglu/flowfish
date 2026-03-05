@@ -1,0 +1,206 @@
+# Flowfish Platform - Release Pipeline
+# Deploys to OpenShift Internal Environment
+# Triggered manually or from Build Pipeline
+
+trigger: none
+pr: none
+
+pool:
+  name: BuildServers
+
+variables:
+  - group: FlowfishVaultENV
+  - group: FlowfishCompanyVariable
+  - name: environment
+    value: internal
+  - name: namespace
+    value: $(OPENSHIFT_NAMESPACE)
+  - name: registry
+    value: $(HARBOR_REGISTRY)
+  - name: project
+    value: flowfish
+
+resources:
+  pipelines:
+    - pipeline: BuildPipeline
+      source: 'Flowfish-Build'
+      trigger:
+        branches:
+          include:
+            - pilot
+
+stages:
+  - stage: PreDeploy
+    displayName: 'Pre-Deployment Tasks'
+    jobs:
+      - job: GetCredentials
+        displayName: 'Get Vault Credentials'
+        steps:
+          - bash: |
+              chmod +x pipelines/scripts/get-credentials.sh
+              ./pipelines/scripts/get-credentials.sh
+            displayName: 'Fetch Vault Credentials'
+            name: Vault
+            env:
+              VAULT_TOKEN: $(VAULT_TOKEN)
+              VAULT_GATEWAY_URL: $(VAULT_GATEWAY_URL)
+
+      - job: PrepareManifests
+        displayName: 'Prepare Kubernetes Manifests'
+        dependsOn: GetCredentials
+        steps:
+          - checkout: self
+          
+          - bash: |
+              chmod +x pipelines/scripts/prepare-manifests.sh
+              ./pipelines/scripts/prepare-manifests.sh
+            displayName: 'Replace Variables in Manifests'
+            env:
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+              HARBOR_REGISTRY: $(HARBOR_REGISTRY)
+              OPENSHIFT_API_URL: $(OPENSHIFT_API_URL)
+              OPENSHIFT_NAMESPACE: $(OPENSHIFT_NAMESPACE)
+              POSTGRES_HOST: $(POSTGRES_HOST)
+              REDIS_HOST: $(REDIS_HOST)
+              CLICKHOUSE_HOST: $(CLICKHOUSE_HOST)
+              NEO4J_HOST: $(NEO4J_HOST)
+              RABBITMQ_HOST: $(RABBITMQ_HOST)
+              DOMAIN_NAME: $(DOMAIN_NAME)
+              API_BASE_URL: $(API_BASE_URL)
+              FRONTEND_URL: $(FRONTEND_URL)
+              STORAGE_CLASS: $(STORAGE_CLASS)
+              TLS_SECRET_NAME: $(TLS_SECRET_NAME)
+              DEPLOYMENT_ENV: $(environment)
+
+          - publish: $(System.DefaultWorkingDirectory)/deployment/kubernetes-manifests
+            artifact: manifests
+            displayName: 'Publish Manifests Artifact'
+
+  - stage: DeployInfrastructure
+    displayName: 'Deploy Infrastructure'
+    dependsOn: PreDeploy
+    jobs:
+      - job: DeployDatabases
+        displayName: 'Deploy Databases & Dependencies'
+        steps:
+          - download: current
+            artifact: manifests
+          
+          - bash: |
+              chmod +x pipelines/scripts/deploy-infrastructure.sh
+              ./pipelines/scripts/deploy-infrastructure.sh
+            displayName: 'Deploy Infrastructure Components'
+            name: InfraDeploy
+            env:
+              OPENSHIFT_USER: $(User)
+              OPENSHIFT_PASSWORD: $(Password)
+              OPENSHIFT_API_URL: $(OPENSHIFT_API_URL)
+              OPENSHIFT_NAMESPACE: $(OPENSHIFT_NAMESPACE)
+              RELEASE_ALL: $(release-all)
+
+  - stage: DeployApplications
+    displayName: 'Deploy Applications'
+    dependsOn: DeployInfrastructure
+    jobs:
+      - job: DeployBackend
+        displayName: 'Deploy Backend'
+        steps:
+          - download: current
+            artifact: manifests
+          
+          - bash: |
+              chmod +x pipelines/scripts/deploy-backend.sh
+              ./pipelines/scripts/deploy-backend.sh
+            displayName: 'Deploy Backend Service'
+            env:
+              OPENSHIFT_USER: $(User)
+              OPENSHIFT_PASSWORD: $(Password)
+              OPENSHIFT_API_URL: $(OPENSHIFT_API_URL)
+              OPENSHIFT_NAMESPACE: $(OPENSHIFT_NAMESPACE)
+              BACKEND_IMAGE_TAG: $(BackendImageTag)
+              BACKEND_BUILT: $(BackendBuilt)
+              RELEASE_ALL: $(release-all)
+
+      - job: DeployFrontend
+        displayName: 'Deploy Frontend'
+        dependsOn: DeployBackend
+        steps:
+          - download: current
+            artifact: manifests
+          
+          - bash: |
+              chmod +x pipelines/scripts/deploy-frontend.sh
+              ./pipelines/scripts/deploy-frontend.sh
+            displayName: 'Deploy Frontend Service'
+            env:
+              OPENSHIFT_USER: $(User)
+              OPENSHIFT_PASSWORD: $(Password)
+              OPENSHIFT_API_URL: $(OPENSHIFT_API_URL)
+              OPENSHIFT_NAMESPACE: $(OPENSHIFT_NAMESPACE)
+              FRONTEND_IMAGE_TAG: $(FrontendImageTag)
+              FRONTEND_BUILT: $(FrontendBuilt)
+              RELEASE_ALL: $(release-all)
+
+  - stage: DeployMicroservices
+    displayName: 'Deploy Microservices'
+    dependsOn: DeployApplications
+    jobs:
+      - job: DeployMicroservices
+        displayName: 'Deploy All Microservices'
+        steps:
+          - download: current
+            artifact: manifests
+          
+          - bash: |
+              chmod +x pipelines/scripts/deploy-microservices.sh
+              ./pipelines/scripts/deploy-microservices.sh
+            displayName: 'Deploy Microservices'
+            env:
+              OPENSHIFT_USER: $(User)
+              OPENSHIFT_PASSWORD: $(Password)
+              OPENSHIFT_API_URL: $(OPENSHIFT_API_URL)
+              OPENSHIFT_NAMESPACE: $(OPENSHIFT_NAMESPACE)
+              RELEASE_ALL: $(release-all)
+              API_GATEWAY_IMAGE_TAG: $(API_GATEWAY_IMAGE_TAG)
+              CLUSTER_MANAGER_IMAGE_TAG: $(CLUSTER_MANAGER_IMAGE_TAG)
+              ANALYSIS_ORCHESTRATOR_IMAGE_TAG: $(ANALYSIS_ORCHESTRATOR_IMAGE_TAG)
+              GRAPH_WRITER_IMAGE_TAG: $(GRAPH_WRITER_IMAGE_TAG)
+              GRAPH_QUERY_IMAGE_TAG: $(GRAPH_QUERY_IMAGE_TAG)
+              TIMESERIES_WRITER_IMAGE_TAG: $(TIMESERIES_WRITER_IMAGE_TAG)
+              INGESTION_SERVICE_IMAGE_TAG: $(INGESTION_SERVICE_IMAGE_TAG)
+
+  - stage: PostDeploy
+    displayName: 'Post-Deployment'
+    dependsOn: DeployMicroservices
+    jobs:
+      - job: HealthCheck
+        displayName: 'Health Check & Validation'
+        steps:
+          - bash: |
+              chmod +x pipelines/scripts/post-deploy-check.sh
+              ./pipelines/scripts/post-deploy-check.sh
+            displayName: 'Run Health Checks'
+            env:
+              OPENSHIFT_USER: $(User)
+              OPENSHIFT_PASSWORD: $(Password)
+              OPENSHIFT_API_URL: $(OPENSHIFT_API_URL)
+              OPENSHIFT_NAMESPACE: $(OPENSHIFT_NAMESPACE)
+              FRONTEND_URL: $(FRONTEND_URL)
+              API_BASE_URL: $(API_BASE_URL)
+
+      - job: Summary
+        displayName: 'Deployment Summary'
+        dependsOn: HealthCheck
+        steps:
+          - bash: |
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎉 FLOWFISH PLATFORM DEPLOYMENT COMPLETED!"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🌐 Frontend URL: $(FRONTEND_URL)"
+              echo "🔌 Backend API: $(API_BASE_URL)"
+              echo "📦 Namespace: $(OPENSHIFT_NAMESPACE)"
+              echo "🏷️  Build ID: $(Build.BuildId)"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            displayName: 'Deployment Summary'
+

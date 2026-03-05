@@ -1,0 +1,105 @@
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: redis
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: flowfish
+    component: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+    appProtocol: redis
+---
+# Redis StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish
+    component: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowfish
+      component: redis
+  template:
+    metadata:
+      labels:
+        app: flowfish
+        component: redis
+    spec:
+      # OpenShift SCC compatibility
+      securityContext: {}
+      
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Redis needs write access
+          capabilities:
+            drop:
+            - ALL
+        command:
+          - redis-server
+          - /usr/local/etc/redis/redis.conf
+        ports:
+        - containerPort: 6379
+          name: redis
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        - name: redis-config
+          mountPath: /usr/local/etc/redis/redis.conf
+          subPath: redis.conf
+          readOnly: true
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
+          limits:
+            memory: "3Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: redis-config
+        configMap:
+          name: redis-config
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+      labels:
+        app: flowfish
+        component: redis
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: {{STORAGE_CLASS}}
+      resources:
+        requests:
+          storage: 10Gi

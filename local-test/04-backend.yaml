@@ -1,0 +1,88 @@
+---
+# Backend Service - Using locally built image
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: flowfish-local
+spec:
+  type: NodePort
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30800
+  selector:
+    app: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for dependencies..."
+              until nc -z postgresql 5432; do echo "Waiting for PostgreSQL..."; sleep 2; done
+              until nc -z redis 6379; do echo "Waiting for Redis..."; sleep 2; done
+              until nc -z mock-gadget 16060; do echo "Waiting for Mock Gadget..."; sleep 2; done
+              echo "All dependencies are ready!"
+      containers:
+        - name: backend
+          image: flowfish-backend:local-v18
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://flowfish:flowfish123@postgresql:5432/flowfish"
+            - name: REDIS_URL
+              value: "redis://:redis123@redis:6379/0"
+            - name: CLICKHOUSE_URL
+              value: "clickhouse://flowfish:flowfish123@clickhouse:9000/flowfish"
+            - name: NEO4J_BOLT_URI
+              value: "bolt://neo4j:7687"
+            - name: NEO4J_HTTP_URI
+              value: "http://neo4j:7474"
+            - name: NEO4J_USER
+              value: "neo4j"
+            - name: NEO4J_PASSWORD
+              value: "flowfish123"
+            - name: NEO4J_DATABASE
+              value: "neo4j"
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq:5672/"
+            - name: SECRET_KEY
+              value: "local-dev-secret-key-12345"
+            - name: JWT_EXPIRATION_HOURS
+              value: "24"
+            - name: CORS_ORIGINS
+              value: "*"
+            - name: LOG_LEVEL
+              value: "DEBUG"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10

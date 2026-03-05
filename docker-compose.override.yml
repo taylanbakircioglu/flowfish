@@ -1,0 +1,147 @@
+# Docker Compose Override for Development
+# This file is automatically used with docker-compose up
+# It adds development-specific configurations
+
+version: '3.8'
+
+services:
+  backend:
+    # Development overrides
+    build:
+      target: development  # Use development stage if multi-stage Dockerfile
+    environment:
+      # Development settings
+      DEBUG: true
+      ENV: development
+      LOG_LEVEL: DEBUG
+      HOT_RELOAD: true
+      
+      # Disable some features for faster startup
+      ENABLE_LLM_ANALYSIS: false
+      ENABLE_BACKGROUND_JOBS: false
+    volumes:
+      # Hot reload (mount source code)
+      - ./backend:/app
+    command: 
+      # Use development server with auto-reload
+      - uvicorn
+      - main:app
+      - --host
+      - "0.0.0.0" 
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - "/app"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=PathPrefix(`/api`)"
+
+  frontend:
+    # Development overrides
+    build:
+      target: development
+    environment:
+      # Development settings
+      NODE_ENV: development
+      REACT_APP_ENV: development
+      FAST_REFRESH: true
+      WDS_SOCKET_HOST: localhost
+      WDS_SOCKET_PORT: 3000
+    volumes:
+      # Hot reload
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/package.json:/app/package.json
+    command:
+      - npm
+      - start
+    stdin_open: true
+    tty: true
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
+
+  # Development tools
+  postgres-admin:
+    image: adminer:latest
+    container_name: flowfish-postgres-admin
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DEFAULT_USERNAME: flowfish
+    depends_on:
+      - postgres
+    networks:
+      - flowfish-network
+    profiles:
+      - debug
+
+  redis-admin:
+    image: rediscommander/redis-commander:latest
+    container_name: flowfish-redis-admin
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: "local:redis:6379:0:redis123"
+      HTTP_USER: admin
+      HTTP_PASSWORD: admin
+    depends_on:
+      - redis
+    networks:
+      - flowfish-network
+    profiles:
+      - debug
+
+  # Reverse proxy for unified access (development)
+  reverse-proxy:
+    image: traefik:v2.10
+    container_name: flowfish-proxy
+    ports:
+      - "80:80"
+      - "8090:8080"  # Traefik dashboard
+    command:
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - flowfish-network
+    profiles:
+      - debug
+
+# Development volumes for persistent data during development
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/postgres
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/redis
+  clickhouse_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/clickhouse
+  neo4j_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/neo4j/data
+  neo4j_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/neo4j/logs

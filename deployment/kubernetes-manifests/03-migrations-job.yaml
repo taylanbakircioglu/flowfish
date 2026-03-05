@@ -1,0 +1,2372 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flowfish-migrations
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish-migrations
+spec:
+  template:
+    metadata:
+      labels:
+        app: flowfish-migrations
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+      initContainers:
+      # Wait for PostgreSQL to be ready
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for PostgreSQL..."
+          until nc -z postgresql 5432; do
+            echo "PostgreSQL is unavailable - sleeping"
+            sleep 2
+          done
+          echo "PostgreSQL is up!"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
+      # Wait for ClickHouse to be ready
+      - name: wait-for-clickhouse
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for ClickHouse..."
+          until nc -z clickhouse 9000; do
+            echo "ClickHouse is unavailable - sleeping"
+            sleep 2
+          done
+          echo "ClickHouse is up!"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
+      containers:
+      # PostgreSQL Migrations
+      - name: postgres-migrations
+        image: postgres:15-alpine
+        command:
+        - sh
+        - -c
+        - |
+          echo "========================================="
+          echo "PostgreSQL Migrations Starting"
+          echo "Production-Ready: Preserves existing data"
+          echo "========================================="
+          
+          export PGPASSWORD="${POSTGRES_PASSWORD}"
+          
+          # =========================================
+          # Migration 001: Schema Version Tracking
+          # =========================================
+          echo "Setting up migration tracking..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Create migration tracking table
+          CREATE TABLE IF NOT EXISTS schema_migrations (
+              version INTEGER PRIMARY KEY,
+              name VARCHAR(255) NOT NULL,
+              applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          EOSQL
+          
+          # =========================================
+          # Migration 004: Clusters Table
+          # =========================================
+          echo "Running migration 004: Clusters..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Create clusters table if not exists
+          CREATE TABLE IF NOT EXISTS clusters (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(255) NOT NULL UNIQUE,
+              description TEXT,
+              environment VARCHAR(50) NOT NULL DEFAULT 'production',
+              provider VARCHAR(50) NOT NULL DEFAULT 'openshift',
+              region VARCHAR(100),
+              tags JSONB DEFAULT '{}',
+              connection_type VARCHAR(50) NOT NULL DEFAULT 'in-cluster',
+              api_server_url VARCHAR(500) NOT NULL DEFAULT 'https://kubernetes.default.svc',
+              kubeconfig_encrypted TEXT,
+              ca_cert_encrypted TEXT,
+              token_encrypted TEXT,
+              skip_tls_verify BOOLEAN DEFAULT FALSE,
+              gadget_endpoint VARCHAR(500),  -- Deprecated
+              gadget_namespace VARCHAR(255) NOT NULL,  -- REQUIRED: Inspector Gadget namespace (from UI)
+              gadget_protocol VARCHAR(50) DEFAULT 'kubectl',
+              gadget_auto_detect BOOLEAN DEFAULT TRUE,
+              gadget_version VARCHAR(50),
+              gadget_capabilities JSONB DEFAULT '[]',
+              gadget_health_status VARCHAR(50) DEFAULT 'unknown',
+              gadget_last_check TIMESTAMP WITH TIME ZONE,
+              status VARCHAR(50) DEFAULT 'active',
+              validation_status JSONB,
+              last_sync TIMESTAMP WITH TIME ZONE,
+              error_message TEXT,
+              total_namespaces INTEGER DEFAULT 0,
+              total_pods INTEGER DEFAULT 0,
+              total_nodes INTEGER DEFAULT 0,
+              k8s_version VARCHAR(50),
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              created_by INTEGER,
+              updated_by INTEGER
+          );
+          
+          -- Handle legacy cluster_type column (old schema compatibility)
+          -- Make it nullable and add default so INSERT without this column works
+          DO $BODY$
+          BEGIN
+              -- If cluster_type exists and is NOT NULL, make it nullable with default
+              IF EXISTS (SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'clusters' AND column_name = 'cluster_type') THEN
+                  -- Add default value
+                  ALTER TABLE clusters ALTER COLUMN cluster_type SET DEFAULT 'kubernetes';
+                  -- Make nullable
+                  ALTER TABLE clusters ALTER COLUMN cluster_type DROP NOT NULL;
+                  RAISE NOTICE 'cluster_type column updated to nullable with default';
+              END IF;
+          END $BODY$;
+          
+          -- Add any missing columns (idempotent)
+          DO $BODY$
+          BEGIN
+              -- Add description if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'description') THEN
+                  ALTER TABLE clusters ADD COLUMN description TEXT;
+              END IF;
+              
+              -- Add gadget_protocol if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_protocol') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_protocol VARCHAR(50) DEFAULT 'grpc';
+              END IF;
+              
+              -- Add gadget_capabilities if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_capabilities') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_capabilities JSONB DEFAULT '[]';
+              END IF;
+              
+              -- Add gadget_health_status if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_health_status') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_health_status VARCHAR(50) DEFAULT 'unknown';
+              END IF;
+              
+              -- Add gadget_last_check if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_last_check') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_last_check TIMESTAMP WITH TIME ZONE;
+              END IF;
+              
+              -- Add total_namespaces if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'total_namespaces') THEN
+                  ALTER TABLE clusters ADD COLUMN total_namespaces INTEGER DEFAULT 0;
+              END IF;
+              
+              -- Add total_pods if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'total_pods') THEN
+                  ALTER TABLE clusters ADD COLUMN total_pods INTEGER DEFAULT 0;
+              END IF;
+              
+              -- Add total_nodes if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'total_nodes') THEN
+                  ALTER TABLE clusters ADD COLUMN total_nodes INTEGER DEFAULT 0;
+              END IF;
+              
+              -- Add k8s_version if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'k8s_version') THEN
+                  ALTER TABLE clusters ADD COLUMN k8s_version VARCHAR(50);
+              END IF;
+              
+              -- Add region if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'region') THEN
+                  ALTER TABLE clusters ADD COLUMN region VARCHAR(100);
+              END IF;
+              
+              -- Add tags if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'tags') THEN
+                  ALTER TABLE clusters ADD COLUMN tags JSONB DEFAULT '{}';
+              END IF;
+              
+              -- Add environment if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'environment') THEN
+                  ALTER TABLE clusters ADD COLUMN environment VARCHAR(50) NOT NULL DEFAULT 'production';
+              END IF;
+              
+              -- Add provider if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'provider') THEN
+                  ALTER TABLE clusters ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'openshift';
+              END IF;
+              
+              -- Add connection_type if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'connection_type') THEN
+                  ALTER TABLE clusters ADD COLUMN connection_type VARCHAR(50) NOT NULL DEFAULT 'in-cluster';
+              END IF;
+              
+              -- Add api_server_url if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'api_server_url') THEN
+                  ALTER TABLE clusters ADD COLUMN api_server_url VARCHAR(500) NOT NULL DEFAULT 'https://kubernetes.default.svc';
+              END IF;
+              
+              -- Add skip_tls_verify if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'skip_tls_verify') THEN
+                  ALTER TABLE clusters ADD COLUMN skip_tls_verify BOOLEAN DEFAULT FALSE;
+              END IF;
+              
+              -- Add gadget_endpoint if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_endpoint') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_endpoint VARCHAR(500) NOT NULL DEFAULT 'inspektor-gadget:16060';
+              END IF;
+              
+              -- Add status if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'status') THEN
+                  ALTER TABLE clusters ADD COLUMN status VARCHAR(50) DEFAULT 'active';
+              END IF;
+              
+              -- Add kubeconfig_encrypted if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'kubeconfig_encrypted') THEN
+                  ALTER TABLE clusters ADD COLUMN kubeconfig_encrypted TEXT;
+              END IF;
+              
+              -- Add ca_cert_encrypted if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'ca_cert_encrypted') THEN
+                  ALTER TABLE clusters ADD COLUMN ca_cert_encrypted TEXT;
+              END IF;
+              
+              -- Add token_encrypted if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'token_encrypted') THEN
+                  ALTER TABLE clusters ADD COLUMN token_encrypted TEXT;
+              END IF;
+              
+              -- Add validation_status if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'validation_status') THEN
+                  ALTER TABLE clusters ADD COLUMN validation_status JSONB;
+              END IF;
+              
+              -- Add last_sync if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'last_sync') THEN
+                  ALTER TABLE clusters ADD COLUMN last_sync TIMESTAMP WITH TIME ZONE;
+              END IF;
+              
+              -- Add error_message if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'error_message') THEN
+                  ALTER TABLE clusters ADD COLUMN error_message TEXT;
+              END IF;
+              
+              -- Add gadget_auto_detect if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_auto_detect') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_auto_detect BOOLEAN DEFAULT TRUE;
+              END IF;
+              
+              -- Add gadget_version if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_version') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_version VARCHAR(50);
+              END IF;
+              
+              -- Add gadget_namespace if missing (REQUIRED for Inspector Gadget configuration)
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'gadget_namespace') THEN
+                  ALTER TABLE clusters ADD COLUMN gadget_namespace VARCHAR(255);
+              END IF;
+              
+              -- Update existing clusters: set gadget_namespace based on gadget_endpoint or default
+              UPDATE clusters
+              SET gadget_namespace = COALESCE(
+                  CASE 
+                      WHEN gadget_endpoint LIKE '%%.%%.svc%%' THEN 
+                          SPLIT_PART(SPLIT_PART(gadget_endpoint, '.', 2), '.', 1)
+                      ELSE NULL
+                  END,
+                  'flowfish'
+              )
+              WHERE gadget_namespace IS NULL OR gadget_namespace = '';
+              
+              -- Make gadget_namespace NOT NULL (safe after updating existing rows)
+              ALTER TABLE clusters ALTER COLUMN gadget_namespace SET NOT NULL;
+              
+              -- Add updated_at if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'updated_at') THEN
+                  ALTER TABLE clusters ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+              END IF;
+              
+              -- Add created_by if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'created_by') THEN
+                  ALTER TABLE clusters ADD COLUMN created_by INTEGER;
+              END IF;
+              
+              -- Add updated_by if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'clusters' AND column_name = 'updated_by') THEN
+                  ALTER TABLE clusters ADD COLUMN updated_by INTEGER;
+              END IF;
+          END $BODY$;
+          
+          -- Create indexes if not exists
+          CREATE INDEX IF NOT EXISTS idx_clusters_environment ON clusters(environment);
+          CREATE INDEX IF NOT EXISTS idx_clusters_status ON clusters(status);
+          CREATE INDEX IF NOT EXISTS idx_clusters_name ON clusters(name);
+          
+          -- Track migration
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (4, 'clusters_table')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 004 completed!"
+          
+          # =========================================
+          # Migration 005: Analysis Event Types
+          # =========================================
+          echo "Running migration 005: Analysis Event Types..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          CREATE TABLE IF NOT EXISTS analysis_event_types (
+              id SERIAL PRIMARY KEY,
+              analysis_id INTEGER NOT NULL,
+              event_type_id VARCHAR(50) NOT NULL,
+              enabled BOOLEAN DEFAULT TRUE,
+              sampling_rate INTEGER DEFAULT 100,
+              filters JSONB DEFAULT '[]',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(analysis_id, event_type_id)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_analysis_event_types_analysis_id ON analysis_event_types(analysis_id);
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (5, 'analysis_event_types')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 005 completed!"
+          
+          # =========================================
+          # Migration 006: Namespaces and Workloads
+          # =========================================
+          echo "Running migration 006: Namespaces and Workloads..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          CREATE TABLE IF NOT EXISTS namespaces (
+              id SERIAL PRIMARY KEY,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              name VARCHAR(255) NOT NULL,
+              uid VARCHAR(255),
+              labels JSONB DEFAULT '{}',
+              annotations JSONB DEFAULT '{}',
+              status VARCHAR(50) DEFAULT 'Active',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(cluster_id, name)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_namespaces_cluster ON namespaces(cluster_id);
+          CREATE INDEX IF NOT EXISTS idx_namespaces_name ON namespaces(name);
+          CREATE INDEX IF NOT EXISTS idx_namespaces_labels ON namespaces USING gin(labels);
+          
+          CREATE TABLE IF NOT EXISTS workloads (
+              id SERIAL PRIMARY KEY,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              namespace_id INTEGER NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+              name VARCHAR(255) NOT NULL,
+              workload_type VARCHAR(50) NOT NULL,
+              uid VARCHAR(255),
+              labels JSONB DEFAULT '{}',
+              annotations JSONB DEFAULT '{}',
+              replicas INTEGER,
+              available_replicas INTEGER,
+              image VARCHAR(500),
+              status VARCHAR(50) DEFAULT 'Unknown',
+              is_active BOOLEAN DEFAULT TRUE,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(cluster_id, namespace_id, workload_type, name)
+          );
+          
+          -- Add missing columns to workloads table (idempotent)
+          DO $BODY$
+          BEGIN
+              -- Add owner_kind if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'owner_kind') THEN
+                  ALTER TABLE workloads ADD COLUMN owner_kind VARCHAR(100);
+              END IF;
+              
+              -- Add owner_name if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'owner_name') THEN
+                  ALTER TABLE workloads ADD COLUMN owner_name VARCHAR(255);
+              END IF;
+              
+              -- Add owner_uid if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'owner_uid') THEN
+                  ALTER TABLE workloads ADD COLUMN owner_uid VARCHAR(255);
+              END IF;
+              
+              -- Add ip_address if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'ip_address') THEN
+                  ALTER TABLE workloads ADD COLUMN ip_address INET;
+              END IF;
+              
+              -- Add ports if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'ports') THEN
+                  ALTER TABLE workloads ADD COLUMN ports JSONB DEFAULT '[]';
+              END IF;
+              
+              -- Add containers if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'containers') THEN
+                  ALTER TABLE workloads ADD COLUMN containers JSONB DEFAULT '[]';
+              END IF;
+              
+              -- Add node_name if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'node_name') THEN
+                  ALTER TABLE workloads ADD COLUMN node_name VARCHAR(255);
+              END IF;
+              
+              -- Add first_seen if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'first_seen') THEN
+                  ALTER TABLE workloads ADD COLUMN first_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+              END IF;
+              
+              -- Add last_seen if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'last_seen') THEN
+                  ALTER TABLE workloads ADD COLUMN last_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+              END IF;
+              
+              -- Add metadata if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'workloads' AND column_name = 'metadata') THEN
+                  ALTER TABLE workloads ADD COLUMN metadata JSONB DEFAULT '{}';
+              END IF;
+          END $BODY$;
+          
+          -- Create communications table if not exists
+          CREATE TABLE IF NOT EXISTS communications (
+              id SERIAL PRIMARY KEY,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              source_namespace_id INTEGER REFERENCES namespaces(id) ON DELETE SET NULL,
+              source_workload_id INTEGER REFERENCES workloads(id) ON DELETE SET NULL,
+              source_ip INET,
+              source_port INTEGER,
+              destination_namespace_id INTEGER REFERENCES namespaces(id) ON DELETE SET NULL,
+              destination_workload_id INTEGER REFERENCES workloads(id) ON DELETE SET NULL,
+              destination_ip INET NOT NULL,
+              destination_port INTEGER NOT NULL,
+              protocol VARCHAR(50) NOT NULL,
+              first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              last_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              request_count BIGINT DEFAULT 0,
+              request_rate_per_second VARCHAR(10),
+              bytes_transferred BIGINT DEFAULT 0,
+              avg_latency_ms VARCHAR(10),
+              p50_latency_ms VARCHAR(10),
+              p95_latency_ms VARCHAR(10),
+              p99_latency_ms VARCHAR(10),
+              error_count BIGINT DEFAULT 0,
+              error_rate VARCHAR(5),
+              risk_score INTEGER DEFAULT 0,
+              risk_level VARCHAR(20) DEFAULT 'low',
+              importance_score INTEGER DEFAULT 0,
+              is_cross_namespace BOOLEAN DEFAULT FALSE,
+              is_external BOOLEAN DEFAULT FALSE,
+              is_active BOOLEAN DEFAULT TRUE,
+              metadata JSONB DEFAULT '{}',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_workloads_cluster ON workloads(cluster_id);
+          CREATE INDEX IF NOT EXISTS idx_workloads_namespace ON workloads(namespace_id);
+          CREATE INDEX IF NOT EXISTS idx_workloads_type ON workloads(workload_type);
+          CREATE INDEX IF NOT EXISTS idx_workloads_labels ON workloads USING gin(labels);
+          CREATE INDEX IF NOT EXISTS idx_workloads_ip ON workloads(ip_address);
+          CREATE INDEX IF NOT EXISTS idx_workloads_is_active ON workloads(is_active);
+          
+          CREATE INDEX IF NOT EXISTS idx_communications_cluster ON communications(cluster_id);
+          CREATE INDEX IF NOT EXISTS idx_communications_source_workload ON communications(source_workload_id);
+          CREATE INDEX IF NOT EXISTS idx_communications_dest_workload ON communications(destination_workload_id);
+          CREATE INDEX IF NOT EXISTS idx_communications_dest_ip ON communications(destination_ip);
+          CREATE INDEX IF NOT EXISTS idx_communications_protocol ON communications(protocol);
+          CREATE INDEX IF NOT EXISTS idx_communications_risk_level ON communications(risk_level);
+          CREATE INDEX IF NOT EXISTS idx_communications_is_active ON communications(is_active);
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (6, 'namespaces_workloads')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 006 completed!"
+          
+          # =========================================
+          # Migration 007: Analyses Table
+          # =========================================
+          echo "Running migration 007: Analyses..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Handle schema migration from old analyses table to new schema
+          DO $BODY$
+          BEGIN
+              -- Check if old schema exists (has analysis_type column but not scope_type)
+              IF EXISTS (SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'analyses' AND column_name = 'analysis_type')
+                 AND NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = 'analyses' AND column_name = 'scope_type') THEN
+                  
+                  -- Rename old table to preserve data
+                  ALTER TABLE analyses RENAME TO analyses_v1_backup;
+                  
+                  -- Update schema_migrations to force recreation
+                  DELETE FROM schema_migrations WHERE version = 7;
+                  
+                  RAISE NOTICE 'Old analyses table backed up to analyses_v1_backup';
+              END IF;
+          END $BODY$;
+          
+          -- Create analyses table with new schema (includes multi-cluster support)
+          CREATE TABLE IF NOT EXISTS analyses (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(255) NOT NULL,
+              description TEXT,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              cluster_ids JSONB DEFAULT '[]',  -- Multi-cluster: all cluster IDs
+              is_multi_cluster BOOLEAN DEFAULT FALSE,  -- Multi-cluster flag
+              status VARCHAR(50) DEFAULT 'draft',
+              scope_type VARCHAR(50) NOT NULL DEFAULT 'cluster',
+              scope_config JSONB DEFAULT '{}',
+              gadget_config JSONB DEFAULT '{}',
+              time_config JSONB DEFAULT '{}',
+              output_config JSONB DEFAULT '{}',
+              created_by INTEGER,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          -- Add missing columns for future schema updates (idempotent)
+          DO $BODY$
+          BEGIN
+              -- Add scope_type if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'scope_type') THEN
+                  ALTER TABLE analyses ADD COLUMN scope_type VARCHAR(50) NOT NULL DEFAULT 'cluster';
+              END IF;
+              
+              -- Add scope_config if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'scope_config') THEN
+                  ALTER TABLE analyses ADD COLUMN scope_config JSONB DEFAULT '{}';
+              END IF;
+              
+              -- Add gadget_config if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'gadget_config') THEN
+                  ALTER TABLE analyses ADD COLUMN gadget_config JSONB DEFAULT '{}';
+              END IF;
+              
+              -- Add gadget_modules if missing (from model)
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'gadget_modules') THEN
+                  ALTER TABLE analyses ADD COLUMN gadget_modules JSONB DEFAULT '[]';
+              END IF;
+              
+              -- Add time_config if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'time_config') THEN
+                  ALTER TABLE analyses ADD COLUMN time_config JSONB DEFAULT '{}';
+              END IF;
+              
+              -- Add output_config if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'output_config') THEN
+                  ALTER TABLE analyses ADD COLUMN output_config JSONB DEFAULT '{}';
+              END IF;
+              
+              -- Add is_active if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'is_active') THEN
+                  ALTER TABLE analyses ADD COLUMN is_active BOOLEAN DEFAULT TRUE;
+              END IF;
+              
+              -- Add metadata if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'metadata') THEN
+                  ALTER TABLE analyses ADD COLUMN metadata JSONB DEFAULT '{}';
+              END IF;
+              
+              -- =====================================================
+              -- MULTI-CLUSTER SUPPORT (Sprint 5-6)
+              -- =====================================================
+              
+              -- Add cluster_ids for multi-cluster analysis
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'cluster_ids') THEN
+                  ALTER TABLE analyses ADD COLUMN cluster_ids JSONB DEFAULT '[]';
+              END IF;
+              
+              -- Add is_multi_cluster flag
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'is_multi_cluster') THEN
+                  ALTER TABLE analyses ADD COLUMN is_multi_cluster BOOLEAN DEFAULT FALSE;
+              END IF;
+              
+              -- =====================================================
+              -- AUTO-STOP TIMING FIELDS (for Fixed Duration analyses)
+              -- =====================================================
+              
+              -- Add started_at for tracking when analysis started running
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'started_at') THEN
+                  ALTER TABLE analyses ADD COLUMN started_at TIMESTAMP WITH TIME ZONE;
+              END IF;
+              
+              -- Add stopped_at for tracking when analysis stopped
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'stopped_at') THEN
+                  ALTER TABLE analyses ADD COLUMN stopped_at TIMESTAMP WITH TIME ZONE;
+              END IF;
+              
+              -- Add change_detection_enabled for optional change detection feature
+              -- Default: TRUE (enabled) - recommended for production environments
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'change_detection_enabled') THEN
+                  ALTER TABLE analyses ADD COLUMN change_detection_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+              END IF;
+              
+              -- =====================================================
+              -- CHANGE DETECTION SUPPORT (Sprint 7+)
+              -- =====================================================
+              
+              -- Add namespaces column for namespace-scoped change detection
+              -- Stores the list of namespaces being monitored for this analysis
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'namespaces') THEN
+                  ALTER TABLE analyses ADD COLUMN namespaces JSONB;
+              END IF;
+              
+              -- Add change_detection_strategy for detection algorithm selection
+              -- Options: 'baseline', 'rolling_window', 'run_comparison'
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'change_detection_strategy') THEN
+                  ALTER TABLE analyses ADD COLUMN change_detection_strategy VARCHAR(50) DEFAULT 'baseline';
+              END IF;
+              
+              -- Add change_detection_types for filtering which change types to detect
+              -- Default: ["all"] - detect all types; can be specific like ["replica_changed", "connection_added"]
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'change_detection_types') THEN
+                  ALTER TABLE analyses ADD COLUMN change_detection_types JSONB DEFAULT '["all"]'::jsonb;
+              END IF;
+          END $BODY$;
+          
+          -- =====================================================
+          -- BACKWARD COMPATIBILITY: Populate multi-cluster fields
+          -- These updates are IDEMPOTENT and safe to run multiple times
+          -- They only update rows that haven't been migrated yet
+          -- =====================================================
+          
+          -- Populate cluster_ids for existing single-cluster analyses
+          -- Only updates if cluster_ids is empty (not already populated)
+          UPDATE analyses 
+          SET cluster_ids = jsonb_build_array(cluster_id) 
+          WHERE (cluster_ids IS NULL OR cluster_ids = '[]'::jsonb)
+            AND cluster_id IS NOT NULL;
+          
+          -- Set is_multi_cluster=FALSE for existing analyses (single-cluster by definition)
+          -- Only updates if is_multi_cluster is NULL (not already set)
+          UPDATE analyses 
+          SET is_multi_cluster = FALSE 
+          WHERE is_multi_cluster IS NULL;
+          
+          -- Create indexes for multi-cluster queries
+          CREATE INDEX IF NOT EXISTS idx_analyses_is_multi_cluster ON analyses(is_multi_cluster);
+          CREATE INDEX IF NOT EXISTS idx_analyses_cluster_ids ON analyses USING GIN(cluster_ids);
+          
+          -- =====================================================
+          -- BACKWARD COMPATIBILITY: Populate namespaces from scope_config
+          -- For existing analyses that have namespace scope defined
+          -- Handles multiple formats:
+          -- 1. Direct namespaces array: scope_config.namespaces
+          -- 2. Per-cluster scope: scope_config.per_cluster_scope.{cluster_id}.namespaces
+          -- =====================================================
+          
+          -- Method 1: Populate namespaces directly from scope_config.namespaces
+          UPDATE analyses
+          SET namespaces = scope_config->'namespaces'
+          WHERE namespaces IS NULL 
+            AND scope_config IS NOT NULL 
+            AND scope_config->'namespaces' IS NOT NULL
+            AND jsonb_typeof(scope_config->'namespaces') = 'array'
+            AND jsonb_array_length(scope_config->'namespaces') > 0;
+          
+          -- Method 2: Extract namespaces from per_cluster_scope for multi-cluster analyses
+          -- This collects all namespaces from all clusters into a single array
+          UPDATE analyses a
+          SET namespaces = (
+              SELECT jsonb_agg(DISTINCT ns)
+              FROM (
+                  SELECT jsonb_array_elements_text(value->'namespaces') as ns
+                  FROM jsonb_each(a.scope_config->'per_cluster_scope')
+                  WHERE value->'namespaces' IS NOT NULL
+              ) sub
+          )
+          WHERE a.namespaces IS NULL
+            AND a.scope_config IS NOT NULL
+            AND a.scope_config->'per_cluster_scope' IS NOT NULL
+            AND jsonb_typeof(a.scope_config->'per_cluster_scope') = 'object';
+          
+          -- Method 3: For namespace scope_type without explicit namespaces,
+          -- try to extract from scope_config if stored differently
+          -- Also handles case where 'namespaces' might be stored as array of objects
+          UPDATE analyses
+          SET namespaces = (
+              CASE 
+                  WHEN scope_config ? 'selectedNamespaces' THEN scope_config->'selectedNamespaces'
+                  WHEN scope_config ? 'namespace' THEN jsonb_build_array(scope_config->>'namespace')
+                  ELSE NULL
+              END
+          )
+          WHERE namespaces IS NULL
+            AND scope_type = 'namespace'
+            AND scope_config IS NOT NULL
+            AND (scope_config ? 'selectedNamespaces' OR scope_config ? 'namespace');
+          
+          -- Create index for namespace queries
+          CREATE INDEX IF NOT EXISTS idx_analyses_namespaces ON analyses USING GIN(namespaces);
+          
+          -- Create analysis_runs table
+          CREATE TABLE IF NOT EXISTS analysis_runs (
+              id SERIAL PRIMARY KEY,
+              analysis_id INTEGER NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
+              run_number INTEGER NOT NULL,
+              status VARCHAR(50) DEFAULT 'running',
+              start_time TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              end_time TIMESTAMP WITH TIME ZONE,
+              duration_seconds INTEGER,
+              events_collected BIGINT DEFAULT 0,
+              workloads_discovered INTEGER DEFAULT 0,
+              communications_discovered INTEGER DEFAULT 0,
+              anomalies_detected INTEGER DEFAULT 0,
+              changes_detected INTEGER DEFAULT 0,
+              error_message TEXT,
+              logs JSONB DEFAULT '[]',
+              metadata JSONB DEFAULT '{}',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_analyses_cluster ON analyses(cluster_id);
+          CREATE INDEX IF NOT EXISTS idx_analyses_status ON analyses(status);
+          CREATE INDEX IF NOT EXISTS idx_analyses_is_active ON analyses(is_active);
+          CREATE INDEX IF NOT EXISTS idx_analysis_runs_analysis ON analysis_runs(analysis_id);
+          CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status);
+          CREATE INDEX IF NOT EXISTS idx_analysis_runs_start_time ON analysis_runs(start_time);
+          CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at);
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (7, 'analyses_table')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 007 completed!"
+          
+          # =========================================
+          # Migration 008: Cluster Metadata Cache
+          # =========================================
+          echo "Running migration 008: Cluster Metadata Cache..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Cluster sync status
+          CREATE TABLE IF NOT EXISTS cluster_sync_status (
+              id SERIAL PRIMARY KEY,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              last_sync_at TIMESTAMP WITH TIME ZONE,
+              sync_status VARCHAR(50) DEFAULT 'pending',
+              namespaces_count INTEGER DEFAULT 0,
+              deployments_count INTEGER DEFAULT 0,
+              pods_count INTEGER DEFAULT 0,
+              services_count INTEGER DEFAULT 0,
+              error_message TEXT,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(cluster_id)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_cluster_sync_status_cluster ON cluster_sync_status(cluster_id);
+          
+          -- Cached pods
+          CREATE TABLE IF NOT EXISTS cached_pods (
+              id SERIAL PRIMARY KEY,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              namespace VARCHAR(255) NOT NULL,
+              name VARCHAR(255) NOT NULL,
+              uid VARCHAR(255),
+              status VARCHAR(50),
+              node_name VARCHAR(255),
+              ip VARCHAR(50),
+              labels JSONB DEFAULT '{}',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(cluster_id, namespace, name)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_cached_pods_cluster ON cached_pods(cluster_id);
+          CREATE INDEX IF NOT EXISTS idx_cached_pods_namespace ON cached_pods(namespace);
+          CREATE INDEX IF NOT EXISTS idx_cached_pods_labels ON cached_pods USING gin(labels);
+          
+          -- Cached services
+          CREATE TABLE IF NOT EXISTS cached_services (
+              id SERIAL PRIMARY KEY,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              namespace VARCHAR(255) NOT NULL,
+              name VARCHAR(255) NOT NULL,
+              uid VARCHAR(255),
+              service_type VARCHAR(50),
+              cluster_ip VARCHAR(50),
+              ports JSONB DEFAULT '[]',
+              selector JSONB DEFAULT '{}',
+              labels JSONB DEFAULT '{}',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(cluster_id, namespace, name)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_cached_services_cluster ON cached_services(cluster_id);
+          CREATE INDEX IF NOT EXISTS idx_cached_services_namespace ON cached_services(namespace);
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (8, 'cluster_metadata_cache')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 008 completed!"
+          
+          # =========================================
+          # Migration 009: Users Table
+          # =========================================
+          echo "Running migration 009: Users..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          CREATE TABLE IF NOT EXISTS users (
+              id SERIAL PRIMARY KEY,
+              username VARCHAR(100) NOT NULL UNIQUE,
+              email VARCHAR(255) NOT NULL UNIQUE,
+              password_hash VARCHAR(255),
+              full_name VARCHAR(255),
+              first_name VARCHAR(100),
+              last_name VARCHAR(100),
+              role VARCHAR(50) DEFAULT 'viewer',
+              is_active BOOLEAN DEFAULT TRUE,
+              is_locked BOOLEAN DEFAULT FALSE,
+              email_verified BOOLEAN DEFAULT FALSE,
+              avatar_url TEXT,
+              timezone VARCHAR(50) DEFAULT 'UTC',
+              language VARCHAR(10) DEFAULT 'en',
+              last_login TIMESTAMP WITH TIME ZONE,
+              last_login_at TIMESTAMP WITH TIME ZONE,
+              created_by INTEGER,
+              metadata JSONB DEFAULT '{}',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          -- Add any missing columns to users table (idempotent)
+          DO $BODY$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'full_name') THEN
+                  ALTER TABLE users ADD COLUMN full_name VARCHAR(255);
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'first_name') THEN
+                  ALTER TABLE users ADD COLUMN first_name VARCHAR(100);
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'last_name') THEN
+                  ALTER TABLE users ADD COLUMN last_name VARCHAR(100);
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'role') THEN
+                  ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT 'viewer';
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'is_locked') THEN
+                  ALTER TABLE users ADD COLUMN is_locked BOOLEAN DEFAULT FALSE;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'email_verified') THEN
+                  ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'avatar_url') THEN
+                  ALTER TABLE users ADD COLUMN avatar_url TEXT;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'timezone') THEN
+                  ALTER TABLE users ADD COLUMN timezone VARCHAR(50) DEFAULT 'UTC';
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'language') THEN
+                  ALTER TABLE users ADD COLUMN language VARCHAR(10) DEFAULT 'en';
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'last_login_at') THEN
+                  ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP WITH TIME ZONE;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'last_login_ip') THEN
+                  ALTER TABLE users ADD COLUMN last_login_ip VARCHAR(45);
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'created_by') THEN
+                  ALTER TABLE users ADD COLUMN created_by INTEGER;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'metadata') THEN
+                  ALTER TABLE users ADD COLUMN metadata JSONB DEFAULT '{}';
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'updated_at') THEN
+                  ALTER TABLE users ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+              END IF;
+              
+              -- Make password_hash nullable (for OAuth users)
+              ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+          END $BODY$;
+          
+          CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+          CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+          CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+          CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+          
+          -- Insert default admin user if not exists
+          INSERT INTO users (username, email, password_hash, full_name, first_name, role)
+          VALUES (
+              'admin',
+              'admin@flowfish.local',
+              '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.V4r7x4DQnDvqPq',
+              'System Administrator',
+              'Admin',
+              'admin'
+          )
+          ON CONFLICT (username) DO NOTHING;
+          
+          -- Create RBAC tables
+          CREATE TABLE IF NOT EXISTS roles (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(100) NOT NULL UNIQUE,
+              description TEXT,
+              is_system_role BOOLEAN DEFAULT FALSE,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE TABLE IF NOT EXISTS permissions (
+              id SERIAL PRIMARY KEY,
+              resource VARCHAR(100) NOT NULL,
+              action VARCHAR(50) NOT NULL,
+              description TEXT,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(resource, action)
+          );
+          
+          CREATE TABLE IF NOT EXISTS role_permissions (
+              id SERIAL PRIMARY KEY,
+              role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+              permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(role_id, permission_id)
+          );
+          
+          CREATE TABLE IF NOT EXISTS user_roles (
+              id SERIAL PRIMARY KEY,
+              user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+              created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(user_id, role_id)
+          );
+          
+          -- Create OAuth tables
+          CREATE TABLE IF NOT EXISTS oauth_providers (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(100) NOT NULL UNIQUE,
+              display_name VARCHAR(100) NOT NULL,
+              client_id VARCHAR(255) NOT NULL,
+              client_secret_encrypted TEXT NOT NULL,
+              authorization_url TEXT NOT NULL,
+              token_url TEXT NOT NULL,
+              user_info_url TEXT,
+              scope VARCHAR(500) DEFAULT 'openid profile email',
+              is_enabled BOOLEAN DEFAULT TRUE,
+              metadata JSONB DEFAULT '{}',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE TABLE IF NOT EXISTS user_oauth_connections (
+              id SERIAL PRIMARY KEY,
+              user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              provider_id INTEGER NOT NULL REFERENCES oauth_providers(id) ON DELETE CASCADE,
+              provider_user_id VARCHAR(255) NOT NULL,
+              access_token_encrypted TEXT,
+              refresh_token_encrypted TEXT,
+              expires_at TIMESTAMP WITH TIME ZONE,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(user_id, provider_id)
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_roles_name ON roles(name);
+          CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role_id);
+          CREATE INDEX IF NOT EXISTS idx_role_permissions_permission ON role_permissions(permission_id);
+          CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);
+          CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_id);
+          CREATE INDEX IF NOT EXISTS idx_user_oauth_connections_user ON user_oauth_connections(user_id);
+          
+          -- Insert default roles
+          INSERT INTO roles (name, description, is_system_role) VALUES
+              ('admin', 'Full system access', TRUE),
+              ('viewer', 'Read-only access', TRUE),
+              ('operator', 'Read and operate clusters', TRUE),
+              ('analyst', 'Access to analysis features', TRUE)
+          ON CONFLICT (name) DO NOTHING;
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (9, 'users_table')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 009 completed!"
+          
+          # =========================================
+          # Migration 010: System Settings Table
+          # Enterprise feature for global configuration
+          # =========================================
+          echo "Running migration 010: System Settings..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- System settings table for global configuration
+          -- Used for enterprise features like auto-stop limits
+          CREATE TABLE IF NOT EXISTS system_settings (
+              key VARCHAR(100) PRIMARY KEY,
+              value JSONB NOT NULL DEFAULT '{}',
+              description TEXT,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_by INTEGER
+          );
+          
+          -- Insert default analysis limits (safe - won't overwrite existing)
+          INSERT INTO system_settings (key, value, description) VALUES
+          (
+              'analysis_limits',
+              '{"continuous_auto_stop_enabled": true, "default_continuous_duration_minutes": 10, "max_allowed_duration_minutes": 1440, "warning_before_minutes": 2}',
+              'Global analysis time and size limits for enterprise protection'
+          ) ON CONFLICT (key) DO NOTHING;
+          
+          CREATE INDEX IF NOT EXISTS idx_system_settings_key ON system_settings(key);
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (10, 'system_settings')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 010 completed!"
+          
+          # =========================================
+          # Migration 011: SKIPPED - change_events moved to ClickHouse
+          # Change events are now stored in ClickHouse only
+          # =========================================
+          echo "Migration 011: SKIPPED (change_events in ClickHouse)"
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (11, 'change_events_skipped_clickhouse')
+          ON CONFLICT (version) DO NOTHING;
+          EOSQL
+          
+          # =========================================
+          # Migration 012: Change Detection Features
+          # Sprint 6 - Baseline, Notifications (NO change_events in PostgreSQL)
+          # =========================================
+          echo "Running migration 012: Change Detection Features..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- ============================================
+          -- Part 1: Baseline Analysis Support
+          -- ============================================
+          
+          -- Add is_baseline flag to analyses table
+          DO $BODY$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'is_baseline') THEN
+                  ALTER TABLE analyses ADD COLUMN is_baseline BOOLEAN DEFAULT false;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'baseline_marked_at') THEN
+                  ALTER TABLE analyses ADD COLUMN baseline_marked_at TIMESTAMP WITH TIME ZONE;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analyses' AND column_name = 'baseline_marked_by') THEN
+                  ALTER TABLE analyses ADD COLUMN baseline_marked_by VARCHAR(255);
+              END IF;
+          END $BODY$;
+          
+          CREATE INDEX IF NOT EXISTS idx_analyses_is_baseline ON analyses(is_baseline) WHERE is_baseline = true;
+          
+          -- ============================================
+          -- Part 2: Notification Hooks (change_events workflow REMOVED - now in ClickHouse)
+          -- ============================================
+          
+          CREATE TABLE IF NOT EXISTS notification_hooks (
+              id SERIAL PRIMARY KEY,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+              name VARCHAR(100) NOT NULL,
+              hook_type VARCHAR(50) NOT NULL,
+              config JSONB NOT NULL DEFAULT '{}',
+              is_enabled BOOLEAN DEFAULT true,
+              trigger_on_critical BOOLEAN DEFAULT true,
+              trigger_on_high BOOLEAN DEFAULT true,
+              trigger_on_medium BOOLEAN DEFAULT false,
+              trigger_on_low BOOLEAN DEFAULT false,
+              trigger_change_types TEXT[],
+              rate_limit_per_hour INTEGER DEFAULT 100,
+              last_triggered_at TIMESTAMP WITH TIME ZONE,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+              created_by VARCHAR(255),
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+              CONSTRAINT chk_hook_type CHECK (hook_type IN ('slack', 'teams', 'email', 'webhook'))
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_notification_hooks_enabled ON notification_hooks(cluster_id, is_enabled) 
+              WHERE is_enabled = true;
+          CREATE INDEX IF NOT EXISTS idx_notification_hooks_cluster ON notification_hooks(cluster_id);
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (12, 'change_detection_features')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 012 completed!"
+          
+          # =========================================
+          # Migration 013: SKIPPED - change_workflow removed
+          # Change events now fully in ClickHouse, no PostgreSQL workflow needed
+          # =========================================
+          echo "Migration 013: SKIPPED (change_workflow removed - ClickHouse only)"
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (13, 'change_workflow_skipped_clickhouse')
+          ON CONFLICT (version) DO NOTHING;
+          EOSQL
+          
+          # =========================================
+          # Migration 014: Change Detection Strategy and Types
+          # Add eBPF-based hybrid change detection settings
+          # =========================================
+          echo "Running migration 014: Change Detection Strategy and Types..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Add change_detection_strategy column if not exists
+          DO $BODY$
+          BEGIN
+              IF NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns 
+                  WHERE table_name = 'analyses' AND column_name = 'change_detection_strategy'
+              ) THEN
+                  ALTER TABLE analyses ADD COLUMN change_detection_strategy VARCHAR(50) DEFAULT 'baseline';
+                  COMMENT ON COLUMN analyses.change_detection_strategy IS 'Detection strategy: baseline (default), rolling_window, or run_comparison';
+              END IF;
+          END $BODY$;
+          
+          -- Add change_detection_types column if not exists
+          DO $BODY$
+          BEGIN
+              IF NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns 
+                  WHERE table_name = 'analyses' AND column_name = 'change_detection_types'
+              ) THEN
+                  ALTER TABLE analyses ADD COLUMN change_detection_types JSONB DEFAULT '["all"]'::jsonb;
+                  COMMENT ON COLUMN analyses.change_detection_types IS 'JSON array of change types to track: ["all"] or specific types like ["replica_changed", "connection_added"]';
+              END IF;
+          END $BODY$;
+          
+          -- Record migration
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (14, 'change_detection_strategy_types')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 014 completed!"
+          
+          # =========================================
+          # Migration 015: Scheduled Reports & Report History
+          # User Management features
+          # =========================================
+          echo "Running migration 015: Scheduled Reports..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Scheduled reports table
+          CREATE TABLE IF NOT EXISTS scheduled_reports (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(255) NOT NULL,
+              report_type VARCHAR(50) NOT NULL,
+              format VARCHAR(20) NOT NULL DEFAULT 'csv',
+              schedule VARCHAR(20) NOT NULL DEFAULT 'daily',
+              filters JSONB DEFAULT '{}',
+              recipients JSONB DEFAULT '[]',
+              is_enabled BOOLEAN DEFAULT TRUE,
+              last_run TIMESTAMP WITH TIME ZONE,
+              next_run TIMESTAMP WITH TIME ZONE,
+              created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_scheduled_reports_enabled ON scheduled_reports(is_enabled);
+          CREATE INDEX IF NOT EXISTS idx_scheduled_reports_next_run ON scheduled_reports(next_run);
+          
+          -- Generated reports history table
+          CREATE TABLE IF NOT EXISTS generated_reports (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(255) NOT NULL,
+              report_type VARCHAR(50) NOT NULL,
+              format VARCHAR(20) NOT NULL DEFAULT 'csv',
+              status VARCHAR(20) NOT NULL DEFAULT 'pending',
+              file_size BIGINT,
+              file_path TEXT,
+              filters JSONB DEFAULT '{}',
+              error_message TEXT,
+              scheduled_report_id INTEGER REFERENCES scheduled_reports(id) ON DELETE SET NULL,
+              generated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+              completed_at TIMESTAMP WITH TIME ZONE,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_generated_reports_status ON generated_reports(status);
+          CREATE INDEX IF NOT EXISTS idx_generated_reports_type ON generated_reports(report_type);
+          CREATE INDEX IF NOT EXISTS idx_generated_reports_created ON generated_reports(created_at);
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (15, 'scheduled_reports')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 015 completed!"
+          
+          # =========================================
+          # Migration 016: Default Permissions & Role Assignments
+          # RBAC system initialization
+          # =========================================
+          echo "Running migration 016: Default Permissions..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Insert default permissions
+          INSERT INTO permissions (resource, action, description) VALUES
+              -- Dashboard
+              ('dashboard', 'view', 'View dashboard'),
+              ('dashboard', 'stats', 'View statistics'),
+              -- Analysis
+              ('analysis', 'view', 'View analyses'),
+              ('analysis', 'create', 'Create analysis'),
+              ('analysis', 'start', 'Start/stop analysis'),
+              ('analysis', 'delete', 'Delete analysis'),
+              -- Clusters
+              ('clusters', 'view', 'View clusters'),
+              ('clusters', 'create', 'Add clusters'),
+              ('clusters', 'edit', 'Edit clusters'),
+              ('clusters', 'delete', 'Delete clusters'),
+              -- Events
+              ('events', 'view', 'View events'),
+              ('events', 'export', 'Export events'),
+              -- Reports
+              ('reports', 'view', 'View reports'),
+              ('reports', 'generate', 'Generate reports'),
+              ('reports', 'schedule', 'Schedule reports'),
+              ('reports', 'history', 'View report history'),
+              -- Security
+              ('security', 'view', 'View security events'),
+              ('security', 'manage', 'Manage security settings'),
+              -- Users
+              ('users', 'view', 'View users'),
+              ('users', 'create', 'Create users'),
+              ('users', 'edit', 'Edit users'),
+              ('users', 'delete', 'Delete users'),
+              -- Roles
+              ('roles', 'view', 'View roles'),
+              ('roles', 'create', 'Create roles'),
+              ('roles', 'edit', 'Edit roles'),
+              ('roles', 'delete', 'Delete roles'),
+              -- Settings
+              ('settings', 'view', 'View settings'),
+              ('settings', 'edit', 'Edit settings')
+          ON CONFLICT (resource, action) DO NOTHING;
+          
+          -- Assign ALL permissions to admin role
+          INSERT INTO role_permissions (role_id, permission_id)
+          SELECT r.id, p.id 
+          FROM roles r, permissions p 
+          WHERE r.name = 'admin'
+          ON CONFLICT (role_id, permission_id) DO NOTHING;
+          
+          -- Assign view permissions to viewer role
+          INSERT INTO role_permissions (role_id, permission_id)
+          SELECT r.id, p.id 
+          FROM roles r, permissions p 
+          WHERE r.name = 'viewer' AND p.action = 'view'
+          ON CONFLICT (role_id, permission_id) DO NOTHING;
+          
+          -- Assign analysis permissions to analyst role
+          INSERT INTO role_permissions (role_id, permission_id)
+          SELECT r.id, p.id 
+          FROM roles r, permissions p 
+          WHERE r.name = 'analyst' AND (
+              p.action = 'view' OR 
+              (p.resource IN ('analysis', 'events', 'reports') AND p.action IN ('create', 'export', 'generate'))
+          )
+          ON CONFLICT (role_id, permission_id) DO NOTHING;
+          
+          -- Assign operator permissions to operator role
+          INSERT INTO role_permissions (role_id, permission_id)
+          SELECT r.id, p.id 
+          FROM roles r, permissions p 
+          WHERE r.name = 'operator' AND (
+              p.action = 'view' OR 
+              (p.resource IN ('clusters', 'analysis') AND p.action IN ('create', 'edit', 'start'))
+          )
+          ON CONFLICT (role_id, permission_id) DO NOTHING;
+          
+          -- Assign admin role to admin user
+          INSERT INTO user_roles (user_id, role_id)
+          SELECT u.id, r.id 
+          FROM users u, roles r 
+          WHERE u.username = 'admin' AND r.name = 'admin'
+          ON CONFLICT (user_id, role_id) DO NOTHING;
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (16, 'default_permissions')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 016 completed!"
+          
+          # =========================================
+          # Migration 017: Activity Logs Table
+          # Comprehensive audit trail for all user actions
+          # =========================================
+          echo "Running migration 017: Activity Logs..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Activity logs table for comprehensive audit trail
+          CREATE TABLE IF NOT EXISTS activity_logs (
+              id SERIAL PRIMARY KEY,
+              user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              username VARCHAR(255) NOT NULL,
+              action VARCHAR(100) NOT NULL,
+              resource_type VARCHAR(50) NOT NULL,
+              resource_id VARCHAR(100),
+              resource_name VARCHAR(255),
+              details JSONB DEFAULT '{}',
+              ip_address VARCHAR(45),
+              user_agent TEXT,
+              status VARCHAR(20) DEFAULT 'success',
+              error_message TEXT,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id);
+          CREATE INDEX IF NOT EXISTS idx_activity_logs_action ON activity_logs(action);
+          CREATE INDEX IF NOT EXISTS idx_activity_logs_resource ON activity_logs(resource_type, resource_id);
+          CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_activity_logs_username ON activity_logs(username);
+          
+          -- Add cluster_id and analysis_id columns to generated_reports if missing
+          DO $BODY$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'generated_reports' AND column_name = 'cluster_id') THEN
+                  ALTER TABLE generated_reports ADD COLUMN cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'generated_reports' AND column_name = 'analysis_id') THEN
+                  ALTER TABLE generated_reports ADD COLUMN analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL;
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'generated_reports' AND column_name = 'namespace') THEN
+                  ALTER TABLE generated_reports ADD COLUMN namespace VARCHAR(255);
+              END IF;
+              
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'generated_reports' AND column_name = 'created_by') THEN
+                  ALTER TABLE generated_reports ADD COLUMN created_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+              END IF;
+          END $BODY$;
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (17, 'activity_logs')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 017 completed!"
+          
+          # =========================================
+          # Migration 018: Fix analysis_runs table
+          # Ensure run_number column exists (backward compatibility)
+          # =========================================
+          echo "Running migration 018: Fix analysis_runs..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Ensure analysis_runs table has all required columns
+          DO $BODY$
+          BEGIN
+              -- Add run_number if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'run_number') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN run_number INTEGER NOT NULL DEFAULT 1;
+                  RAISE NOTICE 'Added run_number column to analysis_runs';
+              END IF;
+              
+              -- Add duration_seconds if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'duration_seconds') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN duration_seconds INTEGER;
+              END IF;
+              
+              -- Add events_collected if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'events_collected') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN events_collected BIGINT DEFAULT 0;
+              END IF;
+              
+              -- Add workloads_discovered if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'workloads_discovered') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN workloads_discovered INTEGER DEFAULT 0;
+              END IF;
+              
+              -- Add communications_discovered if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'communications_discovered') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN communications_discovered INTEGER DEFAULT 0;
+              END IF;
+              
+              -- Add anomalies_detected if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'anomalies_detected') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN anomalies_detected INTEGER DEFAULT 0;
+              END IF;
+              
+              -- Add changes_detected if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'changes_detected') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN changes_detected INTEGER DEFAULT 0;
+              END IF;
+              
+              -- Add error_message if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'error_message') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN error_message TEXT;
+              END IF;
+              
+              -- Add logs if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'logs') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN logs JSONB DEFAULT '[]';
+              END IF;
+              
+              -- Add metadata if missing
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'analysis_runs' AND column_name = 'metadata') THEN
+                  ALTER TABLE analysis_runs ADD COLUMN metadata JSONB DEFAULT '{}';
+              END IF;
+          END $BODY$;
+          
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (18, 'fix_analysis_runs')
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 018 completed!"
+          
+          # =========================================
+          # Migration 019: Two-Factor Authentication
+          # =========================================
+          echo "Running migration 019: Two-Factor Authentication..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Add two_factor_enabled column to users table
+          DO $BODY$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name = 'users' AND column_name = 'two_factor_enabled') THEN
+                  ALTER TABLE users ADD COLUMN two_factor_enabled BOOLEAN DEFAULT FALSE;
+                  RAISE NOTICE 'Added two_factor_enabled column to users';
+              END IF;
+          END $BODY$;
+          
+          -- Create two_factor_codes table for storing temporary verification codes
+          CREATE TABLE IF NOT EXISTS two_factor_codes (
+              id SERIAL PRIMARY KEY,
+              user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+              code VARCHAR(10) NOT NULL,
+              expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+              attempts INTEGER DEFAULT 0,
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          -- Index for cleanup of expired codes
+          CREATE INDEX IF NOT EXISTS idx_two_factor_codes_expires_at ON two_factor_codes(expires_at);
+          
+          -- Record migration
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (19, 'two_factor_authentication') 
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 019 completed!"
+          
+          # =========================================
+          # Migration 020: Blast Radius Assessments
+          # For CI/CD pipeline integration
+          # =========================================
+          echo "Running migration 020: Blast Radius Assessments..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          
+          -- Create blast_radius_assessments table for CI/CD pipeline integration
+          CREATE TABLE IF NOT EXISTS blast_radius_assessments (
+              id SERIAL PRIMARY KEY,
+              assessment_id VARCHAR(50) UNIQUE NOT NULL,
+              cluster_id INTEGER NOT NULL REFERENCES clusters(id),
+              analysis_id INTEGER REFERENCES analyses(id),
+              target VARCHAR(255) NOT NULL,
+              namespace VARCHAR(255) NOT NULL DEFAULT 'default',
+              change_type VARCHAR(50) NOT NULL,
+              risk_score INTEGER NOT NULL CHECK (risk_score >= 0 AND risk_score <= 100),
+              risk_level VARCHAR(20) NOT NULL,
+              affected_count INTEGER NOT NULL DEFAULT 0,
+              triggered_by VARCHAR(255),
+              pipeline VARCHAR(255),
+              commit_sha VARCHAR(100),
+              assessment_data JSONB DEFAULT '{}',
+              recommendations JSONB DEFAULT '[]',
+              created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          );
+          
+          -- Indexes for blast_radius_assessments
+          CREATE INDEX IF NOT EXISTS idx_blast_radius_cluster ON blast_radius_assessments(cluster_id);
+          CREATE INDEX IF NOT EXISTS idx_blast_radius_analysis ON blast_radius_assessments(analysis_id);
+          CREATE INDEX IF NOT EXISTS idx_blast_radius_created ON blast_radius_assessments(created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_blast_radius_risk ON blast_radius_assessments(risk_level);
+          CREATE INDEX IF NOT EXISTS idx_blast_radius_target ON blast_radius_assessments(target, namespace);
+          
+          -- Record migration
+          INSERT INTO schema_migrations (version, name) 
+          VALUES (20, 'blast_radius_assessments') 
+          ON CONFLICT (version) DO NOTHING;
+          
+          EOSQL
+          echo "Migration 020 completed!"
+          
+          # =========================================
+          # Final: Show migration status
+          # =========================================
+          echo ""
+          echo "========================================="
+          echo "Migration Status"
+          echo "========================================="
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          SELECT version, name, applied_at FROM schema_migrations ORDER BY version;
+          
+          -- Show table summary
+          SELECT 
+              'clusters' as table_name, COUNT(*) as row_count FROM clusters
+          UNION ALL SELECT 
+              'analyses', COUNT(*) FROM analyses
+          UNION ALL SELECT 
+              'namespaces', COUNT(*) FROM namespaces
+          UNION ALL SELECT 
+              'users', COUNT(*) FROM users
+          UNION ALL SELECT 
+              'roles', COUNT(*) FROM roles
+          UNION ALL SELECT 
+              'permissions', COUNT(*) FROM permissions
+          UNION ALL SELECT 
+              'role_permissions', COUNT(*) FROM role_permissions
+          UNION ALL SELECT 
+              'user_roles', COUNT(*) FROM user_roles
+          UNION ALL SELECT 
+              'scheduled_reports', COUNT(*) FROM scheduled_reports
+          UNION ALL SELECT 
+              'generated_reports', COUNT(*) FROM generated_reports
+          UNION ALL SELECT 
+              'system_settings', COUNT(*) FROM system_settings
+          UNION ALL SELECT 
+              'notification_hooks', COUNT(*) FROM notification_hooks
+          UNION ALL SELECT 
+              'activity_logs', COUNT(*) FROM activity_logs
+          UNION ALL SELECT 
+              'two_factor_codes', COUNT(*) FROM two_factor_codes
+          UNION ALL SELECT 
+              'blast_radius_assessments', COUNT(*) FROM blast_radius_assessments;
+          EOSQL
+          
+          echo ""
+          echo "========================================="
+          echo "PostgreSQL Migrations Complete!"
+          echo "========================================="
+        
+        env:
+        - name: POSTGRES_HOST
+          value: "postgresql"
+        - name: POSTGRES_USER
+          value: "flowfish"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: postgres-password
+        - name: POSTGRES_DB
+          value: "flowfish"
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
+      # ClickHouse Migrations
+      - name: clickhouse-migrations
+        image: clickhouse/clickhouse-server:23.8
+        env:
+        - name: CLICKHOUSE_HOST
+          value: "clickhouse"
+        - name: CLICKHOUSE_USER
+          value: "flowfish"
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: clickhouse-password
+        # Set to "true" to drop and recreate all tables (TEST ONLY - DATA LOSS!)
+        # WARNING: Setting this to "true" will delete ALL event data!
+        - name: FORCE_RECREATE_TABLES
+          value: "false"
+        command:
+        - sh
+        - -c
+        - |
+          echo "========================================="
+          echo "ClickHouse Migrations Starting"
+          echo "========================================="
+          
+          # Helper function for ClickHouse queries
+          ch_query() {
+            clickhouse-client --host "${CLICKHOUSE_HOST}" --user "${CLICKHOUSE_USER}" --password "${CLICKHOUSE_PASSWORD}" "$@"
+          }
+          
+          # Create database
+          echo "Creating flowfish database..."
+          ch_query --query "CREATE DATABASE IF NOT EXISTS flowfish"
+          
+          # =========================================
+          # DROP existing tables if FORCE_RECREATE is set
+          # For test environments only!
+          # =========================================
+          if [ "${FORCE_RECREATE_TABLES}" = "true" ]; then
+            echo "FORCE_RECREATE_TABLES is set - dropping existing tables..."
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS network_flows"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS dns_queries"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS process_events"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS tcp_lifecycle"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS file_operations"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS capability_checks"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS oom_kills"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS bind_events"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS sni_events"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS mount_events"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS workload_metadata"
+            ch_query --database flowfish --query "DROP TABLE IF EXISTS communication_edges"
+            echo "All tables dropped!"
+          fi
+          
+          # Create network_flows table (String types for flexibility)
+          echo "Creating network_flows table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS network_flows (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              source_namespace String,
+              source_pod String,
+              source_container String,
+              source_node String,
+              source_ip String,
+              source_port UInt16,
+              dest_namespace String,
+              dest_pod String,
+              dest_container String,
+              dest_ip String,
+              dest_port UInt16,
+              dest_hostname String,
+              protocol String DEFAULT 'TCP',
+              direction String DEFAULT 'outbound',
+              connection_state String,
+              bytes_sent UInt64,
+              bytes_received UInt64,
+              packets_sent UInt32,
+              packets_received UInt32,
+              duration_ms UInt32,
+              latency_ms Float32,
+              error_count UInt16,
+              retransmit_count UInt16,
+              error_type String DEFAULT '',
+              source_labels Map(String, String),
+              dest_labels Map(String, String),
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, source_pod, dest_pod, dest_port)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # Create dns_queries table
+          echo "Creating dns_queries table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS dns_queries (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              source_namespace String,
+              source_pod String,
+              source_container String,
+              source_ip String,
+              query_name String,
+              query_type String DEFAULT 'A',
+              query_class String DEFAULT 'IN',
+              response_code String DEFAULT 'NOERROR',
+              response_ips Array(String),
+              response_cnames Array(String),
+              response_ttl UInt32,
+              latency_ms Float32,
+              dns_server_ip String,
+              dns_server_port UInt16 DEFAULT 53,
+              labels Map(String, String),
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, source_pod, query_name)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # Create process_events table
+          echo "Creating process_events table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS process_events (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              pod String,
+              container String,
+              node String,
+              pid UInt32,
+              ppid UInt32,
+              uid UInt32,
+              gid UInt32,
+              comm String,
+              exe String,
+              args Array(String),
+              cwd String,
+              event_type String DEFAULT 'exec',
+              exit_code Int32,
+              signal Int32,
+              labels Map(String, String),
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, namespace, pod, pid)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # Create workload_metadata table
+          echo "Creating workload_metadata table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS workload_metadata (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              workload_name String,
+              workload_type String,
+              pod_name String,
+              pod_uid String,
+              container_name String,
+              container_id String,
+              node_name String,
+              pod_ip String,
+              labels Map(String, String),
+              annotations Map(String, String),
+              owner_kind String,
+              owner_name String,
+              first_seen DateTime64(3),
+              last_seen DateTime64(3),
+              event_count UInt64 DEFAULT 1
+          ) ENGINE = ReplacingMergeTree(last_seen)
+          PARTITION BY toYYYYMM(timestamp)
+          ORDER BY (analysis_id, cluster_id, namespace, pod_name)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # Create communication_edges table
+          echo "Creating communication_edges table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS communication_edges (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              cluster_id String,
+              analysis_id String,
+              source_namespace String,
+              source_workload String,
+              source_pod String,
+              dest_namespace String,
+              dest_workload String,
+              dest_pod String,
+              dest_service String,
+              dest_port UInt16,
+              protocol String,
+              total_bytes UInt64,
+              total_packets UInt64,
+              request_count UInt64,
+              avg_latency_ms Float32,
+              p99_latency_ms Float32,
+              error_count UInt64,
+              first_seen DateTime64(3),
+              last_seen DateTime64(3)
+          ) ENGINE = SummingMergeTree()
+          PARTITION BY toYYYYMM(timestamp)
+          ORDER BY (analysis_id, cluster_id, source_namespace, source_workload, dest_namespace, dest_workload, dest_port)
+          "
+          
+          # Create tcp_lifecycle table
+          echo "Creating tcp_lifecycle table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS tcp_lifecycle (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              source_ip String,
+              source_port UInt16,
+              dest_ip String,
+              dest_port UInt16,
+              old_state String DEFAULT 'CLOSED',
+              new_state String DEFAULT 'ESTABLISHED',
+              source_namespace String,
+              source_pod String,
+              source_container String,
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, source_ip, dest_ip, dest_port)
+          TTL toDateTime(timestamp) + INTERVAL 30 DAY
+          "
+          
+          # Create file_operations table
+          echo "Creating file_operations table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS file_operations (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              pod String,
+              container String,
+              operation String DEFAULT 'open',
+              file_path String,
+              file_flags String,
+              file_mode UInt32,
+              pid UInt32,
+              comm String,
+              uid UInt32,
+              gid UInt32,
+              bytes UInt64,
+              duration_us UInt32,
+              error_code Int32,
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, namespace, pod, file_path)
+          TTL toDateTime(timestamp) + INTERVAL 30 DAY
+          "
+          
+          # Create capability_checks table
+          echo "Creating capability_checks table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS capability_checks (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              pod String,
+              container String,
+              capability String,
+              syscall String,
+              pid UInt32,
+              comm String,
+              uid UInt32,
+              gid UInt32,
+              verdict String DEFAULT 'allowed',
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, namespace, pod, capability)
+          TTL toDateTime(timestamp) + INTERVAL 30 DAY
+          "
+          
+          # Create oom_kills table
+          echo "Creating oom_kills table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS oom_kills (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              pod String,
+              container String,
+              node String,
+              pid UInt32,
+              comm String,
+              memory_limit UInt64,
+              memory_usage UInt64,
+              memory_pages_total UInt64,
+              memory_pages_free UInt64,
+              cgroup_path String,
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, namespace, pod)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # Create bind_events table
+          echo "Creating bind_events table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS bind_events (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              pod String,
+              container String,
+              node String,
+              bind_addr String,
+              bind_port UInt16,
+              protocol String DEFAULT 'TCP',
+              interface String,
+              error_code Int32 DEFAULT 0,
+              pid UInt32,
+              comm String,
+              uid UInt32,
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, namespace, pod, bind_port)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # Create sni_events table
+          echo "Creating sni_events table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS sni_events (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              pod String,
+              container String,
+              sni_name String,
+              src_ip String,
+              src_port UInt16,
+              dst_ip String,
+              dst_port UInt16,
+              tls_version String,
+              cipher_suite String,
+              pid UInt32,
+              comm String,
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, namespace, sni_name, dst_ip)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # Create mount_events table
+          echo "Creating mount_events table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS mount_events (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              namespace String,
+              pod String,
+              container String,
+              node String,
+              operation String DEFAULT 'mount',
+              source String,
+              target String,
+              fs_type String,
+              flags String,
+              options String,
+              error_code Int32 DEFAULT 0,
+              pid UInt32,
+              comm String,
+              event_data_json String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (timestamp, cluster_id, namespace, pod, target)
+          TTL toDateTime(timestamp) + INTERVAL 90 DAY
+          "
+          
+          # =========================================
+          # ADD MISSING COLUMNS TO EXISTING TABLES
+          # For backward compatibility with existing deployments
+          # These are idempotent (ADD COLUMN IF NOT EXISTS)
+          # =========================================
+          echo "Adding missing columns to existing tables (backward compatibility)..."
+          
+          # Add analysis_id column if missing (for multi-analysis filtering)
+          ch_query --database flowfish --query "ALTER TABLE network_flows ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE dns_queries ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE tcp_lifecycle ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE process_events ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE file_operations ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE capability_checks ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE oom_kills ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE bind_events ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE sni_events ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE mount_events ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE workload_metadata ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE communication_edges ADD COLUMN IF NOT EXISTS analysis_id String DEFAULT ''" || true
+          
+          # Add error_type column if missing (for network error classification)
+          ch_query --database flowfish --query "ALTER TABLE network_flows ADD COLUMN IF NOT EXISTS error_type String DEFAULT ''" || true
+          
+          # Add cluster_name column if missing (for display purposes)
+          ch_query --database flowfish --query "ALTER TABLE network_flows ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE dns_queries ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE tcp_lifecycle ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE process_events ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE file_operations ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE capability_checks ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE oom_kills ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE bind_events ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE sni_events ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE mount_events ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          ch_query --database flowfish --query "ALTER TABLE workload_metadata ADD COLUMN IF NOT EXISTS cluster_name String DEFAULT ''" || true
+          
+          echo "Column additions complete!"
+          
+          # Create indexes for faster analysis_id filtering
+          echo "Creating indexes..."
+          ch_query --database flowfish --query "ALTER TABLE network_flows ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE dns_queries ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE tcp_lifecycle ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE process_events ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE file_operations ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE capability_checks ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE oom_kills ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE bind_events ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE sni_events ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE mount_events ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE workload_metadata ADD INDEX IF NOT EXISTS idx_analysis_id (analysis_id) TYPE bloom_filter() GRANULARITY 1" || true
+          
+          # Create indexes for faster cluster_id filtering (multi-cluster support)
+          echo "Creating cluster_id indexes for multi-cluster support..."
+          ch_query --database flowfish --query "ALTER TABLE network_flows ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE dns_queries ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE tcp_lifecycle ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE process_events ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE file_operations ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE capability_checks ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE oom_kills ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE bind_events ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE sni_events ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE mount_events ADD INDEX IF NOT EXISTS idx_cluster_id (cluster_id) TYPE bloom_filter() GRANULARITY 1" || true
+          
+          # =========================================
+          # CHANGE EVENTS TABLE (for Change Detection)
+          # Stores all change events from K8s API and eBPF detection
+          # =========================================
+          echo "Creating change_events table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS change_events (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              detected_at DateTime64(3),
+              event_id UUID DEFAULT generateUUIDv4(),
+              cluster_id UInt32,
+              cluster_name String DEFAULT '',
+              analysis_id String,
+              run_id UInt32 DEFAULT 0,
+              run_number UInt16 DEFAULT 1,
+              change_type LowCardinality(String),
+              risk_level LowCardinality(String) DEFAULT 'medium',
+              target_name String DEFAULT '',
+              target_namespace String DEFAULT '',
+              target_type LowCardinality(String) DEFAULT 'workload',
+              entity_id UInt64 DEFAULT 0,
+              namespace_id Nullable(UInt32),
+              before_state String DEFAULT '{}',
+              after_state String DEFAULT '{}',
+              affected_services UInt16 DEFAULT 0,
+              blast_radius UInt16 DEFAULT 0,
+              changed_by String DEFAULT 'auto-discovery',
+              details String DEFAULT '',
+              metadata String DEFAULT '{}'
+          ) ENGINE = ReplacingMergeTree(timestamp)
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (analysis_id, run_id, timestamp, event_id)
+          SETTINGS index_granularity = 8192
+          "
+          
+          # Create indexes for change_events
+          echo "Creating change_events indexes..."
+          ch_query --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_run_id (run_id) TYPE minmax() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_change_type (change_type) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_risk_level (risk_level) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_name (target_name) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_namespace (target_namespace) TYPE bloom_filter() GRANULARITY 1" || true
+          ch_query --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_cluster_id (cluster_id) TYPE minmax() GRANULARITY 1" || true
+          
+          # Create materialized view for hourly aggregations
+          echo "Creating change_events_hourly_mv..."
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_hourly_mv
+          ENGINE = SummingMergeTree()
+          PARTITION BY toYYYYMMDD(hour)
+          ORDER BY (analysis_id, run_id, hour, change_type, risk_level)
+          AS SELECT
+              analysis_id,
+              run_id,
+              cluster_id,
+              toStartOfHour(timestamp) AS hour,
+              change_type,
+              risk_level,
+              count() AS change_count,
+              uniq(target_name) AS unique_targets,
+              sum(affected_services) AS total_affected
+          FROM change_events
+          GROUP BY analysis_id, run_id, cluster_id, hour, change_type, risk_level
+          "
+          
+          # Create materialized view for run statistics (full schema with all change types)
+          # NOTE: If upgrading from an older version, the DROP+CREATE section below
+          # will replace this with the latest schema. For fresh installs, this creates
+          # the MV with all change types directly.
+          echo "Creating change_events_run_stats_mv..."
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_run_stats_mv
+          ENGINE = SummingMergeTree()
+          ORDER BY (analysis_id, run_id)
+          AS SELECT
+              analysis_id,
+              run_id,
+              anyLast(run_number) AS run_number,
+              cluster_id,
+              count() AS total_changes,
+              countIf(risk_level = 'critical') AS critical_count,
+              countIf(risk_level = 'high') AS high_count,
+              countIf(risk_level = 'medium') AS medium_count,
+              countIf(risk_level = 'low') AS low_count,
+              countIf(change_type = 'workload_added') AS workloads_added,
+              countIf(change_type = 'workload_removed') AS workloads_removed,
+              countIf(change_type = 'replica_changed') AS replicas_changed,
+              countIf(change_type = 'config_changed') AS configs_changed,
+              countIf(change_type = 'image_changed') AS images_changed,
+              countIf(change_type = 'label_changed') AS labels_changed,
+              countIf(change_type = 'resource_changed') AS resources_changed,
+              countIf(change_type = 'env_changed') AS envs_changed,
+              countIf(change_type = 'spec_changed') AS specs_changed,
+              countIf(change_type = 'service_added') AS services_added,
+              countIf(change_type = 'service_removed') AS services_removed,
+              countIf(change_type = 'service_port_changed') AS service_ports_changed,
+              countIf(change_type = 'service_selector_changed') AS service_selectors_changed,
+              countIf(change_type = 'service_type_changed') AS service_types_changed,
+              countIf(change_type IN ('network_policy_added','network_policy_removed','network_policy_changed')) AS network_policy_changes,
+              countIf(change_type IN ('ingress_added','ingress_removed','ingress_changed')) AS ingress_changes,
+              countIf(change_type IN ('route_added','route_removed','route_changed')) AS route_changes,
+              countIf(change_type = 'connection_added') AS connections_added,
+              countIf(change_type = 'connection_removed') AS connections_removed,
+              countIf(change_type = 'port_changed') AS ports_changed,
+              countIf(change_type IN ('traffic_anomaly','dns_anomaly','process_anomaly','error_anomaly')) AS anomalies_total,
+              countIf(change_type = 'namespace_changed') AS namespaces_changed,
+              min(timestamp) AS first_change_at,
+              max(timestamp) AS last_change_at
+          FROM change_events
+          GROUP BY analysis_id, run_id, cluster_id
+          "
+          
+          # Create materialized view for daily summary
+          echo "Creating change_events_daily_mv..."
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_daily_mv
+          ENGINE = SummingMergeTree()
+          PARTITION BY toYYYYMM(day)
+          ORDER BY (analysis_id, day, cluster_id)
+          AS SELECT
+              analysis_id,
+              cluster_id,
+              toDate(timestamp) AS day,
+              count() AS total_changes,
+              countIf(risk_level = 'critical') AS critical_count,
+              countIf(risk_level = 'high') AS high_count,
+              uniq(target_name) AS unique_targets,
+              uniq(target_namespace) AS unique_namespaces,
+              uniq(run_id) AS runs_count
+          FROM change_events
+          GROUP BY analysis_id, cluster_id, day
+          "
+          
+          # =========================================
+          # Recreate run_stats MV with all change types
+          # The API now queries base table directly, but
+          # MV is kept for dashboard performance.
+          # =========================================
+          echo "Recreating change_events_run_stats_mv with all change types..."
+          ch_query --database flowfish --query "DROP VIEW IF EXISTS change_events_run_stats_mv" || true
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_run_stats_mv
+          ENGINE = SummingMergeTree()
+          ORDER BY (analysis_id, run_id)
+          AS SELECT
+              analysis_id,
+              run_id,
+              anyLast(run_number) AS run_number,
+              cluster_id,
+              count() AS total_changes,
+              countIf(risk_level = 'critical') AS critical_count,
+              countIf(risk_level = 'high') AS high_count,
+              countIf(risk_level = 'medium') AS medium_count,
+              countIf(risk_level = 'low') AS low_count,
+              -- Legacy / Workload lifecycle
+              countIf(change_type = 'workload_added') AS workloads_added,
+              countIf(change_type = 'workload_removed') AS workloads_removed,
+              -- K8s API - Workload changes
+              countIf(change_type = 'replica_changed') AS replicas_changed,
+              countIf(change_type = 'config_changed') AS configs_changed,
+              countIf(change_type = 'image_changed') AS images_changed,
+              countIf(change_type = 'label_changed') AS labels_changed,
+              countIf(change_type = 'resource_changed') AS resources_changed,
+              countIf(change_type = 'env_changed') AS envs_changed,
+              countIf(change_type = 'spec_changed') AS specs_changed,
+              -- K8s API - Service changes
+              countIf(change_type = 'service_added') AS services_added,
+              countIf(change_type = 'service_removed') AS services_removed,
+              countIf(change_type = 'service_port_changed') AS service_ports_changed,
+              countIf(change_type = 'service_selector_changed') AS service_selectors_changed,
+              countIf(change_type = 'service_type_changed') AS service_types_changed,
+              -- K8s API - Network / Ingress / Route
+              countIf(change_type IN ('network_policy_added','network_policy_removed','network_policy_changed')) AS network_policy_changes,
+              countIf(change_type IN ('ingress_added','ingress_removed','ingress_changed')) AS ingress_changes,
+              countIf(change_type IN ('route_added','route_removed','route_changed')) AS route_changes,
+              -- eBPF - Connections
+              countIf(change_type = 'connection_added') AS connections_added,
+              countIf(change_type = 'connection_removed') AS connections_removed,
+              countIf(change_type = 'port_changed') AS ports_changed,
+              -- eBPF - Anomalies
+              countIf(change_type IN ('traffic_anomaly','dns_anomaly','process_anomaly','error_anomaly')) AS anomalies_total,
+              -- Namespace
+              countIf(change_type = 'namespace_changed') AS namespaces_changed,
+              min(timestamp) AS first_change_at,
+              max(timestamp) AS last_change_at
+          FROM change_events
+          GROUP BY analysis_id, run_id, cluster_id
+          "
+          
+          echo "========================================="
+          echo "ClickHouse Migrations Complete!"
+          echo "========================================="
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+---

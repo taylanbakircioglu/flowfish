@@ -1,0 +1,63 @@
+---
+# ServiceAccount for Flowfish Backend
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-backend
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/component: backend
+---
+# NOTE: ClusterRole and ClusterRoleBinding are OPTIONAL
+# They require cluster-admin permissions to create
+# If you need cluster-wide monitoring, ask admin to create:
+#
+# oc create clusterrole flowfish-backend-reader \
+#   --verb=get,list,watch \
+#   --resource=pods,services,namespaces,nodes,events,deployments,statefulsets
+#
+# oc create clusterrolebinding flowfish-backend-reader-binding \
+#   --clusterrole=flowfish-backend-reader \
+#   --serviceaccount={{OPENSHIFT_NAMESPACE}}:flowfish-backend
+#
+# Without ClusterRole: Flowfish will only monitor its own namespace
+---
+# Role for Flowfish namespace operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  name: flowfish-namespace-admin
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets", "services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+# RoleBinding for namespace operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flowfish-namespace-admin-binding
+  namespace: {{OPENSHIFT_NAMESPACE}}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flowfish-namespace-admin
+subjects:
+- kind: ServiceAccount
+  name: flowfish-backend
+  namespace: {{OPENSHIFT_NAMESPACE}}
+---
+# ServiceAccount for Frontend (minimal permissions)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-frontend
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/component: frontend

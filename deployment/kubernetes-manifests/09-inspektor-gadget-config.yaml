@@ -1,0 +1,32 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inspektor-gadget-config
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: inspektor-gadget
+data:
+  config.yaml: |
+    events-buffer-length: 16384
+    containerd-socketpath: /run/containerd/containerd.sock
+    crio-socketpath: /run/crio/crio.sock
+    docker-socketpath: /run/docker.sock
+    podman-socketpath: /run/podman/podman.sock
+    gadget-namespace: "{{OPENSHIFT_NAMESPACE}}"
+    daemon-log-level: info
+    operator:
+      kubemanager:
+        fallback-podinformer: true
+        hook-mode: auto
+      oci:
+        allowed-gadgets: []
+        disallow-pulling: false
+        # Internal registry for air-gapped environments
+        # Mirror gadget images from ghcr.io/inspektor-gadget/gadget/ to this registry
+        default-registry: "ghcr.io/inspektor-gadget/gadget"
+        insecure-registries: []
+        verify-image: false
+      otel-metrics:
+        otel-metrics-listen: false
+        otel-metrics-listen-address: 0.0.0.0:2224

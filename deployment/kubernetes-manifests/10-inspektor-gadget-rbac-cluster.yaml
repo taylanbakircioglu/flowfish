@@ -1,0 +1,53 @@
+# Inspektor Gadget - Cluster-scoped RBAC Resources
+# These require cluster-admin permissions and should be applied manually once
+# 
+# Manual application command:
+#   oc apply -f 10-inspektor-gadget-rbac-cluster.yaml
+#
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: inspektor-gadget
+rules:
+# Core resources - for kubernetes enricher
+- apiGroups: [""]
+  resources: ["pods", "nodes", "namespaces", "configmaps", "services", "events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "update", "patch", "delete"]
+# Apps resources - for owner reference enrichment
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+# Batch resources - REQUIRED for kubernetes enricher to resolve owner references
+# Without this, gadget crashes when processing containers from Jobs/CronJobs
+# causing core dump files (core-ocihookgadget-*) that fill up node disks
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+# Gadget traces CRD
+- apiGroups: ["gadget.kinvolk.io"]
+  resources: ["traces"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "watch"]
+---
+# ClusterRoleBinding - Name includes environment to support multiple namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: inspektor-gadget-{{DEPLOYMENT_ENV}}
+  labels:
+    app.kubernetes.io/environment: {{DEPLOYMENT_ENV}}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: inspektor-gadget
+subjects:
+- kind: ServiceAccount
+  name: inspektor-gadget
+  namespace: {{OPENSHIFT_NAMESPACE}}
+

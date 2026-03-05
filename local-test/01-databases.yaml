@@ -1,0 +1,220 @@
+---
+# ClickHouse
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: flowfish-local
+spec:
+  ports:
+    - name: http
+      port: 8123
+    - name: tcp
+      port: 9000
+  selector:
+    app: clickhouse
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:23.8-alpine
+          ports:
+            - containerPort: 8123
+            - containerPort: 9000
+          env:
+            - name: CLICKHOUSE_DB
+              value: flowfish
+            - name: CLICKHOUSE_USER
+              value: flowfish
+            - name: CLICKHOUSE_PASSWORD
+              value: flowfish123
+---
+# RabbitMQ
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: flowfish-local
+spec:
+  ports:
+    - name: amqp
+      port: 5672
+    - name: management
+      port: 15672
+  selector:
+    app: rabbitmq
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.12-management-alpine
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+---
+# PostgreSQL
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: flowfish-local
+spec:
+  ports:
+    - port: 5432
+  selector:
+    app: postgresql
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: flowfish
+            - name: POSTGRES_PASSWORD
+              value: flowfish123
+            - name: POSTGRES_DB
+              value: flowfish
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "flowfish"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+# Redis
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: flowfish-local
+spec:
+  ports:
+    - port: 6379
+  selector:
+    app: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command: ["redis-server", "--requirepass", "redis123"]
+          ports:
+            - containerPort: 6379
+---
+# Neo4j with proper settings for Docker Desktop
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j
+  namespace: flowfish-local
+spec:
+  ports:
+    - name: http
+      port: 7474
+    - name: bolt
+      port: 7687
+  selector:
+    app: neo4j
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neo4j
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neo4j
+  template:
+    metadata:
+      labels:
+        app: neo4j
+    spec:
+      securityContext:
+        fsGroup: 7474
+      containers:
+        - name: neo4j
+          image: neo4j:5.15-community
+          ports:
+            - containerPort: 7474
+            - containerPort: 7687
+          env:
+            - name: NEO4J_AUTH
+              value: neo4j/flowfish123
+            - name: NEO4J_server_memory_heap_initial__size
+              value: "256m"
+            - name: NEO4J_server_memory_heap_max__size
+              value: "512m"
+            - name: NEO4J_ACCEPT_LICENSE_AGREEMENT
+              value: "yes"
+          volumeMounts:
+            - name: neo4j-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7474
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: neo4j-data
+          emptyDir: {}
