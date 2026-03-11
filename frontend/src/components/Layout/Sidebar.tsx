@@ -19,38 +19,10 @@ import {
   AlertOutlined,
   RocketOutlined,
 } from '@ant-design/icons';
+import FlowfishLogo from '../FlowfishLogo';
 import type { MenuProps } from 'antd';
 
 const { Sider } = Layout;
-
-// Fish Icon Component
-const FishIcon: React.FC<{ size?: number; collapsed?: boolean }> = ({ size = 40, collapsed = false }) => (
-  <svg 
-    viewBox="0 0 64 64" 
-    width={size} 
-    height={size}
-    style={{ 
-      display: 'inline-block',
-      transition: 'all 0.2s'
-    }}
-  >
-    <defs>
-      <linearGradient id="sidebarFishGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" style={{ stopColor: '#06b6d4', stopOpacity: 1 }} />
-        <stop offset="100%" style={{ stopColor: '#0891b2', stopOpacity: 1 }} />
-      </linearGradient>
-    </defs>
-    <ellipse cx="35" cy="32" rx="20" ry="12" fill="url(#sidebarFishGradient)" />
-    <path d="M 15 32 Q 8 26, 5 32 Q 8 38, 15 32 Z" fill="url(#sidebarFishGradient)" />
-    <path d="M 35 20 Q 32 14, 38 18 Z" fill="#0891b2" />
-    <path d="M 35 44 Q 32 50, 38 46 Z" fill="#0891b2" />
-    <circle cx="48" cy="30" r="2.5" fill="white" />
-    <circle cx="49" cy="30" r="1.5" fill="#164e63" />
-    <circle cx="38" cy="28" r="2" fill="rgba(255,255,255,0.2)" />
-    <circle cx="42" cy="32" r="2" fill="rgba(255,255,255,0.2)" />
-    <circle cx="38" cy="36" r="2" fill="rgba(255,255,255,0.2)" />
-  </svg>
-);
 
 interface SidebarProps {
   collapsed: boolean;
@@ -254,32 +226,13 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
         }}
         onClick={() => navigate('/dashboard')}
       >
-        {collapsed ? (
-          <div style={{ filter: 'drop-shadow(0 2px 4px rgba(6, 182, 212, 0.3))' }}>
-            <FishIcon size={32} collapsed={collapsed} />
-          </div>
-        ) : (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              fontSize: '18px',
-              filter: 'drop-shadow(0 2px 4px rgba(6, 182, 212, 0.3))',
-            }}
-          >
-            <FishIcon size={40} collapsed={collapsed} />
-            <span style={{ 
-              background: 'linear-gradient(135deg, #06b6d4 0%, #0891b2 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text',
-              fontWeight: 700,
-            }}>
-              Flowfish
-            </span>
-          </div>
-        )}
+        <div style={{ filter: 'drop-shadow(0 2px 4px rgba(6, 182, 212, 0.3))' }}>
+          <FlowfishLogo
+            size={collapsed ? 32 : 40}
+            showText={!collapsed}
+            textSize={18}
+          />
+        </div>
       </div>
 
       {/* Menu */}

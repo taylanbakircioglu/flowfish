@@ -22,8 +22,8 @@ logger = structlog.get_logger()
 
 
 # Flowfish Brand Colors
-BRAND_PRIMARY = colors.HexColor('#1890ff')  # Blue
-BRAND_SECONDARY = colors.HexColor('#13c2c2')  # Cyan
+BRAND_PRIMARY = colors.HexColor('#06b6d4')  # Cyan (primary brand)
+BRAND_SECONDARY = colors.HexColor('#0891b2')  # Teal (secondary brand)
 BRAND_SUCCESS = colors.HexColor('#52c41a')  # Green
 BRAND_WARNING = colors.HexColor('#faad14')  # Orange
 BRAND_DANGER = colors.HexColor('#f5222d')  # Red

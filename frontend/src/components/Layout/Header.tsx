@@ -15,6 +15,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import { logout } from '../../store/slices/authSlice';
 import { useTheme } from '../../contexts/ThemeContext';
+import FlowfishLogo from '../FlowfishLogo';
 import type { MenuProps } from 'antd';
 
 const { Header: AntHeader } = Layout;
@@ -107,19 +108,7 @@ const Header: React.FC<HeaderProps> = ({ collapsed, setCollapsed }) => {
           }}
         />
         {!collapsed && (
-          <div
-            style={{
-              fontSize: '16px',
-              fontWeight: 600,
-              background: 'linear-gradient(135deg, #06b6d4 0%, #0891b2 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-              backgroundClip: 'text',
-              marginLeft: '8px',
-            }}
-          >
-            Flowfish
-          </div>
+          <FlowfishLogo size={28} showText textSize={16} style={{ marginLeft: 8 }} />
         )}
       </div>
 

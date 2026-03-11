@@ -6,50 +6,12 @@ import { useNavigate } from 'react-router-dom';
 import { RootState } from '../store';
 import { loginStart, loginSuccess, loginFailure } from '../store/slices/authSlice';
 import { apiClient } from '../utils/api';
+import FlowfishLogo from '../components/FlowfishLogo';
 import './Login.css';
 
 const { useToken } = theme;
 
 const { Title, Text } = Typography;
-
-// Fish SVG Icon Component
-const FishIcon: React.FC = () => (
-  <svg 
-    viewBox="0 0 64 64" 
-    width="72" 
-    height="72"
-    style={{ display: 'inline-block' }}
-  >
-    <defs>
-      <linearGradient id="fishGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" style={{ stopColor: '#06b6d4', stopOpacity: 1 }} />
-        <stop offset="100%" style={{ stopColor: '#0891b2', stopOpacity: 1 }} />
-      </linearGradient>
-    </defs>
-    {/* Fish body */}
-    <ellipse cx="35" cy="32" rx="20" ry="12" fill="url(#fishGradient)" />
-    {/* Fish tail */}
-    <path d="M 15 32 Q 8 26, 5 32 Q 8 38, 15 32 Z" fill="url(#fishGradient)" />
-    {/* Fish dorsal fin */}
-    <path d="M 35 20 Q 32 14, 38 18 Z" fill="#0891b2" />
-    {/* Fish bottom fin */}
-    <path d="M 35 44 Q 32 50, 38 46 Z" fill="#0891b2" />
-    {/* Fish eye */}
-    <circle cx="48" cy="30" r="2.5" fill="white" />
-    <circle cx="49" cy="30" r="1.5" fill="#164e63" />
-    {/* Scales pattern */}
-    <circle cx="38" cy="28" r="2" fill="rgba(255,255,255,0.2)" />
-    <circle cx="42" cy="32" r="2" fill="rgba(255,255,255,0.2)" />
-    <circle cx="38" cy="36" r="2" fill="rgba(255,255,255,0.2)" />
-    {/* Bubbles */}
-    <circle cx="58" cy="24" r="1.5" fill="rgba(255,255,255,0.6)" opacity="0.8">
-      <animate attributeName="cy" values="24;18;24" dur="2s" repeatCount="indefinite" />
-    </circle>
-    <circle cx="60" cy="30" r="1" fill="rgba(255,255,255,0.6)" opacity="0.8">
-      <animate attributeName="cy" values="30;24;30" dur="2.5s" repeatCount="indefinite" />
-    </circle>
-  </svg>
-);
 
 interface LoginForm {
   username: string;
@@ -197,10 +159,10 @@ const Login: React.FC = () => {
         bordered={false}
         style={themeStyles.card}
       >
-        {/* Modern Header with Fish Logo */}
+        {/* Modern Header with Flowfish Logo */}
         <div className="login-header">
           <div className="login-icon">
-            <FishIcon />
+            <FlowfishLogo size={72} />
           </div>
           <Title level={2} className="login-title" style={themeStyles.title}>
             Flowfish
