@@ -149,7 +149,7 @@ spec:
               
               -- Insert default admin user (password: admin123)
               INSERT INTO users (username, email, password_hash, role)
-              VALUES ('admin', 'admin@flowfish.local', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.VttYI/pMHvPz1m', 'admin')
+              VALUES ('admin', 'admin@flowfish.local', '$2b$12$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u', 'admin')
               ON CONFLICT (username) DO NOTHING;
               
               EOSQL

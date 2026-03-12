@@ -899,7 +899,7 @@ INSERT INTO permissions (resource, action, description) VALUES
 -- Create default admin user (password: admin123 - should be changed!)
 -- Password hash for 'admin123' using bcrypt
 INSERT INTO users (username, email, password_hash, first_name, last_name, is_active, email_verified)
-VALUES ('admin', 'admin@flowfish.local', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYIIHDWHFoq', 'System', 'Administrator', TRUE, TRUE);
+VALUES ('admin', 'admin@flowfish.local', '$2b$12$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u', 'System', 'Administrator', TRUE, TRUE);
 
 -- Assign Super Admin role to admin user
 INSERT INTO user_roles (user_id, role_id)

@@ -236,7 +236,7 @@ spec:
             
             -- Insert default admin user
             INSERT INTO users (username, email, password_hash, is_active) 
-            VALUES ('admin', 'admin@flowfish.local', '\$2b\$12\$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYIIHDWHFoq', TRUE)
+            VALUES ('admin', 'admin@flowfish.local', '\$2b\$12\$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u', TRUE)
             ON CONFLICT (username) DO NOTHING;
             
             -- Insert local cluster

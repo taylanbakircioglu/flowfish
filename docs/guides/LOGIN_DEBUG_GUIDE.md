@@ -146,7 +146,7 @@ kubectl exec -it -n flowfish deployment/postgresql -- psql -U flowfish -d flowfi
 # Admin kullanıcısı oluştur (şifre: admin123)
 kubectl exec -it -n flowfish deployment/postgresql -- psql -U flowfish -d flowfish -c "
 INSERT INTO users (username, email, password_hash, is_active, created_at, updated_at)
-VALUES ('admin', 'admin@flowfish.local', '\$2b\$12\$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyE3H.oavjHu', true, NOW(), NOW())
+VALUES ('admin', 'admin@flowfish.local', '\$2b\$12\$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u', true, NOW(), NOW())
 ON CONFLICT (username) DO NOTHING;
 "
 
