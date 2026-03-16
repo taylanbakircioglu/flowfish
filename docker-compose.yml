@@ -101,10 +101,7 @@ services:
   # ============================================================================
 
   backend:
-    # image: flowfish/backend:latest  # Use this when image is built
-    build:
-      context: ../../backend  # Assume backend code is in ../../backend
-      dockerfile: Dockerfile
+    image: taylanbakircioglu/flowfish:backend-latest
     container_name: flowfish-backend
     environment:
       # Database connections
@@ -139,8 +136,6 @@ services:
       FLOWFISH_ENCRYPTION_KEY: "Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA="
     ports:
       - "8000:8000"
-    volumes:
-      - ../../backend:/app  # For hot reload in development
     depends_on:
       postgres:
         condition: service_healthy
@@ -189,10 +184,7 @@ services:
       - flowfish-network
 
   frontend:
-    # image: flowfish/frontend:latest  # Use this when image is built
-    build:
-      context: ../../frontend  # Assume frontend code is in ../../frontend
-      dockerfile: Dockerfile
+    image: taylanbakircioglu/flowfish:frontend-latest
     container_name: flowfish-frontend
     environment:
       REACT_APP_API_URL: http://localhost:8000
@@ -200,8 +192,6 @@ services:
       REACT_APP_ENABLE_ANOMALY_DETECTION: true
     ports:
       - "3000:3000"
-    volumes:
-      - ../../frontend/src:/app/src  # For hot reload in development
     depends_on:
       backend:
         condition: service_healthy

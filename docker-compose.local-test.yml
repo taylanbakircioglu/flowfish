@@ -86,9 +86,7 @@ services:
   # ============================================================================
   
   backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
+    image: taylanbakircioglu/flowfish:backend-latest
     container_name: flowfish-backend
     environment:
       # Database connections
