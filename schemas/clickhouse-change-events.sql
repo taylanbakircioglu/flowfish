@@ -9,6 +9,9 @@
 -- - ReplacingMergeTree for idempotency (dedupe by event_id)
 -- - ORDER BY starts with analysis_id for fast cascade deletes
 
+CREATE DATABASE IF NOT EXISTS flowfish;
+USE flowfish;
+
 -- =============================================================================
 -- 1. CHANGE EVENTS TABLE
 -- =============================================================================

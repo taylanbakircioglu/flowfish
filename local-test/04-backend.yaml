@@ -1,16 +1,14 @@
 ---
-# Backend Service - Using locally built image
 apiVersion: v1
 kind: Service
 metadata:
   name: backend
   namespace: flowfish-local
 spec:
-  type: NodePort
+  type: ClusterIP
   ports:
     - port: 8000
       targetPort: 8000
-      nodePort: 30800
   selector:
     app: backend
 ---
@@ -39,7 +37,6 @@ spec:
               echo "Waiting for dependencies..."
               until nc -z postgresql 5432; do echo "Waiting for PostgreSQL..."; sleep 2; done
               until nc -z redis 6379; do echo "Waiting for Redis..."; sleep 2; done
-              until nc -z mock-gadget 16060; do echo "Waiting for Mock Gadget..."; sleep 2; done
               until nc -z cluster-manager 5001; do echo "Waiting for Cluster Manager..."; sleep 2; done
               echo "All dependencies are ready!"
       containers:
@@ -55,10 +52,16 @@ spec:
               value: "redis://:redis123@redis:6379/0"
             - name: CLICKHOUSE_URL
               value: "http://clickhouse:8123"
+            - name: CLICKHOUSE_HOST
+              value: "clickhouse"
+            - name: CLICKHOUSE_PORT
+              value: "9000"
             - name: CLICKHOUSE_USER
               value: "flowfish"
             - name: CLICKHOUSE_PASSWORD
               value: "flowfish123"
+            - name: CLICKHOUSE_DATABASE
+              value: "flowfish"
             - name: NEO4J_BOLT_URI
               value: "bolt://neo4j:7687"
             - name: NEO4J_HTTP_URI
@@ -84,16 +87,28 @@ spec:
             - name: CORS_ORIGINS
               value: "*"
             - name: LOG_LEVEL
-              value: "DEBUG"
+              value: "INFO"
             - name: CLUSTER_MANAGER_GRPC
               value: "cluster-manager:5001"
+            - name: ANALYSIS_ORCHESTRATOR_GRPC
+              value: "analysis-orchestrator:5002"
+            - name: INGESTION_SERVICE_GRPC
+              value: "ingestion-service:5000"
+            - name: GRAPH_QUERY_URL
+              value: "http://graph-query:8001"
+            - name: TIMESERIES_QUERY_URL
+              value: "http://timeseries-query:8002"
+            - name: CHANGE_DETECTION_WORKER_URL
+              value: "http://change-detection-worker:8001"
+            - name: RUN_BASED_FILTERING_ENABLED
+              value: "true"
             - name: FLOWFISH_ENCRYPTION_KEY
               value: "Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA="
           readinessProbe:
             httpGet:
               path: /api/v1/health
               port: 8000
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 5
           livenessProbe:
             httpGet:

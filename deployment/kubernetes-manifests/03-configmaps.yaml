@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: backend-config
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: backend
 data:
@@ -30,7 +30,7 @@ data:
   DATA_RETENTION_DAYS: "30"
   
   # Inspektor Gadget settings
-  GADGET_NAMESPACE: "{{OPENSHIFT_NAMESPACE}}"
+  GADGET_NAMESPACE: "flowfish"
   GADGET_IMAGE: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.48.0"
   # IMPORTANT: Gadget image version MUST match the deployed Inspektor Gadget DaemonSet version
   # Using 'latest' causes CO-RE compatibility issues between gadget eBPF programs and the kernel modules
@@ -60,7 +60,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: frontend-config
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: frontend
 data:
@@ -84,7 +84,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: clickhouse-config
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: clickhouse
 data:
@@ -179,7 +179,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-config
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: postgresql
 data:
@@ -224,7 +224,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: redis-config
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: redis
 data:

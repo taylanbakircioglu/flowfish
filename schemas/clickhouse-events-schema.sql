@@ -7,6 +7,9 @@
 -- - cluster_name field stores analysis context (analysis_name) for easier identification
 -- - All tables have bloom_filter index on analysis_id for fast filtering
 
+CREATE DATABASE IF NOT EXISTS flowfish;
+USE flowfish;
+
 -- =============================================================================
 -- 1. NETWORK FLOWS TABLE
 -- =============================================================================

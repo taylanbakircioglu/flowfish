@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: flowfish-clickhouse
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: flowfish
     component: clickhouse
@@ -14,7 +14,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: clickhouse
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: flowfish
     component: clickhouse
@@ -40,7 +40,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: clickhouse
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: flowfish
     component: clickhouse
@@ -106,7 +106,7 @@ spec:
       containers:
       - name: clickhouse
         image: clickhouse/clickhouse-server:23-alpine
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false  # Keep restricted
           readOnlyRootFilesystem: false    # ClickHouse needs write access
@@ -196,7 +196,7 @@ spec:
         component: clickhouse
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: {{STORAGE_CLASS}}
+      storageClassName: ""
       resources:
         requests:
           storage: 20Gi
@@ -206,7 +206,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: clickhouse-init
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: flowfish
     component: clickhouse
@@ -231,12 +231,12 @@ spec:
         - -c
         - |
           echo "Waiting for ClickHouse to be ready..."
-          until nc -z -w 2 clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local 9000 2>/dev/null; do
+          until nc -z -w 2 clickhouse.flowfish.svc.cluster.local 9000 2>/dev/null; do
             echo "ClickHouse TCP port not ready yet..."
             sleep 3
           done
           
-          until nc -z -w 2 clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local 8123 2>/dev/null; do
+          until nc -z -w 2 clickhouse.flowfish.svc.cluster.local 8123 2>/dev/null; do
             echo "ClickHouse HTTP port not ready yet..."
             sleep 3
           done
@@ -265,7 +265,7 @@ spec:
         - -c
         - |
           echo "Connecting to ClickHouse..."
-          echo "Host: clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local"
+          echo "Host: clickhouse.flowfish.svc.cluster.local"
           echo ""
           
           # Test connection with retry (ClickHouse may need extra time to accept queries)
@@ -273,16 +273,16 @@ spec:
           MAX_RETRIES=20
           RETRY_COUNT=0
           
-          until /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "SELECT 1" 2>/dev/null; do
+          until /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "SELECT 1" 2>/dev/null; do
             RETRY_COUNT=$((RETRY_COUNT+1))
             if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
               echo "ERROR: Failed to connect to ClickHouse after $MAX_RETRIES attempts"
               echo "Last connection attempt details:"
-              echo "Host: clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local"
+              echo "Host: clickhouse.flowfish.svc.cluster.local"
               echo "Port: 9000"
               echo ""
               echo "Attempting connection with verbose error..."
-              /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "SELECT 1" 2>&1 || true
+              /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "SELECT 1" 2>&1 || true
               exit 1
             fi
             echo "Connection attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 5s..."
@@ -297,11 +297,11 @@ spec:
           
           # Create database
           echo "Creating database 'flowfish'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "CREATE DATABASE IF NOT EXISTS flowfish"
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "CREATE DATABASE IF NOT EXISTS flowfish"
           
           # Create network_flows table
           echo "Creating table 'network_flows'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           CREATE TABLE IF NOT EXISTS network_flows (
               timestamp DateTime64(3) CODEC(DoubleDelta, LZ4),
               event_date Date DEFAULT toDate(timestamp),
@@ -326,7 +326,7 @@ spec:
           
           # Create request_metrics table
           echo "Creating table 'request_metrics'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           CREATE TABLE IF NOT EXISTS request_metrics (
               timestamp DateTime CODEC(DoubleDelta, LZ4),
               event_date Date DEFAULT toDate(timestamp),
@@ -343,7 +343,7 @@ spec:
           
           # Create change_events table (for Change Detection feature)
           echo "Creating table 'change_events'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           CREATE TABLE IF NOT EXISTS change_events (
               timestamp DateTime64(3) DEFAULT now64(3),
               detected_at DateTime64(3),
@@ -375,28 +375,28 @@ spec:
           
           # Create indexes for change_events
           echo "Creating indexes for 'change_events'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_run_id run_id TYPE minmax GRANULARITY 1
           " || true
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_change_type change_type TYPE bloom_filter GRANULARITY 1
           " || true
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_risk_level risk_level TYPE bloom_filter GRANULARITY 1
           " || true
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_name target_name TYPE bloom_filter GRANULARITY 1
           " || true
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_namespace target_namespace TYPE bloom_filter GRANULARITY 1
           " || true
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_cluster_id cluster_id TYPE minmax GRANULARITY 1
           " || true
           
           # Create materialized view for hourly aggregations
           echo "Creating materialized view 'change_events_hourly_mv'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_hourly_mv
           ENGINE = SummingMergeTree()
           PARTITION BY toYYYYMMDD(hour)
@@ -417,7 +417,7 @@ spec:
           
           # Create materialized view for per-run statistics
           echo "Creating materialized view 'change_events_run_stats_mv'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_run_stats_mv
           ENGINE = SummingMergeTree()
           ORDER BY (analysis_id, run_id)
@@ -461,7 +461,7 @@ spec:
           
           # Create materialized view for daily summary
           echo "Creating materialized view 'change_events_daily_mv'..."
-          /usr/bin/clickhouse-client --host clickhouse.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
           CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_daily_mv
           ENGINE = SummingMergeTree()
           PARTITION BY toYYYYMM(day)

@@ -5,7 +5,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: flowfish-cluster-manager
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: cluster-manager
     app.kubernetes.io/name: flowfish
@@ -16,7 +16,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: cluster-manager
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: cluster-manager
     tier: microservices
@@ -36,7 +36,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cluster-manager
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: cluster-manager
     tier: microservices
@@ -128,5 +128,4 @@ spec:
         - name: tmp-volume
           emptyDir:
             sizeLimit: 10Mi
-      imagePullSecrets:
-      - name: harbor-registry-secret
+      # imagePullSecrets removed for public deployment (use default registry)

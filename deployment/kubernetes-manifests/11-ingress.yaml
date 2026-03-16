@@ -1,18 +1,22 @@
+# Ingress for Flowfish (localhost by default)
+# For local dev without TLS: remove the entire 'tls:' section and secretName
+# For TLS: kubectl create secret tls flowfish-tls --cert=tls.crt --key=tls.key -n flowfish
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: flowfish
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   annotations:
     route.openshift.io/termination: "edge"
     haproxy.router.openshift.io/timeout: 300s
 spec:
   tls:
   - hosts:
-      - {{FRONTEND_URL}}
-    secretName: {{TLS_SECRET_NAME}}
+      - localhost
+    secretName: flowfish-tls
   rules:
-  - host: {{FRONTEND_URL}}
+  - host: localhost
     http:
       paths:
       - path: /api

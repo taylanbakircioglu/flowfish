@@ -44,12 +44,8 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if OPENSHIFT_NAMESPACE is set
-if [ -z "$OPENSHIFT_NAMESPACE" ]; then
-    print_error "OPENSHIFT_NAMESPACE environment variable is not set!"
-    echo "Usage: export OPENSHIFT_NAMESPACE=\"your-namespace\" && $0"
-    exit 1
-fi
+# Default to flowfish namespace (manifests are pre-filled for direct deployment)
+OPENSHIFT_NAMESPACE="${OPENSHIFT_NAMESPACE:-flowfish}"
 
 print_status "Deploying Inspektor Gadget to namespace: $OPENSHIFT_NAMESPACE"
 echo ""
@@ -100,8 +96,7 @@ echo ""
 # Step 2: Apply RBAC (requires cluster-admin)
 #
 print_status "2/5 - Applying RBAC (ClusterRole & ClusterRoleBinding)..."
-if sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" \
-    10-inspektor-gadget-rbac-cluster.yaml | oc apply -f -; then
+if oc apply -f 10-inspektor-gadget-rbac-cluster.yaml; then
     print_success "RBAC applied successfully"
 else
     print_error "Failed to apply RBAC (cluster-admin permissions required)"
@@ -128,8 +123,7 @@ echo ""
 # Step 3: Create ConfigMap
 #
 print_status "3/5 - Creating ConfigMap..."
-if sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" \
-    09-inspektor-gadget-config.yaml | oc apply -f -; then
+if oc apply -f 09-inspektor-gadget-config.yaml; then
     print_success "ConfigMap created successfully"
 else
     print_error "Failed to create ConfigMap"
@@ -149,8 +143,7 @@ echo ""
 # Step 4: Deploy DaemonSet
 #
 print_status "4/5 - Deploying DaemonSet..."
-if sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" \
-    10-inspektor-gadget.yaml | oc apply -f -; then
+if oc apply -f 10-inspektor-gadget.yaml; then
     print_success "DaemonSet applied successfully"
 else
     print_error "Failed to apply DaemonSet"

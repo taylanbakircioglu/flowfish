@@ -1,0 +1,81 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timeseries-writer
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: timeseries-writer
+  template:
+    metadata:
+      labels:
+        app: timeseries-writer
+    spec:
+      containers:
+        - name: timeseries-writer
+          image: taylanbakircioglu/flowfish:timeseries-writer-latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: timeseries-writer
+            - name: LOG_LEVEL
+              value: INFO
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: flowfish
+            - name: RABBITMQ_PASSWORD
+              value: flowfish123
+            - name: CLICKHOUSE_HOST
+              value: clickhouse
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_USER
+              value: flowfish
+            - name: CLICKHOUSE_PASSWORD
+              value: flowfish123
+            - name: CLICKHOUSE_DATABASE
+              value: flowfish
+            - name: REDIS_HOST
+              value: redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              value: redis123
+            - name: REDIS_URL
+              value: "redis://:redis123@redis:6379/0"
+            - name: POSTGRES_HOST
+              value: postgresql
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: flowfish
+            - name: POSTGRES_PASSWORD
+              value: flowfish123
+            - name: POSTGRES_DATABASE
+              value: flowfish
+            - name: CHANGE_EVENTS_CONSUMER_ENABLED
+              value: "true"
+            - name: WORKLOAD_SYNC_ENABLED
+              value: "true"
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('ready')"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('alive')"
+            initialDelaySeconds: 15
+            periodSeconds: 10

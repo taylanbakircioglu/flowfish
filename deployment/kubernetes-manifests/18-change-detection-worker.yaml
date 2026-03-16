@@ -22,7 +22,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: change-detection-worker
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: change-detection-worker
     component: worker
@@ -232,7 +232,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: change-detection-worker
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: change-detection-worker
   annotations:
@@ -255,7 +255,7 @@ spec:
 # kind: HorizontalPodAutoscaler
 # metadata:
 #   name: change-detection-worker-hpa
-#   namespace: {{OPENSHIFT_NAMESPACE}}
+#   namespace: flowfish
 # spec:
 #   scaleTargetRef:
 #     apiVersion: apps/v1

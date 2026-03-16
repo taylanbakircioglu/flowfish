@@ -25,15 +25,12 @@ oc apply -f 10-inspektor-gadget-rbac-cluster.yaml
 
 ### 3. Create ConfigMap
 ```bash
-# Namespace'i değiştir
-export OPENSHIFT_NAMESPACE="flowfish"
-sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 09-inspektor-gadget-config.yaml | oc apply -f -
+oc apply -f 09-inspektor-gadget-config.yaml
 ```
 
 ### 4. Update DaemonSet
 ```bash
-# Namespace'i değiştir
-sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 10-inspektor-gadget.yaml | oc apply -f -
+oc apply -f 10-inspektor-gadget.yaml
 ```
 
 ### 5. Verify
@@ -87,22 +84,22 @@ The script (`deploy-inspektor-gadget.sh`) will automatically:
 
 ### Manual Deployment (Alternative)
 
-If you prefer manual deployment:
+If you prefer manual deployment (manifests use flowfish namespace by default):
 
 ```bash
-export OPENSHIFT_NAMESPACE="flowfish"
+export OPENSHIFT_NAMESPACE="${OPENSHIFT_NAMESPACE:-flowfish}"
 
 echo "1. Applying Trace CRD..."
 oc apply -f 09-inspektor-gadget-crds.yaml
 
 echo "2. Applying RBAC (requires cluster-admin)..."
-sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 10-inspektor-gadget-rbac-cluster.yaml | oc apply -f -
+oc apply -f 10-inspektor-gadget-rbac-cluster.yaml
 
 echo "3. Creating ConfigMap..."
-sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 09-inspektor-gadget-config.yaml | oc apply -f -
+oc apply -f 09-inspektor-gadget-config.yaml
 
 echo "4. Updating DaemonSet..."
-sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 10-inspektor-gadget.yaml | oc apply -f -
+oc apply -f 10-inspektor-gadget.yaml
 
 echo "5. Restarting pods..."
 oc delete pods -l app=inspektor-gadget -n $OPENSHIFT_NAMESPACE

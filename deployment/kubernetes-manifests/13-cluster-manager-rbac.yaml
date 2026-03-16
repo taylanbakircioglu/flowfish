@@ -53,12 +53,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: flowfish-cluster-reader-binding-{{DEPLOYMENT_ENV}}
+  name: flowfish-cluster-reader-binding-local
   labels:
     app: cluster-manager
     app.kubernetes.io/name: flowfish
     app.kubernetes.io/component: cluster-manager
-    app.kubernetes.io/environment: {{DEPLOYMENT_ENV}}
+    app.kubernetes.io/environment: local
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -66,5 +66,5 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: flowfish-cluster-manager
-    namespace: {{OPENSHIFT_NAMESPACE}}
+    namespace: flowfish
 

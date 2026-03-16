@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: graph-writer
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: graph-writer
     component: writer

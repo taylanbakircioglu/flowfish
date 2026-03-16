@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: redis
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: flowfish
     component: redis
@@ -24,7 +24,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: redis
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: flowfish
     component: redis
@@ -99,7 +99,7 @@ spec:
         component: redis
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: {{STORAGE_CLASS}}
+      storageClassName: ""
       resources:
         requests:
           storage: 10Gi

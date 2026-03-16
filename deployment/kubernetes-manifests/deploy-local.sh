@@ -102,17 +102,20 @@ deploy_flowfish() {
     print_status "Deploying databases (this may take a few minutes)..."
     kubectl apply -f 05-postgresql.yaml
     kubectl apply -f 06-redis.yaml
-    kubectl apply -f 07-clickhouse.yaml
+    kubectl apply -f 06-rabbitmq.yaml
     kubectl apply -f 07-neo4j.yaml
+    kubectl apply -f 08-clickhouse.yaml
     
     print_status "Waiting for databases to be ready..."
     echo "  - PostgreSQL..."
-    kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=300s
+    kubectl wait --for=condition=ready pod -l component=postgres -n $NAMESPACE --timeout=300s
     echo "  - Redis..."
-    kubectl wait --for=condition=ready pod -l app=redis -n $NAMESPACE --timeout=120s
+    kubectl wait --for=condition=ready pod -l component=redis -n $NAMESPACE --timeout=120s
+    echo "  - RabbitMQ..."
+    kubectl wait --for=condition=ready pod -l component=rabbitmq -n $NAMESPACE --timeout=120s
     echo "  - ClickHouse..."
-    kubectl wait --for=condition=ready pod -l app=clickhouse -n $NAMESPACE --timeout=300s
-    echo "  - NebulaGraph..."
+    kubectl wait --for=condition=ready pod -l component=clickhouse -n $NAMESPACE --timeout=300s
+    echo "  - Neo4j..."
     kubectl wait --for=condition=ready pod -l app=neo4j -n $NAMESPACE --timeout=300s
     
     print_status "Deploying applications..."

@@ -1292,11 +1292,75 @@ open http://localhost:3000
 
 ---
 
-### Kubernetes Deployment
+### Kubernetes / K3s Quick Start (Recommended)
 
-#### Deployment Order
+Deploy all Flowfish services directly from Docker Hub images — no need to clone the repository:
 
-The Kubernetes manifests in `deployment/kubernetes-manifests/` are numbered to indicate deployment order:
+```bash
+# One-line install
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s install
+```
+
+Or step by step:
+
+```bash
+REPO="https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test"
+
+kubectl apply -f $REPO/00-namespace.yaml
+kubectl apply -f $REPO/01-rbac.yaml
+kubectl apply -f $REPO/02-databases.yaml
+
+# Wait for databases to be ready
+kubectl wait --for=condition=ready pod -l app=postgresql -n flowfish-local --timeout=120s
+
+kubectl apply -f $REPO/03-migrations.yaml
+kubectl apply -f $REPO/04-backend.yaml
+kubectl apply -f $REPO/05-cluster-manager.yaml
+kubectl apply -f $REPO/06-analysis-orchestrator.yaml
+kubectl apply -f $REPO/07-ingestion-service.yaml
+kubectl apply -f $REPO/08-graph-query.yaml
+kubectl apply -f $REPO/09-timeseries-query.yaml
+kubectl apply -f $REPO/10-graph-writer.yaml
+kubectl apply -f $REPO/11-timeseries-writer.yaml
+kubectl apply -f $REPO/12-change-detection-worker.yaml
+kubectl apply -f $REPO/13-frontend.yaml
+kubectl apply -f $REPO/14-nginx-proxy.yaml
+
+# Access the UI
+# http://<NODE_IP>:30080
+```
+
+**Deployed services:**
+
+| # | Service | Port | Purpose |
+|---|---------|------|---------|
+| 00 | Namespace | — | `flowfish-local` namespace |
+| 01 | RBAC | — | ServiceAccount, ClusterRole, ClusterRoleBinding |
+| 02 | Databases | 5432, 8123, 6379, 7474, 5672 | PostgreSQL, ClickHouse, Redis, Neo4j, RabbitMQ |
+| 03 | Migrations | — | PostgreSQL schema + ClickHouse schema (Job) |
+| 04 | Backend | 8000 | FastAPI REST API + WebSocket |
+| 05 | Cluster Manager | 5001 | K8s API gateway (gRPC) |
+| 06 | Analysis Orchestrator | 5002 | Analysis lifecycle (gRPC) |
+| 07 | Ingestion Service | 5000 | Event ingestion (gRPC) |
+| 08 | Graph Query | 8001 | Neo4j query service (REST) |
+| 09 | Timeseries Query | 8002 | ClickHouse query service (REST) |
+| 10 | Graph Writer | — | Neo4j batch writer (worker) |
+| 11 | Timeseries Writer | — | ClickHouse batch writer (worker) |
+| 12 | Change Detection | 8001 | Change detection worker |
+| 13 | Frontend | 3000 | React UI |
+| 14 | Nginx Proxy | 30080 (NodePort) | Reverse proxy (UI + API) |
+
+**Uninstall:**
+
+```bash
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s uninstall
+```
+
+---
+
+### Production Kubernetes Deployment
+
+The full production manifests in `deployment/kubernetes-manifests/` are numbered for ordered deployment and include template variables for customization:
 
 ```
 01 - Namespace + RBAC
@@ -1316,35 +1380,6 @@ The Kubernetes manifests in `deployment/kubernetes-manifests/` are numbered to i
 15-19 - Graph Writer, Graph Query, Timeseries Query, Change Detection Worker, Gadget Monitoring
 ```
 
-#### Single-Command Deploy
-
-```bash
-kubectl apply -f deployment/kubernetes-manifests/01-namespace.yaml
-kubectl apply -f deployment/kubernetes-manifests/
-kubectl get pods -n flowfish -w
-```
-
-#### Manual RBAC Setup for Inspektor Gadget
-
-```bash
-kubectl apply -f deployment/kubernetes-manifests/10-inspektor-gadget-rbac-cluster.yaml
-```
-
-For OpenShift:
-
-```bash
-oc adm policy add-scc-to-user privileged -z gadget -n flowfish
-```
-
-See `deployment/kubernetes-manifests/INSPEKTOR_GADGET_MANUAL_SETUP.md` and `OPENSHIFT_GADGET_FIX.md` for detailed guides.
-
-#### Port Forwarding
-
-```bash
-kubectl port-forward svc/frontend -n flowfish 3000:3000
-kubectl port-forward svc/backend -n flowfish 8000:8000
-```
-
 #### Production Checklist
 
 - [ ] Replace all default passwords in `04-secrets.yaml`
@@ -1357,6 +1392,14 @@ kubectl port-forward svc/backend -n flowfish 8000:8000
 - [ ] Scale backend to 3+ replicas
 - [ ] Apply restrictive network policies
 - [ ] Verify Inspektor Gadget RBAC/SCC on all nodes
+
+For OpenShift:
+
+```bash
+oc adm policy add-scc-to-user privileged -z gadget -n flowfish
+```
+
+See `deployment/kubernetes-manifests/INSPEKTOR_GADGET_MANUAL_SETUP.md` and `OPENSHIFT_GADGET_FIX.md` for detailed guides.
 
 ---
 

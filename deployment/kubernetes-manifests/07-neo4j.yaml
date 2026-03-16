@@ -6,19 +6,19 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: flowfish-neo4j
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: neo4j
 ---
 # Neo4j Graph Database
 # Community Edition - Production Ready for Single Instance
 # Requires anyuid SCC (grant manually before deployment):
-# oc adm policy add-scc-to-user anyuid -z flowfish-neo4j -n {{OPENSHIFT_NAMESPACE}}
+# oc adm policy add-scc-to-user anyuid -z flowfish-neo4j -n flowfish
 apiVersion: v1
 kind: Service
 metadata:
   name: neo4j
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: neo4j
     tier: infrastructure
@@ -42,7 +42,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: neo4j
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: neo4j
     tier: infrastructure
@@ -81,7 +81,7 @@ spec:
       containers:
       - name: neo4j
         image: neo4j:5.15-community
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         
         ports:
         - containerPort: 7474
@@ -160,7 +160,7 @@ spec:
         app: neo4j
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: {{STORAGE_CLASS}}
+      storageClassName: ""
       resources:
         requests:
           storage: 20Gi

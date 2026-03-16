@@ -1,11 +1,11 @@
 ---
-# Cluster Manager Service
 apiVersion: v1
 kind: Service
 metadata:
   name: cluster-manager
   namespace: flowfish-local
 spec:
+  type: ClusterIP
   ports:
     - name: grpc
       port: 5001
@@ -13,10 +13,7 @@ spec:
       protocol: TCP
   selector:
     app: cluster-manager
-  type: ClusterIP
-
 ---
-# Cluster Manager Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -57,7 +54,7 @@ spec:
             - name: GRPC_PORT
               value: "5001"
             - name: LOG_LEVEL
-              value: "DEBUG"
+              value: "INFO"
             - name: DATABASE_URL
               value: "postgresql://flowfish:flowfish123@postgresql:5432/flowfish"
             - name: REDIS_URL
@@ -70,7 +67,7 @@ spec:
                 - python
                 - -c
                 - "import grpc; ch=grpc.insecure_channel('localhost:5001'); ch.close()"
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:

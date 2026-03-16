@@ -1,7 +1,8 @@
 version: '3.8'
 
-# Local Test Environment with Mock Inspector Gadget
+# Flowfish Local Test Environment (Docker Compose)
 # Usage: docker-compose -f docker-compose.local-test.yml up -d
+# Requires: ./schemas/ directory with SQL schema files
 
 services:
   # ============================================================================
@@ -19,6 +20,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./schemas/postgresql-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flowfish"]
       interval: 5s
@@ -60,24 +62,44 @@ services:
     networks:
       - flowfish-network
 
-  # ============================================================================
-  # MOCK INSPECTOR GADGET
-  # ============================================================================
-  
-  mock-gadget:
-    build:
-      context: ./mocks/gadget-mock
-      dockerfile: Dockerfile
-    container_name: flowfish-mock-gadget
+  clickhouse:
+    image: clickhouse/clickhouse-server:23-alpine
+    container_name: flowfish-clickhouse
     environment:
-      GRPC_PORT: "16060"
+      CLICKHOUSE_DB: flowfish
+      CLICKHOUSE_USER: flowfish
+      CLICKHOUSE_PASSWORD: flowfish123
     ports:
-      - "16060:16060"
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./schemas/clickhouse-events-schema.sql:/docker-entrypoint-initdb.d/01-events-schema.sql:ro
+      - ./schemas/clickhouse-change-events.sql:/docker-entrypoint-initdb.d/02-change-events.sql:ro
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import grpc; ch=grpc.insecure_channel('localhost:16060'); grpc.channel_ready_future(ch).result(timeout=5)"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8123/ping"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 10
+      start_period: 60s
+    networks:
+      - flowfish-network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: flowfish-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: flowfish
+      RABBITMQ_DEFAULT_PASS: flowfish123
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - flowfish-network
 
@@ -98,20 +120,25 @@ services:
       # Database connections
       DATABASE_URL: postgresql+asyncpg://flowfish:flowfish123@postgres:5432/flowfish
       REDIS_URL: redis://:redis123@redis:6379/0
+      CLICKHOUSE_URL: http://flowfish:flowfish123@clickhouse:8123
+      CLICKHOUSE_USER: flowfish
+      CLICKHOUSE_PASSWORD: flowfish123
+      CLICKHOUSE_DATABASE: flowfish
       NEO4J_BOLT_URI: bolt://neo4j:7687
       NEO4J_HTTP_URI: http://neo4j:7474
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: flowfish123
       NEO4J_DATABASE: neo4j
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: flowfish
+      RABBITMQ_PASSWORD: flowfish123
       
       # Application settings
       SECRET_KEY: local-dev-secret-key
       JWT_EXPIRATION_HOURS: 24
       CORS_ORIGINS: http://localhost:3000
       LOG_LEVEL: DEBUG
-      
-      # Local gadget
-      LOCAL_GADGET_ENDPOINT: mock-gadget:16060
       
       # Cluster Manager gRPC endpoint
       CLUSTER_MANAGER_GRPC: cluster-manager:5001
@@ -125,17 +152,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
       neo4j:
         condition: service_healthy
-      mock-gadget:
+      rabbitmq:
         condition: service_healthy
       cluster-manager:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 10s
-      timeout: 5s
-      retries: 3
+      timeout: 10s
+      retries: 5
       start_period: 30s
     networks:
       - flowfish-network
@@ -177,210 +206,31 @@ services:
       - flowfish-network
 
   # ============================================================================
-  # DATABASE MIGRATIONS
+  # FRONTEND
   # ============================================================================
-  
-  migrations:
-    image: postgres:15-alpine
-    container_name: flowfish-migrations
+
+  frontend:
+    image: taylanbakircioglu/flowfish:frontend-latest
+    # To build locally instead of pulling from Docker Hub, uncomment below:
+    # build:
+    #   context: ./frontend
+    #   dockerfile: Dockerfile.production
+    # volumes:
+    #   - ./frontend/src:/app/src
+    container_name: flowfish-frontend
+    user: "0:0"
     environment:
-      PGPASSWORD: flowfish123
-    command: |
-      sh -c '
-        echo "Waiting for PostgreSQL..."
-        until pg_isready -h postgres -U flowfish; do sleep 2; done
-        echo "Running migrations..."
-        
-        psql -h postgres -U flowfish -d flowfish << EOSQL
-        
-        -- Create clusters table
-        CREATE TABLE IF NOT EXISTS clusters (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL UNIQUE,
-            description TEXT,
-            environment VARCHAR(50) NOT NULL DEFAULT '"'"'production'"'"',
-            provider VARCHAR(50) NOT NULL DEFAULT '"'"'kubernetes'"'"',
-            region VARCHAR(100),
-            tags JSONB DEFAULT '"'"'{}'"'"',
-            connection_type VARCHAR(50) NOT NULL,
-            api_server_url VARCHAR(500),
-            kubeconfig_encrypted TEXT,
-            ca_cert_encrypted TEXT,
-            token_encrypted TEXT,
-            skip_tls_verify BOOLEAN DEFAULT FALSE,
-            gadget_namespace VARCHAR(255),
-            gadget_endpoint VARCHAR(500),
-            gadget_protocol VARCHAR(50) DEFAULT '"'"'grpc'"'"',
-            gadget_auto_detect BOOLEAN DEFAULT TRUE,
-            gadget_version VARCHAR(50),
-            gadget_capabilities JSONB DEFAULT '"'"'[]'"'"',
-            gadget_health_status VARCHAR(50) DEFAULT '"'"'unknown'"'"',
-            gadget_last_check TIMESTAMP WITH TIME ZONE,
-            status VARCHAR(50) DEFAULT '"'"'active'"'"',
-            validation_status JSONB,
-            last_sync TIMESTAMP WITH TIME ZONE,
-            error_message TEXT,
-            total_namespaces INTEGER DEFAULT 0,
-            total_pods INTEGER DEFAULT 0,
-            total_nodes INTEGER DEFAULT 0,
-            k8s_version VARCHAR(50),
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            created_by INTEGER,
-            updated_by INTEGER
-        );
-        
-        -- Create namespaces table
-        CREATE TABLE IF NOT EXISTS namespaces (
-            id SERIAL PRIMARY KEY,
-            cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
-            name VARCHAR(255) NOT NULL,
-            uid VARCHAR(255),
-            labels JSONB DEFAULT '"'"'{}'"'"',
-            annotations JSONB DEFAULT '"'"'{}'"'"',
-            status VARCHAR(50) DEFAULT '"'"'Active'"'"',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(cluster_id, name)
-        );
-        
-        -- Create workloads table
-        CREATE TABLE IF NOT EXISTS workloads (
-            id SERIAL PRIMARY KEY,
-            cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
-            namespace_id INTEGER NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-            name VARCHAR(255) NOT NULL,
-            workload_type VARCHAR(50) NOT NULL,
-            uid VARCHAR(255),
-            labels JSONB DEFAULT '"'"'{}'"'"',
-            annotations JSONB DEFAULT '"'"'{}'"'"',
-            replicas INTEGER,
-            available_replicas INTEGER,
-            image VARCHAR(500),
-            status VARCHAR(50) DEFAULT '"'"'Unknown'"'"',
-            is_active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(cluster_id, namespace_id, workload_type, name)
-        );
-        
-        -- Create analyses table
-        CREATE TABLE IF NOT EXISTS analyses (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            description TEXT,
-            cluster_id INTEGER REFERENCES clusters(id),
-            scope_type VARCHAR(50),
-            scope_config JSONB DEFAULT '"'"'{}'"'"',
-            event_types JSONB DEFAULT '"'"'[]'"'"',
-            time_config JSONB DEFAULT '"'"'{}'"'"',
-            output_config JSONB DEFAULT '"'"'{}'"'"',
-            status VARCHAR(50) DEFAULT '"'"'pending'"'"',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            started_at TIMESTAMP WITH TIME ZONE,
-            completed_at TIMESTAMP WITH TIME ZONE,
-            error_message TEXT,
-            created_by INTEGER
-        );
-        
-        -- Create users table  
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(255) NOT NULL UNIQUE,
-            email VARCHAR(255) NOT NULL UNIQUE,
-            password_hash VARCHAR(255),
-            first_name VARCHAR(100),
-            last_name VARCHAR(100),
-            role VARCHAR(50) DEFAULT '"'"'viewer'"'"',
-            is_active BOOLEAN DEFAULT TRUE,
-            two_factor_enabled BOOLEAN DEFAULT FALSE,
-            last_login_at TIMESTAMP WITH TIME ZONE,
-            last_login_ip VARCHAR(50),
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-        
-        CREATE TABLE IF NOT EXISTS roles (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(100) UNIQUE NOT NULL,
-            description TEXT,
-            is_system_role BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-        
-        CREATE TABLE IF NOT EXISTS user_roles (
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-            PRIMARY KEY (user_id, role_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS permissions (
-            id SERIAL PRIMARY KEY,
-            resource VARCHAR(100) NOT NULL,
-            action VARCHAR(50) NOT NULL,
-            description TEXT,
-            UNIQUE(resource, action)
-        );
-
-        CREATE TABLE IF NOT EXISTS role_permissions (
-            id SERIAL PRIMARY KEY,
-            role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-            permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
-            UNIQUE(role_id, permission_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS system_settings (
-            id SERIAL PRIMARY KEY,
-            category VARCHAR(100) NOT NULL DEFAULT '"'"'general'"'"',
-            key VARCHAR(255) NOT NULL,
-            value JSONB DEFAULT '"'"'{}'"'"',
-            description TEXT,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_by INTEGER,
-            UNIQUE(category, key)
-        );
-
-        CREATE TABLE IF NOT EXISTS activity_logs (
-            id BIGSERIAL PRIMARY KEY,
-            user_id INTEGER,
-            username VARCHAR(255),
-            action VARCHAR(100) NOT NULL,
-            resource_type VARCHAR(100),
-            resource_id VARCHAR(255),
-            resource_name VARCHAR(255),
-            details JSONB DEFAULT '"'"'{}'"'"',
-            ip_address VARCHAR(50),
-            user_agent TEXT,
-            status VARCHAR(50) DEFAULT '"'"'success'"'"',
-            error_message TEXT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-
-        INSERT INTO roles (name, description, is_system_role) VALUES
-        ('"'"'Super Admin'"'"', '"'"'Full system access'"'"', TRUE),
-        ('"'"'Platform Admin'"'"', '"'"'Platform management'"'"', TRUE),
-        ('"'"'Security Analyst'"'"', '"'"'Security analysis'"'"', TRUE),
-        ('"'"'Developer'"'"', '"'"'Read-only access'"'"', TRUE)
-        ON CONFLICT (name) DO NOTHING;
-
-        -- Insert default admin user
-        INSERT INTO users (username, email, password_hash, role)
-        VALUES ('"'"'admin'"'"', '"'"'admin@flowfish.local'"'"', '"'"'\$2b\$12\$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u'"'"', '"'"'admin'"'"')
-        ON CONFLICT (username) DO NOTHING;
-
-        INSERT INTO user_roles (user_id, role_id)
-        SELECT u.id, r.id FROM users u, roles r
-        WHERE u.username = '"'"'admin'"'"' AND r.name = '"'"'Super Admin'"'"'
-        ON CONFLICT DO NOTHING;
-        
-        EOSQL
-        
-        echo "Migrations completed!"
-      '
+      REACT_APP_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
     depends_on:
-      postgres:
+      backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - flowfish-network
 
@@ -390,6 +240,7 @@ services:
 
 volumes:
   postgres_data:
+  clickhouse_data:
 
 networks:
   flowfish-network:

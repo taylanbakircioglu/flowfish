@@ -18,7 +18,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: inspektor-gadget-alerts
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: inspektor-gadget
     prometheus: k8s
@@ -96,7 +96,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: inspektor-gadget
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: inspektor-gadget
 spec:
@@ -105,7 +105,7 @@ spec:
       app: inspektor-gadget
   namespaceSelector:
     matchNames:
-    - {{OPENSHIFT_NAMESPACE}}
+    - flowfish
   endpoints:
   - port: metrics
     interval: 30s
@@ -118,7 +118,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: inspektor-gadget-metrics
-  namespace: {{OPENSHIFT_NAMESPACE}}
+  namespace: flowfish
   labels:
     app: inspektor-gadget
 spec:
