@@ -1284,6 +1284,7 @@ open http://localhost:3000
 |---------|------|---------|
 | Frontend | 3000 | React UI |
 | Backend | 8000 | FastAPI REST API |
+| Cluster Manager | 5001 | K8s API gateway (gRPC) |
 | PostgreSQL | 5432 | Relational database |
 | Redis | 6379 | Cache |
 | ClickHouse | 8123 (HTTP), 9000 (TCP) | Time-series database |

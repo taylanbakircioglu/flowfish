@@ -258,12 +258,35 @@ async def create_cluster(cluster_data: ClusterCreate):
                     
                     logger.info("Background: Cluster info updated", cluster_id=cid)
                 else:
+                    error_msg = cluster_info.get("error", "Unknown error")
                     logger.warning("Background: Cluster info fetch returned error", 
-                                  cluster_id=cid, error=cluster_info.get("error"))
+                                  cluster_id=cid, error=error_msg)
+                    try:
+                        await database.execute(
+                            """UPDATE clusters SET
+                                gadget_health_status = 'unknown',
+                                error_message = :error_msg,
+                                updated_at = NOW()
+                            WHERE id = :cluster_id""",
+                            {"cluster_id": cid, "error_msg": str(error_msg)[:500]}
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error("Background: Failed to fetch cluster info", 
                             cluster_id=cid, 
                             error=str(e))
+                try:
+                    await database.execute(
+                        """UPDATE clusters SET
+                            gadget_health_status = 'unknown',
+                            error_message = :error_msg,
+                            updated_at = NOW()
+                        WHERE id = :cluster_id""",
+                        {"cluster_id": cid, "error_msg": str(e)[:500]}
+                    )
+                except Exception:
+                    pass
         
         # Start background task - don't await, let it run independently
         asyncio.create_task(_fetch_cluster_info_background(cluster_id, cluster_data.name))

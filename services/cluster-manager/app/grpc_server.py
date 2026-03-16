@@ -99,65 +99,61 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
         - Default/empty/"0" cluster_id -> in-cluster client
         - Numeric cluster_id -> fetch credentials from DB and create remote client
         
+        For remote clusters, errors are raised instead of silently falling back
+        to the in-cluster client, so callers can report meaningful errors.
+        
         Args:
             cluster_id: Cluster identifier from gRPC request
             
         Returns:
             KubernetesClient instance (from cache or newly created)
+            
+        Raises:
+            ValueError: If cluster_id is invalid, cluster not found, or credentials missing
+            Exception: If client creation fails for any reason
         """
-        # Normalize cluster_id
         if not cluster_id or cluster_id == "default" or cluster_id == "0":
-            # In-cluster client - use singleton
             logger.debug("Using in-cluster client", cluster_id=cluster_id)
             return self.k8s_client
         
-        # Remote cluster - fetch credentials from database
         try:
             cluster_id_int = int(cluster_id)
         except ValueError:
-            logger.warning("Invalid cluster_id, falling back to in-cluster", cluster_id=cluster_id)
+            raise ValueError(f"Invalid cluster_id format: {cluster_id}")
+        
+        cluster = await self._db.get_cluster_credentials(cluster_id_int)
+        
+        if not cluster:
+            raise ValueError(f"Cluster {cluster_id} not found in database or not active")
+        
+        connection_type = cluster.get("connection_type", "in-cluster")
+        
+        if connection_type == "in-cluster":
+            logger.debug("Cluster configured as in-cluster", cluster_id=cluster_id)
             return self.k8s_client
         
+        token = _decrypt_value(cluster.get("token_encrypted") or "")
+        ca_cert = _decrypt_value(cluster.get("ca_cert_encrypted") or "")
+        kubeconfig = _decrypt_value(cluster.get("kubeconfig_encrypted") or "")
+        
+        api_server_url = cluster.get("api_server_url")
+        skip_tls_verify = cluster.get("skip_tls_verify") or False
+        
+        logger.info("Creating remote cluster client",
+                    cluster_id=cluster_id,
+                    cluster_name=cluster.get("name"),
+                    connection_type=connection_type,
+                    api_server_url=api_server_url,
+                    has_token=bool(token),
+                    has_ca_cert=bool(ca_cert),
+                    skip_tls_verify=skip_tls_verify)
+        
         try:
-            # Fetch cluster credentials from database
-            cluster = await self._db.get_cluster_credentials(cluster_id_int)
-            
-            if not cluster:
-                logger.warning("Cluster not found in database, falling back to in-cluster",
-                              cluster_id=cluster_id)
-                return self.k8s_client
-            
-            connection_type = cluster.get("connection_type", "in-cluster")
-            
-            # If connection type is in-cluster, use default client
-            if connection_type == "in-cluster":
-                logger.debug("Cluster configured as in-cluster", cluster_id=cluster_id)
-                return self.k8s_client
-            
-            # Decrypt credentials
-            token = _decrypt_value(cluster.get("token_encrypted") or "")
-            ca_cert = _decrypt_value(cluster.get("ca_cert_encrypted") or "")
-            kubeconfig = _decrypt_value(cluster.get("kubeconfig_encrypted") or "")
-            
-            api_server_url = cluster.get("api_server_url")
-            skip_tls_verify = cluster.get("skip_tls_verify") or False
-            
-            # Log connection info (without sensitive data)
-            logger.info("Creating remote cluster client",
-                       cluster_id=cluster_id,
-                       cluster_name=cluster.get("name"),
-                       connection_type=connection_type,
-                       api_server_url=api_server_url,
-                       has_token=bool(token),
-                       has_ca_cert=bool(ca_cert),
-                       skip_tls_verify=skip_tls_verify)
-            
-            # Create client via factory (with caching)
             if connection_type == "token":
                 if not api_server_url or not token:
-                    logger.error("Missing required credentials for token connection",
-                                cluster_id=cluster_id)
-                    return self.k8s_client
+                    raise ValueError(
+                        f"Cluster {cluster_id}: missing api_server_url or token for token connection"
+                    )
                 
                 return KubernetesClientFactory.get_client(
                     cluster_id=cluster_id,
@@ -170,9 +166,9 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
             
             elif connection_type == "kubeconfig":
                 if not kubeconfig:
-                    logger.error("Missing kubeconfig for kubeconfig connection",
-                                cluster_id=cluster_id)
-                    return self.k8s_client
+                    raise ValueError(
+                        f"Cluster {cluster_id}: missing kubeconfig content for kubeconfig connection"
+                    )
                 
                 return KubernetesClientFactory.get_client(
                     cluster_id=cluster_id,
@@ -181,16 +177,12 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 )
             
             else:
-                logger.warning("Unknown connection type, falling back to in-cluster",
-                              cluster_id=cluster_id, connection_type=connection_type)
-                return self.k8s_client
-            
+                raise ValueError(
+                    f"Cluster {cluster_id}: unsupported connection type '{connection_type}'"
+                )
         except Exception as e:
-            logger.error("Failed to get K8s client for cluster, falling back to in-cluster",
-                        cluster_id=cluster_id, error=str(e))
-            # Invalidate any cached client for this cluster on error
             KubernetesClientFactory.invalidate(cluster_id)
-            return self.k8s_client
+            raise
     
     async def GetClusterInfo(self, request, context):
         """Get basic cluster information"""

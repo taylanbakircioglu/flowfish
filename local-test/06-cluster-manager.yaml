@@ -1,0 +1,84 @@
+---
+# Cluster Manager Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: cluster-manager
+  namespace: flowfish-local
+spec:
+  ports:
+    - name: grpc
+      port: 5001
+      targetPort: 5001
+      protocol: TCP
+  selector:
+    app: cluster-manager
+  type: ClusterIP
+
+---
+# Cluster Manager Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-manager
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-manager
+  template:
+    metadata:
+      labels:
+        app: cluster-manager
+    spec:
+      serviceAccountName: default
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for dependencies..."
+              until nc -z postgresql 5432; do echo "Waiting for PostgreSQL..."; sleep 2; done
+              until nc -z redis 6379; do echo "Waiting for Redis..."; sleep 2; done
+              echo "All dependencies are ready!"
+      containers:
+        - name: cluster-manager
+          image: taylanbakircioglu/flowfish:cluster-manager-latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5001
+              protocol: TCP
+          env:
+            - name: SERVICE_NAME
+              value: "cluster-manager"
+            - name: GRPC_PORT
+              value: "5001"
+            - name: LOG_LEVEL
+              value: "DEBUG"
+            - name: DATABASE_URL
+              value: "postgresql://flowfish:flowfish123@postgresql:5432/flowfish"
+            - name: REDIS_URL
+              value: "redis://:redis123@redis:6379/0"
+            - name: FLOWFISH_ENCRYPTION_KEY
+              value: "Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA="
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; ch=grpc.insecure_channel('localhost:5001'); ch.close()"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; ch=grpc.insecure_channel('localhost:5001'); ch.close()"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10

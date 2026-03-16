@@ -131,6 +131,12 @@ services:
       # Local development settings
       ENV: development
       DEBUG: true
+      
+      # Cluster Manager gRPC endpoint
+      CLUSTER_MANAGER_GRPC: cluster-manager:5001
+      
+      # Encryption key for cluster credentials (shared with cluster-manager)
+      FLOWFISH_ENCRYPTION_KEY: "Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA="
     ports:
       - "8000:8000"
     volumes:
@@ -144,11 +150,40 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+      cluster-manager:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
+    networks:
+      - flowfish-network
+
+  cluster-manager:
+    image: taylanbakircioglu/flowfish:cluster-manager-latest
+    container_name: flowfish-cluster-manager
+    environment:
+      SERVICE_NAME: cluster-manager
+      GRPC_PORT: "5001"
+      DATABASE_URL: postgresql://flowfish:flowfish123@postgres:5432/flowfish
+      REDIS_URL: redis://:redis123@redis:6379/0
+      LOG_LEVEL: INFO
+      FLOWFISH_ENCRYPTION_KEY: "Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA="
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; ch=grpc.insecure_channel('localhost:5001'); ch.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
     networks:
       - flowfish-network

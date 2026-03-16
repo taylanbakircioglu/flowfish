@@ -74,6 +74,10 @@ spec:
               value: "*"
             - name: LOG_LEVEL
               value: "DEBUG"
+            - name: CLUSTER_MANAGER_GRPC
+              value: "cluster-manager:5001"
+            - name: FLOWFISH_ENCRYPTION_KEY
+              value: "Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA="
           readinessProbe:
             httpGet:
               path: /api/v1/health

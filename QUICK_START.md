@@ -59,6 +59,10 @@ open http://localhost:3000
 
 ### 1. Add Your First Cluster (2 minutes)
 
+**Prerequisites**:
+- The `cluster-manager` service must be running (included in Docker Compose by default)
+- For **remote clusters** (not the cluster Flowfish is deployed on): run the **Setup Script** on the target cluster first. Navigate to **Add Cluster** → **Setup Script** tab to generate the script for your provider. This installs Inspektor Gadget and creates the required ServiceAccount/RBAC.
+
 Navigate to **Management** → **Cluster Management** → **Add Cluster**
 
 **Fill in details**:
@@ -68,6 +72,11 @@ Navigate to **Management** → **Cluster Management** → **Add Cluster**
 - **Authentication**: Upload kubeconfig or paste service account token
 
 **Click Save**. Flowfish will connect and start discovering workloads.
+
+**Troubleshooting**: If pods/nodes/namespaces show 0 after adding a cluster:
+- Check cluster-manager logs: `docker logs flowfish-cluster-manager` (Docker Compose) or `kubectl logs -l app=cluster-manager -n flowfish` (Kubernetes)
+- Verify the Setup Script was run on the target cluster
+- Ensure `FLOWFISH_ENCRYPTION_KEY` is the same for both `backend` and `cluster-manager` services
 
 ### 2. Create Your First Analysis (3 minutes)
 
