@@ -42,6 +42,12 @@ spec:
               value: flowfish
             - name: CLICKHOUSE_PASSWORD
               value: flowfish123
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 10
+            periodSeconds: 10
 ---
 # RabbitMQ
 apiVersion: v1
@@ -79,6 +85,16 @@ spec:
           ports:
             - containerPort: 5672
             - containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: flowfish
+            - name: RABBITMQ_DEFAULT_PASS
+              value: flowfish123
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
 ---
 # PostgreSQL
 apiVersion: v1
@@ -158,6 +174,11 @@ spec:
           command: ["redis-server", "--requirepass", "redis123"]
           ports:
             - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-a", "redis123", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
 ---
 # Neo4j with proper settings for Docker Desktop
 apiVersion: v1

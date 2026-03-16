@@ -47,6 +47,7 @@ spec:
                   ca_cert_encrypted TEXT,
                   token_encrypted TEXT,
                   skip_tls_verify BOOLEAN DEFAULT FALSE,
+                  gadget_namespace VARCHAR(255),
                   gadget_endpoint VARCHAR(500),
                   gadget_protocol VARCHAR(50) DEFAULT 'grpc',
                   gadget_auto_detect BOOLEAN DEFAULT TRUE,
