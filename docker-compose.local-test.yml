@@ -87,6 +87,12 @@ services:
   
   backend:
     image: taylanbakircioglu/flowfish:backend-latest
+    # To build locally instead of pulling from Docker Hub, uncomment below:
+    # build:
+    #   context: ./backend
+    #   dockerfile: Dockerfile
+    # volumes:
+    #   - ./backend:/app
     container_name: flowfish-backend
     environment:
       # Database connections
@@ -140,6 +146,12 @@ services:
   
   cluster-manager:
     image: taylanbakircioglu/flowfish:cluster-manager-latest
+    # To build locally instead of pulling from Docker Hub, uncomment below:
+    # build:
+    #   context: ./services/cluster-manager
+    #   dockerfile: Dockerfile
+    # volumes:
+    #   - ./services/cluster-manager/app:/app/app
     container_name: flowfish-cluster-manager
     environment:
       SERVICE_NAME: cluster-manager
