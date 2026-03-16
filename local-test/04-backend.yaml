@@ -43,8 +43,8 @@ spec:
               echo "All dependencies are ready!"
       containers:
         - name: backend
-          image: flowfish-backend:local-v18
-          imagePullPolicy: Never
+          image: taylanbakircioglu/flowfish:backend-latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           env:

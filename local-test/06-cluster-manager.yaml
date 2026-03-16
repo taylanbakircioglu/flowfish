@@ -32,7 +32,7 @@ spec:
       labels:
         app: cluster-manager
     spec:
-      serviceAccountName: default
+      serviceAccountName: flowfish-cluster-manager
       initContainers:
         - name: wait-for-deps
           image: busybox:1.36
