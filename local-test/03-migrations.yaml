@@ -96,8 +96,12 @@ spec:
                   replicas INTEGER,
                   available_replicas INTEGER,
                   image VARCHAR(500),
+                  ports JSONB DEFAULT '[]',
                   status VARCHAR(50) DEFAULT 'Unknown',
                   is_active BOOLEAN DEFAULT TRUE,
+                  metadata JSONB DEFAULT '{}',
+                  first_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  last_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                   UNIQUE(cluster_id, namespace_id, workload_type, name)
@@ -108,16 +112,25 @@ spec:
                   id SERIAL PRIMARY KEY,
                   name VARCHAR(255) NOT NULL,
                   description TEXT,
-                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE CASCADE,
+                  cluster_ids JSONB DEFAULT '[]',
+                  is_multi_cluster BOOLEAN DEFAULT FALSE,
                   status VARCHAR(50) DEFAULT 'draft',
                   scope_type VARCHAR(50) NOT NULL,
                   scope_config JSONB DEFAULT '{}',
                   gadget_config JSONB DEFAULT '{}',
                   time_config JSONB DEFAULT '{}',
                   output_config JSONB DEFAULT '{}',
+                  namespaces JSONB DEFAULT '[]',
+                  change_detection_enabled BOOLEAN DEFAULT FALSE,
+                  change_detection_strategy VARCHAR(50),
+                  change_detection_types JSONB DEFAULT '[]',
+                  is_baseline BOOLEAN DEFAULT FALSE,
                   created_by INTEGER,
                   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  started_at TIMESTAMP WITH TIME ZONE,
+                  stopped_at TIMESTAMP WITH TIME ZONE
               );
               
               CREATE INDEX IF NOT EXISTS idx_analyses_cluster ON analyses(cluster_id);
@@ -125,33 +138,260 @@ spec:
               
               -- Analysis Runs table
               CREATE TABLE IF NOT EXISTS analysis_runs (
-                  id SERIAL PRIMARY KEY,
+                  id BIGSERIAL PRIMARY KEY,
                   analysis_id INTEGER NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
+                  run_number INTEGER DEFAULT 1,
                   status VARCHAR(50) DEFAULT 'pending',
                   start_time TIMESTAMP WITH TIME ZONE,
                   end_time TIMESTAMP WITH TIME ZONE,
+                  duration_seconds INTEGER,
                   events_collected INTEGER DEFAULT 0,
+                  workloads_discovered INTEGER DEFAULT 0,
                   communications_discovered INTEGER DEFAULT 0,
+                  changes_detected INTEGER DEFAULT 0,
                   error_message TEXT,
+                  logs JSONB DEFAULT '[]',
+                  metadata JSONB DEFAULT '{}',
                   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
               );
               
-              -- Create users table
+              -- ================================================================
+              -- USERS & RBAC
+              -- ================================================================
+
               CREATE TABLE IF NOT EXISTS users (
                   id SERIAL PRIMARY KEY,
                   username VARCHAR(255) NOT NULL UNIQUE,
                   email VARCHAR(255) NOT NULL UNIQUE,
-                  password_hash VARCHAR(255) NOT NULL,
+                  password_hash VARCHAR(255),
+                  first_name VARCHAR(100),
+                  last_name VARCHAR(100),
                   role VARCHAR(50) DEFAULT 'viewer',
                   is_active BOOLEAN DEFAULT TRUE,
+                  two_factor_enabled BOOLEAN DEFAULT FALSE,
+                  last_login_at TIMESTAMP WITH TIME ZONE,
+                  last_login_ip VARCHAR(50),
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              CREATE TABLE IF NOT EXISTS roles (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(100) UNIQUE NOT NULL,
+                  description TEXT,
+                  is_system_role BOOLEAN DEFAULT FALSE,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              CREATE TABLE IF NOT EXISTS user_roles (
+                  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                  PRIMARY KEY (user_id, role_id)
+              );
+
+              CREATE TABLE IF NOT EXISTS permissions (
+                  id SERIAL PRIMARY KEY,
+                  resource VARCHAR(100) NOT NULL,
+                  action VARCHAR(50) NOT NULL,
+                  description TEXT,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(resource, action)
+              );
+
+              CREATE TABLE IF NOT EXISTS role_permissions (
+                  id SERIAL PRIMARY KEY,
+                  role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                  permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+                  UNIQUE(role_id, permission_id)
+              );
+
+              CREATE TABLE IF NOT EXISTS two_factor_codes (
+                  id SERIAL PRIMARY KEY,
+                  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  code VARCHAR(10) NOT NULL,
+                  expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                  attempts INTEGER DEFAULT 0,
                   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
               );
-              
-              -- Insert default admin user (password: admin123)
+
+              -- ================================================================
+              -- SYSTEM
+              -- ================================================================
+
+              CREATE TABLE IF NOT EXISTS system_settings (
+                  id SERIAL PRIMARY KEY,
+                  category VARCHAR(100) NOT NULL DEFAULT 'general',
+                  key VARCHAR(255) NOT NULL,
+                  value JSONB DEFAULT '{}',
+                  description TEXT,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_by INTEGER,
+                  UNIQUE(category, key)
+              );
+
+              CREATE TABLE IF NOT EXISTS activity_logs (
+                  id BIGSERIAL PRIMARY KEY,
+                  user_id INTEGER,
+                  username VARCHAR(255),
+                  action VARCHAR(100) NOT NULL,
+                  resource_type VARCHAR(100),
+                  resource_id VARCHAR(255),
+                  resource_name VARCHAR(255),
+                  details JSONB DEFAULT '{}',
+                  ip_address VARCHAR(50),
+                  user_agent TEXT,
+                  status VARCHAR(50) DEFAULT 'success',
+                  error_message TEXT,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              CREATE TABLE IF NOT EXISTS api_keys (
+                  id SERIAL PRIMARY KEY,
+                  key_id VARCHAR(100) UNIQUE NOT NULL,
+                  key_hash VARCHAR(255) NOT NULL,
+                  key_prefix VARCHAR(12),
+                  name VARCHAR(255) NOT NULL,
+                  description TEXT,
+                  user_id INTEGER REFERENCES users(id),
+                  scopes JSONB DEFAULT '[]',
+                  cluster_ids JSONB DEFAULT '[]',
+                  is_active BOOLEAN DEFAULT TRUE,
+                  expires_at TIMESTAMP WITH TIME ZONE,
+                  last_used_at TIMESTAMP WITH TIME ZONE,
+                  last_used_ip VARCHAR(50),
+                  usage_count INTEGER DEFAULT 0,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  created_by INTEGER,
+                  revoked_at TIMESTAMP WITH TIME ZONE,
+                  revoked_by INTEGER,
+                  revoke_reason TEXT
+              );
+
+              -- ================================================================
+              -- COMMUNICATIONS & CHANGE DETECTION
+              -- ================================================================
+
+              CREATE TABLE IF NOT EXISTS communications (
+                  id BIGSERIAL PRIMARY KEY,
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE CASCADE,
+                  source_workload_id INTEGER REFERENCES workloads(id) ON DELETE SET NULL,
+                  destination_workload_id INTEGER REFERENCES workloads(id) ON DELETE SET NULL,
+                  destination_port INTEGER,
+                  protocol VARCHAR(20),
+                  first_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  last_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  request_count BIGINT DEFAULT 1,
+                  is_active BOOLEAN DEFAULT TRUE,
+                  UNIQUE(cluster_id, source_workload_id, destination_workload_id, destination_port, protocol)
+              );
+
+              CREATE TABLE IF NOT EXISTS notification_hooks (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE CASCADE,
+                  name VARCHAR(255) NOT NULL,
+                  hook_type VARCHAR(50) NOT NULL,
+                  config JSONB DEFAULT '{}',
+                  is_enabled BOOLEAN DEFAULT TRUE,
+                  trigger_on_critical BOOLEAN DEFAULT TRUE,
+                  trigger_on_high BOOLEAN DEFAULT TRUE,
+                  trigger_on_medium BOOLEAN DEFAULT FALSE,
+                  trigger_on_low BOOLEAN DEFAULT FALSE,
+                  trigger_change_types JSONB DEFAULT '[]',
+                  rate_limit_per_hour INTEGER DEFAULT 10,
+                  last_triggered_at TIMESTAMP WITH TIME ZONE,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  created_by INTEGER,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              -- ================================================================
+              -- REPORTS & ASSESSMENTS
+              -- ================================================================
+
+              CREATE TABLE IF NOT EXISTS blast_radius_assessments (
+                  id SERIAL PRIMARY KEY,
+                  assessment_id VARCHAR(100) UNIQUE,
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+                  analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL,
+                  target VARCHAR(255),
+                  namespace VARCHAR(255),
+                  change_type VARCHAR(100),
+                  risk_score NUMERIC(5,2),
+                  risk_level VARCHAR(50),
+                  affected_count INTEGER DEFAULT 0,
+                  triggered_by VARCHAR(100),
+                  pipeline VARCHAR(255),
+                  response_json JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              CREATE TABLE IF NOT EXISTS generated_reports (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  report_type VARCHAR(100),
+                  format VARCHAR(20),
+                  status VARCHAR(50) DEFAULT 'pending',
+                  file_size BIGINT,
+                  file_path TEXT,
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+                  analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL,
+                  namespace VARCHAR(255),
+                  filters JSONB DEFAULT '{}',
+                  scheduled_report_id INTEGER,
+                  error_message TEXT,
+                  created_by INTEGER,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  completed_at TIMESTAMP WITH TIME ZONE
+              );
+
+              -- ================================================================
+              -- SEED DATA
+              -- ================================================================
+
+              INSERT INTO roles (name, description, is_system_role) VALUES
+              ('Super Admin', 'Full system access', TRUE),
+              ('Platform Admin', 'Platform management', TRUE),
+              ('Security Analyst', 'Security analysis', TRUE),
+              ('Developer', 'Read-only access', TRUE)
+              ON CONFLICT (name) DO NOTHING;
+
+              INSERT INTO permissions (resource, action, description) VALUES
+              ('clusters', 'view', 'View cluster information'),
+              ('clusters', 'create', 'Create new clusters'),
+              ('clusters', 'edit', 'Edit cluster configuration'),
+              ('clusters', 'delete', 'Delete clusters'),
+              ('analyses', 'view', 'View analyses'),
+              ('analyses', 'create', 'Create analyses'),
+              ('analyses', 'edit', 'Edit analyses'),
+              ('analyses', 'delete', 'Delete analyses'),
+              ('analyses', 'execute', 'Start/stop analyses'),
+              ('dependencies', 'view', 'View dependency maps'),
+              ('dependencies', 'export', 'Export dependency data'),
+              ('settings', 'view', 'View system settings'),
+              ('settings', 'edit', 'Edit system settings'),
+              ('users', 'view', 'View users'),
+              ('users', 'create', 'Create users'),
+              ('users', 'edit', 'Edit users'),
+              ('users', 'delete', 'Delete users'),
+              ('reports', 'view', 'View reports'),
+              ('reports', 'create', 'Generate reports')
+              ON CONFLICT (resource, action) DO NOTHING;
+
               INSERT INTO users (username, email, password_hash, role)
               VALUES ('admin', 'admin@flowfish.local', '$2b$12$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u', 'admin')
               ON CONFLICT (username) DO NOTHING;
+
+              INSERT INTO user_roles (user_id, role_id)
+              SELECT u.id, r.id FROM users u, roles r
+              WHERE u.username = 'admin' AND r.name = 'Super Admin'
+              ON CONFLICT DO NOTHING;
+
+              INSERT INTO role_permissions (role_id, permission_id)
+              SELECT r.id, p.id FROM roles r, permissions p
+              WHERE r.name = 'Super Admin'
+              ON CONFLICT (role_id, permission_id) DO NOTHING;
               
               EOSQL
               

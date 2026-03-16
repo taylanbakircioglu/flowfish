@@ -208,6 +208,7 @@ services:
             ca_cert_encrypted TEXT,
             token_encrypted TEXT,
             skip_tls_verify BOOLEAN DEFAULT FALSE,
+            gadget_namespace VARCHAR(255),
             gadget_endpoint VARCHAR(500),
             gadget_protocol VARCHAR(50) DEFAULT '"'"'grpc'"'"',
             gadget_auto_detect BOOLEAN DEFAULT TRUE,
@@ -287,16 +288,91 @@ services:
             id SERIAL PRIMARY KEY,
             username VARCHAR(255) NOT NULL UNIQUE,
             email VARCHAR(255) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
+            password_hash VARCHAR(255),
+            first_name VARCHAR(100),
+            last_name VARCHAR(100),
             role VARCHAR(50) DEFAULT '"'"'viewer'"'"',
             is_active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            two_factor_enabled BOOLEAN DEFAULT FALSE,
+            last_login_at TIMESTAMP WITH TIME ZONE,
+            last_login_ip VARCHAR(50),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
         
+        CREATE TABLE IF NOT EXISTS roles (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(100) UNIQUE NOT NULL,
+            description TEXT,
+            is_system_role BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE TABLE IF NOT EXISTS user_roles (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+            PRIMARY KEY (user_id, role_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS permissions (
+            id SERIAL PRIMARY KEY,
+            resource VARCHAR(100) NOT NULL,
+            action VARCHAR(50) NOT NULL,
+            description TEXT,
+            UNIQUE(resource, action)
+        );
+
+        CREATE TABLE IF NOT EXISTS role_permissions (
+            id SERIAL PRIMARY KEY,
+            role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+            permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+            UNIQUE(role_id, permission_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS system_settings (
+            id SERIAL PRIMARY KEY,
+            category VARCHAR(100) NOT NULL DEFAULT '"'"'general'"'"',
+            key VARCHAR(255) NOT NULL,
+            value JSONB DEFAULT '"'"'{}'"'"',
+            description TEXT,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_by INTEGER,
+            UNIQUE(category, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS activity_logs (
+            id BIGSERIAL PRIMARY KEY,
+            user_id INTEGER,
+            username VARCHAR(255),
+            action VARCHAR(100) NOT NULL,
+            resource_type VARCHAR(100),
+            resource_id VARCHAR(255),
+            resource_name VARCHAR(255),
+            details JSONB DEFAULT '"'"'{}'"'"',
+            ip_address VARCHAR(50),
+            user_agent TEXT,
+            status VARCHAR(50) DEFAULT '"'"'success'"'"',
+            error_message TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT INTO roles (name, description, is_system_role) VALUES
+        ('"'"'Super Admin'"'"', '"'"'Full system access'"'"', TRUE),
+        ('"'"'Platform Admin'"'"', '"'"'Platform management'"'"', TRUE),
+        ('"'"'Security Analyst'"'"', '"'"'Security analysis'"'"', TRUE),
+        ('"'"'Developer'"'"', '"'"'Read-only access'"'"', TRUE)
+        ON CONFLICT (name) DO NOTHING;
+
         -- Insert default admin user
         INSERT INTO users (username, email, password_hash, role)
         VALUES ('"'"'admin'"'"', '"'"'admin@flowfish.local'"'"', '"'"'\$2b\$12\$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u'"'"', '"'"'admin'"'"')
         ON CONFLICT (username) DO NOTHING;
+
+        INSERT INTO user_roles (user_id, role_id)
+        SELECT u.id, r.id FROM users u, roles r
+        WHERE u.username = '"'"'admin'"'"' AND r.name = '"'"'Super Admin'"'"'
+        ON CONFLICT DO NOTHING;
         
         EOSQL
         
