@@ -238,6 +238,17 @@ services:
 # VOLUMES & NETWORKS
 # ============================================================================
 
+# ============================================================================
+# NOTE: Inspektor Gadget (eBPF Data Collection)
+# ============================================================================
+# Inspektor Gadget is a Kubernetes-native DaemonSet and CANNOT run in Docker
+# Compose. It requires the Kubernetes API for pod/container discovery and
+# metadata enrichment. To collect eBPF network/DNS/process events:
+#   - Use the Kubernetes deployment (local-test/ or deployment/kubernetes-manifests/)
+#   - Or run Flowfish here and add a remote Kubernetes cluster via Token method
+#     in the UI (Clusters > Add Cluster > Token)
+# ============================================================================
+
 volumes:
   postgres_data:
   clickhouse_data:

@@ -116,6 +116,11 @@ Flowfish uses **Inspektor Gadget** to collect eBPF-based network, DNS, process, 
 Without it, analyses will complete but **all event counts will remain at 0** — this includes
 the Dashboard (connections, traffic, DNS), Dependency Map, and Network Explorer.
 
+> **Docker Compose users:** Inspektor Gadget is a Kubernetes-native DaemonSet and cannot run
+> in Docker Compose. It requires the Kubernetes API for pod/container discovery and metadata
+> enrichment. If you deployed Flowfish via Docker Compose, add a remote Kubernetes cluster
+> via **Token** method in the UI (Clusters > Add Cluster > Token) to collect eBPF events.
+
 ### Option A: Deploy Gadget Locally (amd64 Linux only)
 
 If your cluster runs on **amd64 (x86_64) Linux** with **kernel 5.4+**, you can deploy
