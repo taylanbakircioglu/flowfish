@@ -28,6 +28,7 @@ spec:
       labels:
         app: ingestion-service
     spec:
+      serviceAccountName: flowfish-cluster-manager
       containers:
         - name: ingestion-service
           image: taylanbakircioglu/flowfish:ingestion-service-latest
