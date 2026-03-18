@@ -79,6 +79,9 @@ install() {
   echo "Applying manifests from GitHub..."
   echo ""
 
+  # Delete old migration job if exists (completed Jobs don't re-run on apply)
+  kubectl delete job flowfish-migrations -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
+
   for manifest in "${MANIFESTS[@]}"; do
     echo "  Applying ${manifest}..."
     kubectl apply -f "${GITHUB_RAW}/${manifest}"

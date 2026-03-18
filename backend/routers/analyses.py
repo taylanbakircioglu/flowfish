@@ -569,9 +569,10 @@ async def start_analysis(
     # Create analysis run
     run_query = """
         INSERT INTO analysis_runs (
-            analysis_id, run_number, status, start_time, events_collected, communications_discovered
+            analysis_id, run_number, status, start_time, events_collected,
+            workloads_discovered, communications_discovered, anomalies_detected, changes_detected
         ) VALUES (
-            :analysis_id, :run_number, 'running', NOW(), 0, 0
+            :analysis_id, :run_number, 'running', NOW(), 0, 0, 0, 0, 0
         ) RETURNING *
     """
     
