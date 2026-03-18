@@ -513,11 +513,10 @@ class GraphQueryClient:
             logger.info("Using server-side search via /dependencies/graph", search=search, params=search_params)
             graph_result = await self._call_graph_query("/dependencies/graph", params=search_params)
             
-            if graph_result and graph_result.get("success"):
-                data = graph_result.get("data", {})
+            if graph_result and "nodes" in graph_result:
                 return {
-                    "nodes": data.get("nodes", []),
-                    "edges": data.get("edges", [])
+                    "nodes": graph_result.get("nodes", []),
+                    "edges": graph_result.get("edges", [])
                 }
             # Fall through to normal flow if search fails
             logger.warning("Server-side search failed, falling back to normal flow", search=search)

@@ -791,7 +791,12 @@ class GraphQueryEngine:
                 w.owner_name AS owner_name,
                 w.node AS node,
                 w.network_type AS network_type,
-                w.resolution_source AS resolution_source
+                w.resolution_source AS resolution_source,
+                w.pod_uid AS pod_uid,
+                w.container AS container,
+                w.image AS image,
+                w.service_account AS service_account,
+                w.phase AS phase
             """
             nodes_result = self.execute_query(nodes_query, {"node_ids": node_ids_list})
             nodes = nodes_result.get("data", []) if nodes_result.get("success") else []
