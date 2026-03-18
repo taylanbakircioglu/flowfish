@@ -162,18 +162,16 @@ async def update_analysis_limits(
         
         # Upsert the settings
         # Note: Use CAST() instead of :: to avoid conflict with SQLAlchemy's :param syntax
-        # Note: UNIQUE constraint is on (category, key), so we must include category
         query = """
-            INSERT INTO system_settings (category, key, value, description, updated_at, updated_by)
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
             VALUES (
-                'analysis',
                 'analysis_limits', 
                 CAST(:value AS jsonb), 
                 'Global analysis time and size limits for enterprise protection',
                 NOW(),
                 :user_id
             )
-            ON CONFLICT (category, key) DO UPDATE SET 
+            ON CONFLICT (key) DO UPDATE SET 
                 value = CAST(:value AS jsonb), 
                 updated_at = NOW(),
                 updated_by = :user_id
@@ -284,9 +282,9 @@ async def update_smtp_settings(
                 settings.password = old_value.get('password', '')
         
         query = """
-            INSERT INTO system_settings (category, key, value, description, updated_at, updated_by)
-            VALUES ('email', 'smtp_settings', CAST(:value AS jsonb), 'SMTP server configuration', NOW(), :user_id)
-            ON CONFLICT (category, key) DO UPDATE SET 
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES ('smtp_settings', CAST(:value AS jsonb), 'SMTP server configuration', NOW(), :user_id)
+            ON CONFLICT (key) DO UPDATE SET 
                 value = CAST(:value AS jsonb), updated_at = NOW(), updated_by = :user_id
         """
         
@@ -424,9 +422,9 @@ async def update_notification_settings(
     
     try:
         query = """
-            INSERT INTO system_settings (category, key, value, description, updated_at, updated_by)
-            VALUES ('notifications', 'preferences', CAST(:value AS jsonb), 'Notification preferences', NOW(), :user_id)
-            ON CONFLICT (category, key) DO UPDATE SET 
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES ('notification_preferences', CAST(:value AS jsonb), 'Notification preferences', NOW(), :user_id)
+            ON CONFLICT (key) DO UPDATE SET 
                 value = CAST(:value AS jsonb), updated_at = NOW(), updated_by = :user_id
         """
         
@@ -492,9 +490,9 @@ async def update_retention_settings(
     
     try:
         query = """
-            INSERT INTO system_settings (category, key, value, description, updated_at, updated_by)
-            VALUES ('retention', 'policies', CAST(:value AS jsonb), 'Data retention policies', NOW(), :user_id)
-            ON CONFLICT (category, key) DO UPDATE SET 
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES ('retention_policies', CAST(:value AS jsonb), 'Data retention policies', NOW(), :user_id)
+            ON CONFLICT (key) DO UPDATE SET 
                 value = CAST(:value AS jsonb), updated_at = NOW(), updated_by = :user_id
         """
         
@@ -642,9 +640,9 @@ async def update_security_settings(
     
     try:
         query = """
-            INSERT INTO system_settings (category, key, value, description, updated_at, updated_by)
-            VALUES ('security', 'policies', CAST(:value AS jsonb), 'Security policies', NOW(), :user_id)
-            ON CONFLICT (category, key) DO UPDATE SET 
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES ('security_policies', CAST(:value AS jsonb), 'Security policies', NOW(), :user_id)
+            ON CONFLICT (key) DO UPDATE SET 
                 value = CAST(:value AS jsonb), updated_at = NOW(), updated_by = :user_id
         """
         
@@ -844,9 +842,9 @@ async def update_2fa_settings(
     
     try:
         query = """
-            INSERT INTO system_settings (category, key, value, description, updated_at, updated_by)
-            VALUES ('security', '2fa_settings', CAST(:value AS jsonb), 'Two-factor authentication settings', NOW(), :user_id)
-            ON CONFLICT (category, key) DO UPDATE SET 
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES ('2fa_settings', CAST(:value AS jsonb), 'Two-factor authentication settings', NOW(), :user_id)
+            ON CONFLICT (key) DO UPDATE SET 
                 value = CAST(:value AS jsonb), updated_at = NOW(), updated_by = :user_id
         """
         

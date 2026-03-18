@@ -508,19 +508,30 @@ spec:
               CREATE TABLE IF NOT EXISTS scheduled_reports (
                   id SERIAL PRIMARY KEY,
                   name VARCHAR(255) NOT NULL,
-                  report_type VARCHAR(50) NOT NULL,
+                  report_type JSONB DEFAULT '[]',
                   format VARCHAR(20) NOT NULL DEFAULT 'csv',
                   schedule VARCHAR(20) NOT NULL DEFAULT 'daily',
+                  time VARCHAR(10),
+                  email VARCHAR(255),
+                  enabled BOOLEAN DEFAULT TRUE,
                   filters JSONB DEFAULT '{}',
                   recipients JSONB DEFAULT '[]',
-                  is_enabled BOOLEAN DEFAULT TRUE,
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+                  analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL,
+                  namespace VARCHAR(255),
                   last_run TIMESTAMP WITH TIME ZONE,
                   next_run TIMESTAMP WITH TIME ZONE,
                   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
               );
-              CREATE INDEX IF NOT EXISTS idx_scheduled_reports_enabled ON scheduled_reports(is_enabled);
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS time VARCHAR(10);
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL;
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL;
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS namespace VARCHAR(255);
+              CREATE INDEX IF NOT EXISTS idx_scheduled_reports_enabled ON scheduled_reports(enabled);
               CREATE INDEX IF NOT EXISTS idx_scheduled_reports_next_run ON scheduled_reports(next_run);
 
               -- Generated Reports
@@ -598,8 +609,10 @@ spec:
                   commit_sha VARCHAR(100),
                   assessment_data JSONB DEFAULT '{}',
                   recommendations JSONB DEFAULT '[]',
+                  response_json JSONB,
                   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
               );
+              ALTER TABLE blast_radius_assessments ADD COLUMN IF NOT EXISTS response_json JSONB;
               CREATE INDEX IF NOT EXISTS idx_blast_radius_cluster ON blast_radius_assessments(cluster_id);
               CREATE INDEX IF NOT EXISTS idx_blast_radius_analysis ON blast_radius_assessments(analysis_id);
               CREATE INDEX IF NOT EXISTS idx_blast_radius_created ON blast_radius_assessments(created_at DESC);
@@ -627,6 +640,86 @@ spec:
                   created_by VARCHAR(100),
                   last_run_at TIMESTAMP,
                   last_run_result TEXT
+              );
+
+              -- API Keys
+              CREATE TABLE IF NOT EXISTS api_keys (
+                  id SERIAL PRIMARY KEY,
+                  key_id VARCHAR(50) UNIQUE NOT NULL,
+                  key_hash VARCHAR(255) NOT NULL,
+                  key_prefix VARCHAR(12) NOT NULL,
+                  name VARCHAR(255) NOT NULL,
+                  description TEXT,
+                  user_id INTEGER NOT NULL REFERENCES users(id),
+                  scopes TEXT[] DEFAULT ARRAY['blast-radius'],
+                  cluster_ids INTEGER[],
+                  is_active BOOLEAN DEFAULT TRUE,
+                  expires_at TIMESTAMP,
+                  last_used_at TIMESTAMP,
+                  last_used_ip VARCHAR(45),
+                  usage_count INTEGER DEFAULT 0,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  revoked_at TIMESTAMP,
+                  revoked_by INTEGER REFERENCES users(id),
+                  revoke_reason TEXT,
+                  metadata JSONB DEFAULT '{}'::jsonb
+              );
+              CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_is_active ON api_keys(is_active);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_expires ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
+
+              -- Simulation History
+              CREATE TABLE IF NOT EXISTS simulation_history (
+                  id VARCHAR(50) PRIMARY KEY,
+                  simulation_id VARCHAR(50),
+                  cluster_id VARCHAR(50) NOT NULL,
+                  analysis_id VARCHAR(50),
+                  target_name VARCHAR(255) NOT NULL,
+                  target_namespace VARCHAR(255) NOT NULL,
+                  target_kind VARCHAR(50) DEFAULT 'Deployment',
+                  change_type VARCHAR(50) NOT NULL,
+                  total_affected INTEGER DEFAULT 0,
+                  high_impact INTEGER DEFAULT 0,
+                  medium_impact INTEGER DEFAULT 0,
+                  low_impact INTEGER DEFAULT 0,
+                  blast_radius FLOAT DEFAULT 0,
+                  confidence_score FLOAT DEFAULT 0,
+                  status VARCHAR(20) DEFAULT 'completed',
+                  created_by VARCHAR(100),
+                  duration_ms INTEGER DEFAULT 0,
+                  result_summary JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_simulation_history_cluster ON simulation_history(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_simulation_history_created ON simulation_history(created_at DESC);
+
+              -- API Tokens
+              CREATE TABLE IF NOT EXISTS api_tokens (
+                  id VARCHAR(50) PRIMARY KEY,
+                  name VARCHAR(100) NOT NULL,
+                  token_hash VARCHAR(255) NOT NULL,
+                  scopes TEXT[] DEFAULT '{}',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  expires_at TIMESTAMP,
+                  last_used_at TIMESTAMP,
+                  is_active BOOLEAN DEFAULT TRUE,
+                  created_by VARCHAR(100),
+                  user_id INT
+              );
+
+              -- System Backups
+              CREATE TABLE IF NOT EXISTS system_backups (
+                  id VARCHAR(50) PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  type VARCHAR(20) NOT NULL,
+                  size VARCHAR(50),
+                  status VARCHAR(20) DEFAULT 'in_progress',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  created_by VARCHAR(100),
+                  file_path VARCHAR(500)
               );
 
               -- Default permissions seed
@@ -658,7 +751,10 @@ spec:
                   ('roles', 'edit', 'Edit roles'),
                   ('roles', 'delete', 'Delete roles'),
                   ('settings', 'view', 'View settings'),
-                  ('settings', 'edit', 'Edit settings')
+                  ('settings', 'edit', 'Edit settings'),
+                  ('api_keys', 'view', 'View API keys'),
+                  ('api_keys', 'create', 'Create new API keys'),
+                  ('api_keys', 'revoke', 'Revoke API keys')
               ON CONFLICT (resource, action) DO NOTHING;
 
               INSERT INTO role_permissions (role_id, permission_id)
