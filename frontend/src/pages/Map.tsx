@@ -3433,7 +3433,7 @@ const MapInner: React.FC = () => {
       );
     };
     
-    if (hideSystemNamespaces) {
+    if (hideSystemNamespaces && !debouncedSearchTerm) {
       const beforeCount = filteredNodes.length;
       filteredNodes = filteredNodes.filter((node: DependencyNode) => 
         !isSystemNamespace(node.namespace)
