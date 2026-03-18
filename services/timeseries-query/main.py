@@ -181,6 +181,7 @@ async def get_network_flows(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across source_ip, dest_ip, pods, namespaces"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -189,7 +190,8 @@ async def get_network_flows(
     """Query network flow events"""
     try:
         events, total = await query_engine.query_network_flows(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:
@@ -202,6 +204,7 @@ async def get_dns_queries(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across query_name, dns_server_ip, pod, namespace"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -210,7 +213,8 @@ async def get_dns_queries(
     """Query DNS query events"""
     try:
         events, total = await query_engine.query_dns_queries(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"queries": events, "total": total}
     except Exception as e:
@@ -227,6 +231,7 @@ async def get_process_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across comm, exe, pod, namespace"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -235,7 +240,8 @@ async def get_process_events(
     """Query process execution events"""
     try:
         events, total = await query_engine.query_process_events(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:
@@ -248,6 +254,7 @@ async def get_file_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across file_path, comm, pod, namespace"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -256,7 +263,8 @@ async def get_file_events(
     """Query file operation events"""
     try:
         events, total = await query_engine.query_file_events(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:
@@ -269,6 +277,7 @@ async def get_security_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across capability, syscall, comm, pod, namespace"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -277,7 +286,8 @@ async def get_security_events(
     """Query security/capability events"""
     try:
         events, total = await query_engine.query_security_events(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:
@@ -290,6 +300,7 @@ async def get_oom_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across comm, pod, namespace, node"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -298,7 +309,8 @@ async def get_oom_events(
     """Query OOM kill events"""
     try:
         events, total = await query_engine.query_oom_events(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:
@@ -311,6 +323,7 @@ async def get_bind_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across bind_addr, comm, pod, namespace"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -319,7 +332,8 @@ async def get_bind_events(
     """Query socket bind events"""
     try:
         events, total = await query_engine.query_bind_events(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:
@@ -332,6 +346,7 @@ async def get_sni_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across sni_name, dst_ip, pod, namespace, comm"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -340,7 +355,8 @@ async def get_sni_events(
     """Query TLS/SNI events"""
     try:
         events, total = await query_engine.query_sni_events(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:
@@ -353,6 +369,7 @@ async def get_mount_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    search: Optional[str] = Query(None, description="Search across source, target, fs_type, comm, pod, namespace"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
     limit: int = Query(100, ge=1, le=10000),
@@ -361,7 +378,8 @@ async def get_mount_events(
     """Query mount events"""
     try:
         events, total = await query_engine.query_mount_events(
-            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset
+            cluster_id, analysis_id, namespace, start_time, end_time, limit, offset,
+            search=search
         )
         return {"events": events, "total": total}
     except Exception as e:

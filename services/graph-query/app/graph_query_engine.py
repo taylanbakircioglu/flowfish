@@ -569,7 +569,8 @@ class GraphQueryEngine:
         Get dependency graph with nodes and edges for visualization
         
         Args:
-            search: Optional search term (min 3 chars) to filter nodes by name, namespace, or id.
+            search: Optional search term (min 3 chars) to filter nodes by name, namespace,
+                    id, ip, host_ip, or edge port.
                     When provided, limit is increased to ensure all matching results are returned.
         
         Returns:
@@ -591,20 +592,24 @@ class GraphQueryEngine:
         if namespace:
             params["namespace"] = namespace
         
-        # Server-side search: filter by node name, namespace, or id
+        # Server-side search: filter by node name, namespace, id, ip, or edge port
         # Only active for 3+ character searches to avoid overly broad matches
         search_condition = ""
         if search and len(search) >= 3:
             params["search"] = search.lower()
-            # Search in source OR destination node fields
             search_condition = """
             AND (
                 toLower(src.name) CONTAINS $search OR
                 toLower(src.namespace) CONTAINS $search OR
                 toLower(src.id) CONTAINS $search OR
+                toLower(coalesce(src.ip, '')) CONTAINS $search OR
+                toLower(coalesce(src.host_ip, '')) CONTAINS $search OR
                 toLower(dst.name) CONTAINS $search OR
                 toLower(dst.namespace) CONTAINS $search OR
-                toLower(dst.id) CONTAINS $search
+                toLower(dst.id) CONTAINS $search OR
+                toLower(coalesce(dst.ip, '')) CONTAINS $search OR
+                toLower(coalesce(dst.host_ip, '')) CONTAINS $search OR
+                toString(coalesce(r.port, 0)) CONTAINS $search
             )
             """
         

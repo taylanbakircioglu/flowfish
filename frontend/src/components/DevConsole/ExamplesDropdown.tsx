@@ -21,6 +21,7 @@ import {
   ApiOutlined,
   AlertOutlined,
   SwapOutlined,
+  AimOutlined,
 } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { DatabaseType } from '../../store/api/devConsoleApi';
@@ -138,6 +139,270 @@ FROM network_flows
 WHERE timestamp > now() - INTERVAL 6 HOUR
 GROUP BY time_bucket
 ORDER BY time_bucket`,
+      },
+    ],
+  },
+
+  // ---------------------------------------------------------------------------
+  // IP & Port Lookup
+  // ---------------------------------------------------------------------------
+  {
+    key: 'ch-ip-port',
+    label: 'IP & Port Lookup',
+    icon: <AimOutlined />,
+    examples: [
+      {
+        key: 'ch-ip-dest-agg',
+        label: 'Who Talks to This IP? (Aggregated)',
+        query: `-- Who is sending traffic to a destination IP? (Aggregated view)
+-- Replace '10.0.1.50' with the target IP
+SELECT
+    source_namespace,
+    source_pod,
+    source_ip,
+    dest_pod,
+    dest_ip,
+    dest_port,
+    protocol,
+    count(*) as flow_count,
+    sum(bytes_sent + bytes_received) as total_bytes
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND dest_ip = '10.0.1.50'
+GROUP BY
+    source_namespace, source_pod, source_ip,
+    dest_pod, dest_ip, dest_port, protocol
+ORDER BY flow_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'ch-ip-direction',
+        label: 'IP Direction Analysis (IN/OUT)',
+        query: `-- Incoming vs Outgoing traffic for a specific IP
+-- Replace '10.0.2.15' with the target IP
+SELECT
+    CASE 
+        WHEN source_ip = '10.0.2.15' THEN 'OUTGOING'
+        ELSE 'INCOMING'
+    END as direction,
+    count(*) as flow_count,
+    sum(bytes_sent) as total_bytes_sent,
+    sum(bytes_received) as total_bytes_received
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND (source_ip = '10.0.2.15' OR dest_ip = '10.0.2.15')
+GROUP BY direction`,
+      },
+      {
+        key: 'ch-ip-port-peers',
+        label: 'IP + Port Peer List',
+        query: `-- All peers communicating with an IP on a specific port
+-- Replace '10.0.2.15' and port 80 as needed
+SELECT
+    source_pod,
+    dest_pod,
+    dest_ip,
+    count(*) as flow_count
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND (source_ip = '10.0.2.15' OR dest_ip = '10.0.2.15')
+  AND dest_port = 80
+GROUP BY source_pod, dest_pod, dest_ip
+ORDER BY flow_count DESC
+LIMIT 50`,
+      },
+      {
+        key: 'ch-ip-source-agg',
+        label: 'Where Does This IP Go? (Aggregated)',
+        query: `-- What destinations does a source IP communicate with?
+-- Replace '10.244.0.15' with the source IP
+SELECT
+    dest_pod,
+    dest_ip,
+    dest_port,
+    protocol,
+    count(*) as flow_count,
+    sum(bytes_sent) as bytes_sent,
+    sum(bytes_received) as bytes_received
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND source_ip = '10.244.0.15'
+GROUP BY dest_pod, dest_ip, dest_port, protocol
+ORDER BY flow_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'ch-ip-all-traffic',
+        label: 'Full IP Traffic Profile',
+        query: `-- Complete traffic profile for an IP (both directions, grouped)
+-- Replace '10.0.2.15' with the target IP
+SELECT
+    CASE 
+        WHEN source_ip = '10.0.2.15' THEN 'OUTGOING'
+        ELSE 'INCOMING'
+    END as direction,
+    source_namespace,
+    source_pod,
+    source_ip,
+    dest_pod,
+    dest_ip,
+    dest_port,
+    protocol,
+    count(*) as flow_count,
+    sum(bytes_sent + bytes_received) as total_bytes
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND (source_ip = '10.0.2.15' OR dest_ip = '10.0.2.15')
+GROUP BY
+    direction, source_namespace, source_pod, source_ip,
+    dest_pod, dest_ip, dest_port, protocol
+ORDER BY flow_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'ch-port-who-uses',
+        label: 'Port Traffic Summary',
+        query: `-- Who is using a specific destination port?
+-- Replace 8080 with the port to investigate
+SELECT
+    source_namespace,
+    source_pod,
+    dest_pod,
+    dest_ip,
+    protocol,
+    count(*) as flow_count,
+    sum(bytes_sent) as total_bytes_sent,
+    sum(bytes_received) as total_bytes_received,
+    round(avg(latency_ms), 2) as avg_latency_ms
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND dest_port = 8080
+GROUP BY source_namespace, source_pod, dest_pod, dest_ip, protocol
+ORDER BY flow_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'ch-ip-timeline',
+        label: 'IP Traffic Over Time',
+        query: `-- Traffic timeline for a specific IP (5min buckets)
+-- Replace '10.0.2.15' with the target IP
+SELECT
+    toStartOfFiveMinute(timestamp) as time_bucket,
+    CASE 
+        WHEN source_ip = '10.0.2.15' THEN 'OUTGOING'
+        ELSE 'INCOMING'
+    END as direction,
+    count(*) as flow_count,
+    sum(bytes_sent + bytes_received) as total_bytes,
+    uniqExact(dest_port) as unique_ports
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 6 HOUR
+  AND (source_ip = '10.0.2.15' OR dest_ip = '10.0.2.15')
+GROUP BY time_bucket, direction
+ORDER BY time_bucket`,
+      },
+      {
+        key: 'ch-ip-subnet',
+        label: 'Subnet Traffic (CIDR)',
+        query: `-- Traffic from/to a specific subnet
+-- Replace '10.244.0' with the subnet prefix
+SELECT
+    source_ip,
+    dest_ip,
+    dest_port,
+    protocol,
+    source_pod,
+    dest_pod,
+    count(*) as flow_count,
+    sum(bytes_sent + bytes_received) as total_bytes
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND (source_ip LIKE '10.244.0.%' OR dest_ip LIKE '10.244.0.%')
+GROUP BY source_ip, dest_ip, dest_port, protocol, source_pod, dest_pod
+ORDER BY flow_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'ch-ip-dns',
+        label: 'DNS Lookups by IP',
+        query: `-- DNS queries originating from a specific IP
+-- Replace '10.244.0.15' with the target IP
+SELECT
+    source_pod,
+    query_name,
+    query_type,
+    response_code,
+    response_ips,
+    count(*) as query_count,
+    round(avg(latency_ms), 2) as avg_latency_ms
+FROM dns_queries
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND source_ip = '10.244.0.15'
+GROUP BY source_pod, query_name, query_type, response_code, response_ips
+ORDER BY query_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'ch-ip-reverse-dns',
+        label: 'Reverse DNS (IP to Domain)',
+        query: `-- Find which domain resolved to a specific IP
+-- Replace '10.96.0.10' with the target IP
+SELECT
+    query_name,
+    response_code,
+    response_ips,
+    source_pod,
+    source_namespace,
+    count(*) as lookup_count,
+    max(timestamp) as last_resolved
+FROM dns_queries
+WHERE timestamp > now() - INTERVAL 24 HOUR
+  AND has(response_ips, '10.96.0.10')
+GROUP BY query_name, response_code, response_ips, source_pod, source_namespace
+ORDER BY lookup_count DESC
+LIMIT 50`,
+      },
+      {
+        key: 'ch-ip-sni',
+        label: 'TLS/SNI by IP',
+        query: `-- TLS/SNI connections for a specific IP
+-- Replace '10.244.0.15' with the target IP
+SELECT
+    pod,
+    namespace,
+    sni_name,
+    dst_ip,
+    dst_port,
+    tls_version,
+    count(*) as connection_count
+FROM sni_events
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND (src_ip = '10.244.0.15' OR dst_ip = '10.244.0.15')
+GROUP BY pod, namespace, sni_name, dst_ip, dst_port, tls_version
+ORDER BY connection_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'ch-ip-errors',
+        label: 'IP Error Analysis',
+        query: `-- Connection errors for a specific IP
+-- Replace '10.0.2.15' with the target IP
+SELECT
+    source_pod,
+    dest_pod,
+    dest_ip,
+    dest_port,
+    error_type,
+    connection_state,
+    count(*) as error_count,
+    max(timestamp) as last_seen
+FROM network_flows
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND (source_ip = '10.0.2.15' OR dest_ip = '10.0.2.15')
+  AND (error_count > 0 OR error_type != '')
+GROUP BY source_pod, dest_pod, dest_ip, dest_port, error_type, connection_state
+ORDER BY error_count DESC
+LIMIT 100`,
       },
     ],
   },
@@ -824,6 +1089,96 @@ RETURN
     sum(c.request_count) as total_requests
 ORDER BY connection_count DESC
 LIMIT 30`,
+      },
+    ],
+  },
+
+  // ---------------------------------------------------------------------------
+  // IP & Port Lookup
+  // ---------------------------------------------------------------------------
+  {
+    key: 'neo-ip-port',
+    label: 'IP & Port Lookup',
+    icon: <AimOutlined />,
+    examples: [
+      {
+        key: 'neo-ip-external-dest',
+        label: 'Traffic to External IP',
+        query: `// Find workloads communicating with a specific external IP
+// Replace '203.0.113.50' with the target IP
+MATCH (src:Workload)-[c:COMMUNICATES_WITH]->(dst)
+WHERE c.dest_ip = '203.0.113.50'
+  AND c.is_active = true
+RETURN 
+    src.namespace + '/' + src.name as source_workload,
+    c.dest_ip as dest_ip,
+    c.port as dest_port,
+    c.protocol,
+    c.request_count
+ORDER BY c.request_count DESC`,
+      },
+      {
+        key: 'neo-ip-port-filter',
+        label: 'Communications by Port',
+        query: `// Find all communications on a specific port
+// Replace 443 with the target port
+MATCH (src:Workload)-[c:COMMUNICATES_WITH]->(dst:Workload)
+WHERE c.port = 443
+  AND c.is_active = true
+RETURN 
+    src.namespace + '/' + src.name as source,
+    dst.namespace + '/' + dst.name as destination,
+    c.protocol,
+    c.port,
+    c.request_count
+ORDER BY c.request_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'neo-ip-who-talks-to-port',
+        label: 'Who Connects to Port?',
+        query: `// Find all source workloads connecting to a specific destination port
+// Replace 5432 with the target port (e.g. 5432=PostgreSQL, 6379=Redis, 3306=MySQL)
+MATCH (src:Workload)-[c:COMMUNICATES_WITH]->(dst:Workload)
+WHERE c.port = 5432
+  AND c.is_active = true
+RETURN 
+    dst.namespace + '/' + dst.name as service,
+    collect(DISTINCT src.namespace + '/' + src.name) as callers,
+    count(src) as caller_count,
+    sum(c.request_count) as total_requests
+ORDER BY caller_count DESC`,
+      },
+      {
+        key: 'neo-ip-external-all',
+        label: 'All External IP Communications',
+        query: `// All communications to non-workload (external) destinations
+MATCH (src:Workload)-[c:COMMUNICATES_WITH]->(dst)
+WHERE NOT dst:Workload
+  AND c.is_active = true
+RETURN 
+    src.namespace + '/' + src.name as source,
+    dst.ip as external_ip,
+    c.port as dest_port,
+    c.protocol,
+    c.request_count
+ORDER BY c.request_count DESC
+LIMIT 100`,
+      },
+      {
+        key: 'neo-ip-multi-port',
+        label: 'Services Exposing Multiple Ports',
+        query: `// Find workloads that receive traffic on multiple ports
+MATCH (src:Workload)-[c:COMMUNICATES_WITH]->(dst:Workload)
+WHERE c.is_active = true
+WITH dst, collect(DISTINCT c.port) as ports, count(c) as conn_count
+WHERE size(ports) > 1
+RETURN 
+    dst.namespace + '/' + dst.name as workload,
+    ports as exposed_ports,
+    size(ports) as port_count,
+    conn_count as total_connections
+ORDER BY port_count DESC`,
       },
     ],
   },

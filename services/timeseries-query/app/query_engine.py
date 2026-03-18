@@ -67,6 +67,33 @@ class TimeseriesQueryEngine:
             logger.error(f"❌ Failed to connect to timeseries database: {e}")
             raise
     
+    TABLE_SEARCH_FIELDS = {
+        "network_flows": ["source_ip", "dest_ip", "source_pod", "dest_pod", "source_namespace", "dest_namespace"],
+        "dns_queries": ["query_name", "dns_server_ip", "source_pod", "source_namespace"],
+        "sni_events": ["sni_name", "dst_ip", "pod", "namespace", "comm"],
+        "process_events": ["comm", "exe", "pod", "namespace"],
+        "file_operations": ["file_path", "comm", "pod", "namespace"],
+        "capability_checks": ["capability", "syscall", "comm", "pod", "namespace"],
+        "oom_kills": ["comm", "pod", "namespace", "node"],
+        "bind_events": ["bind_addr", "comm", "interface", "pod", "namespace"],
+        "mount_events": ["source", "target", "fs_type", "comm", "pod", "namespace"],
+    }
+
+    def _build_search_condition(self, search: str, search_fields: List[str]) -> str:
+        """
+        Build search condition for full-text search across multiple fields.
+        Uses positionCaseInsensitive for case-insensitive substring matching.
+        """
+        if not search or not search.strip():
+            return ""
+
+        safe_search = search.strip().replace("'", "''")
+        conditions = []
+        for field in search_fields:
+            conditions.append(f"positionCaseInsensitive(toString({field}), '{safe_search}') > 0")
+
+        return f"({' OR '.join(conditions)})"
+
     def _build_where_clause(
         self,
         cluster_id: Optional[int] = None,
@@ -75,7 +102,9 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         namespace_column: str = "namespace",
-        extra_conditions: Optional[List[str]] = None
+        extra_conditions: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        search_fields: Optional[List[str]] = None
     ) -> str:
         """
         Build WHERE clause from filters
@@ -103,6 +132,11 @@ class TimeseriesQueryEngine:
         if end_time:
             # Use parseDateTimeBestEffort for robust ISO 8601 parsing
             conditions.append(f"timestamp <= parseDateTimeBestEffort('{end_time}')")
+        
+        if search and search_fields:
+            search_condition = self._build_search_condition(search, search_fields)
+            if search_condition:
+                conditions.append(search_condition)
         
         if extra_conditions:
             conditions.extend(extra_conditions)
@@ -215,7 +249,8 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """
         Query events by type with pagination
@@ -229,6 +264,7 @@ class TimeseriesQueryEngine:
             end_time: Optional end time (ISO format)
             limit: Max results (default 100)
             offset: Pagination offset
+            search: Optional full-text search across relevant fields
             
         Returns:
             Tuple of (events list, total count)
@@ -242,13 +278,18 @@ class TimeseriesQueryEngine:
             # network_flows and dns_queries use source_* columns
             ns_col = "source_namespace" if table_name in ("network_flows", "dns_queries") else "namespace"
             
+            # Resolve search fields for this table
+            s_fields = self.TABLE_SEARCH_FIELDS.get(table_name) if search else None
+            
             where_clause = self._build_where_clause(
                 cluster_id=cluster_id,
                 analysis_id=analysis_id,
                 namespace=namespace,
                 start_time=start_time,
                 end_time=end_time,
-                namespace_column=ns_col
+                namespace_column=ns_col,
+                search=search,
+                search_fields=s_fields
             )
             
             # For security events (capability_checks), show:
@@ -314,13 +355,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query network flow events"""
         return await self.query_events(
             "network_flow", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_dns_queries(
@@ -331,13 +373,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query DNS query events"""
         return await self.query_events(
             "dns_query", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_process_events(
@@ -348,13 +391,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query process events"""
         return await self.query_events(
             "process_event", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_file_events(
@@ -365,13 +409,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query file operation events"""
         return await self.query_events(
             "file_event", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_security_events(
@@ -382,13 +427,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query security/capability events"""
         return await self.query_events(
             "security_event", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_oom_events(
@@ -399,13 +445,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query OOM kill events"""
         return await self.query_events(
             "oom_event", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_bind_events(
@@ -416,13 +463,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query socket bind events"""
         return await self.query_events(
             "bind_event", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_sni_events(
@@ -433,13 +481,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query TLS/SNI events"""
         return await self.query_events(
             "sni_event", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     async def query_mount_events(
@@ -450,13 +499,14 @@ class TimeseriesQueryEngine:
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        search: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Query mount events"""
         return await self.query_events(
             "mount_event", cluster_id, analysis_id, namespace,
             start_time=start_time, end_time=end_time,
-            limit=limit, offset=offset
+            limit=limit, offset=offset, search=search
         )
     
     # NOTE: query_tcp_connections removed - IG trace_tcp doesn't produce TCP state events
