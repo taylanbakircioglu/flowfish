@@ -640,6 +640,28 @@ components:
             items:
               $ref: '#/components/schemas/DependencySummaryService'
 
+    MatchedService:
+      type: object
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        kind:
+          type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        downstream_count:
+          type: integer
+        callers_count:
+          type: integer
+
     DependencySummaryResponse:
       type: object
       properties:
@@ -649,8 +671,16 @@ components:
           type: array
           items:
             type: integer
+        multi_service:
+          type: boolean
+          description: True when multiple upstream pods matched (e.g. namespace-wide query)
         service:
           $ref: '#/components/schemas/DependencySummaryService'
+        matched_services:
+          type: array
+          description: Present when multi_service is true. Lists each matched upstream pod with its dependency counts.
+          items:
+            $ref: '#/components/schemas/MatchedService'
         downstream:
           $ref: '#/components/schemas/DependencySummaryGroup'
         callers:

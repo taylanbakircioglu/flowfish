@@ -355,10 +355,22 @@ export interface DependencySummaryGroup {
   by_category: Record<string, DependencySummaryService[]>;
 }
 
+export interface MatchedService {
+  name: string;
+  namespace: string;
+  kind?: string;
+  annotations: Record<string, string>;
+  labels: Record<string, string>;
+  downstream_count: number;
+  callers_count: number;
+}
+
 export interface DependencySummaryResponse {
   success: boolean;
   analysis_ids: number[];
+  multi_service?: boolean;
   service: DependencySummaryService;
+  matched_services?: MatchedService[];
   downstream: DependencySummaryGroup;
   callers: DependencySummaryGroup;
   error?: string;
@@ -511,5 +523,6 @@ export const {
   useGetDependencyDiffQuery,
   useGetDependencyImpactQuery,
   useGetDependencySummaryQuery,
+  useLazyGetDependencySummaryQuery,
 } = communicationApi;
 

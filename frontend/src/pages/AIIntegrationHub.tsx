@@ -46,10 +46,11 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
 import { useGetAnalysesQuery } from '../store/api/analysisApi';
 import {
-  useGetDependencySummaryQuery,
+  useLazyGetDependencySummaryQuery,
   DependencySummaryParams,
   DependencySummaryService,
   DependencySummaryGroup,
+  MatchedService,
 } from '../store/api/communicationApi';
 
 const { Text, Title, Paragraph } = Typography;
@@ -176,16 +177,21 @@ const AIIntegrationHub: React.FC = () => {
   const [integrationType, setIntegrationType] = useState<IntegrationType>(null);
   const [form] = Form.useForm();
 
-  // Step 1 state
-  const [selectedClusterId, setSelectedClusterId] = useState<number | undefined>();
   const [selectedAnalysisIds, setSelectedAnalysisIds] = useState<number[]>([]);
   const [platform, setPlatform] = useState('azure_devops');
   const [agentType, setAgentType] = useState('code_review');
   const [idMethod, setIdMethod] = useState('annotation');
   const [depth, setDepth] = useState(1);
 
-  // Query trigger
+  // Lazy query: triggered manually, always fresh. Use isFetching (not isLoading)
+  // so the spinner shows even during forced refetch of cached params.
+  const [triggerSummary, { data: rawSummaryData, isFetching: summaryLoading, error: rawSummaryError }] =
+    useLazyGetDependencySummaryQuery();
   const [summaryParams, setSummaryParams] = useState<DependencySummaryParams | null>(null);
+  const [summaryCleared, setSummaryCleared] = useState(false);
+  const summaryData = summaryCleared ? undefined : rawSummaryData;
+  const summaryError = summaryCleared ? undefined : rawSummaryError;
+  const resetSummary = useCallback(() => setSummaryCleared(true), []);
 
   // Pre-fill from URL params (e.g. when navigating from Map page)
   const [searchParams] = useSearchParams();
@@ -211,21 +217,21 @@ const AIIntegrationHub: React.FC = () => {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Data hooks
+  // Load ALL analyses (no cluster filter) and cluster names for display
   const { data: clustersData } = useGetClustersQuery();
   const clusters: any[] = (clustersData as any)?.clusters || [];
-  const { data: analysesData } = useGetAnalysesQuery(
-    { cluster_id: selectedClusterId },
-    { skip: !selectedClusterId }
-  );
-  const analyses: any[] = (Array.isArray(analysesData) ? analysesData : [])
-    .filter((a: any) => a.status === 'completed' || a.status === 'running');
+  const clusterNameMap = useMemo(() => {
+    const m: Record<number, string> = {};
+    clusters.forEach((c: any) => { m[c.id] = c.name; });
+    return m;
+  }, [clusters]);
 
-  const {
-    data: summaryData,
-    isLoading: summaryLoading,
-    error: summaryError,
-  } = useGetDependencySummaryQuery(summaryParams!, { skip: !summaryParams });
+  const { data: analysesData } = useGetAnalysesQuery({});
+  const analyses: any[] = useMemo(() =>
+    (Array.isArray(analysesData) ? analysesData : [])
+      .filter((a: any) => a.status === 'completed' || a.status === 'running'),
+    [analysesData],
+  );
 
   const summaryErrMsg = useMemo(() => {
     if (summaryError) return (summaryError as any)?.data?.detail || 'Query failed';
@@ -243,14 +249,13 @@ const AIIntegrationHub: React.FC = () => {
     }
     const hasSearch = values.annotation_key || values.label_key || values.namespace || values.owner_name || values.pod_name || values.ip;
     if (!hasSearch) {
-      message.warning('At least one search parameter is required');
+      message.warning('At least one search parameter is required (e.g. namespace, deployment, annotation)');
       return;
     }
     const params: DependencySummaryParams = {
       analysis_ids: selectedAnalysisIds,
       depth,
     };
-    if (selectedClusterId) params.cluster_id = selectedClusterId;
     if (values.annotation_key) params.annotation_key = values.annotation_key;
     if (values.annotation_value) params.annotation_value = values.annotation_value;
     if (values.label_key) params.label_key = values.label_key;
@@ -260,14 +265,14 @@ const AIIntegrationHub: React.FC = () => {
     if (values.pod_name) params.pod_name = values.pod_name;
     if (values.ip) params.ip = values.ip;
     setSummaryParams(params);
-  }, [form, selectedAnalysisIds, selectedClusterId, depth]);
+    setSummaryCleared(false);
+    triggerSummary(params, false);
+  }, [form, selectedAnalysisIds, depth, triggerSummary]);
 
-  // Build curl snippet from summaryParams
-  const buildCurlSnippet = useCallback(() => {
+  const buildQueryString = useCallback(() => {
     if (!summaryParams) return '';
     const qs = new URLSearchParams();
     summaryParams.analysis_ids.forEach(id => qs.append('analysis_ids', String(id)));
-    if (summaryParams.cluster_id) qs.set('cluster_id', String(summaryParams.cluster_id));
     if (summaryParams.annotation_key) qs.set('annotation_key', summaryParams.annotation_key);
     if (summaryParams.annotation_value) qs.set('annotation_value', summaryParams.annotation_value);
     if (summaryParams.label_key) qs.set('label_key', summaryParams.label_key);
@@ -277,32 +282,31 @@ const AIIntegrationHub: React.FC = () => {
     if (summaryParams.pod_name) qs.set('pod_name', summaryParams.pod_name);
     if (summaryParams.ip) qs.set('ip', summaryParams.ip);
     if (summaryParams.depth && summaryParams.depth > 1) qs.set('depth', String(summaryParams.depth));
-    return `curl -s -H "Authorization: Bearer $TOKEN" \\\n  "${API_BASE}/communications/dependencies/summary?${qs.toString()}"`;
+    return qs.toString();
   }, [summaryParams]);
 
+  const buildCurlSnippet = useCallback(() => {
+    const qsStr = buildQueryString();
+    if (!qsStr) return '';
+    return `curl -s -H "Authorization: Bearer $TOKEN" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
+  }, [buildQueryString]);
+
   const buildPipelineSnippet = useCallback(() => {
-    if (!summaryParams) return '';
-    const idsQs = summaryParams.analysis_ids.map(id => `analysis_ids=${id}`).join('&');
-    const searchParam = summaryParams.annotation_key
-      ? `annotation_key=${summaryParams.annotation_key}&annotation_value=\${SERVICE_IDENTIFIER}`
-      : summaryParams.label_key
-        ? `label_key=${summaryParams.label_key}&label_value=\${SERVICE_IDENTIFIER}`
-        : summaryParams.owner_name
-          ? `owner_name=\${SERVICE_IDENTIFIER}`
-          : summaryParams.namespace
-            ? `namespace=\${SERVICE_IDENTIFIER}`
-            : 'owner_name=${SERVICE_IDENTIFIER}';
+    const qsStr = buildQueryString();
+    if (!qsStr) return '';
 
     if (platform === 'azure_devops') {
       return `# Azure DevOps Pipeline - Flowfish Integration
+# Tested query parameters from AI Integration Hub
+variables:
+  FLOWFISH_QUERY: '${qsStr}'
+
 steps:
   - script: |
       DEPS=$(curl -s -H "Authorization: Bearer $(FLOWFISH_TOKEN)" \\
-        "$(FLOWFISH_URL)/api/v1/communications/dependencies/summary?\\
-        ${idsQs}&${searchParam}")
+        "$(FLOWFISH_URL)/api/v1/communications/dependencies/summary?$(FLOWFISH_QUERY)")
       echo "$DEPS" > flowfish-deps.json
       
-      # Check for critical dependencies
       CRITICAL=$(echo "$DEPS" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -325,36 +329,45 @@ print(c)
 
     if (platform === 'github_actions') {
       return `# GitHub Actions - Flowfish Integration
-- name: Get Flowfish Dependencies
-  id: flowfish
-  run: |
-    curl -s -H "Authorization: Bearer \${{ secrets.FLOWFISH_TOKEN }}" \\
-      "\${{ vars.FLOWFISH_URL }}/api/v1/communications/dependencies/summary?\\
-      ${idsQs}&${searchParam}" > flowfish-deps.json
-    
-    CRITICAL=$(python3 -c "
+env:
+  FLOWFISH_QUERY: '${qsStr}'
+
+jobs:
+  flowfish:
+    steps:
+      - name: Get Flowfish Dependencies
+        id: flowfish
+        run: |
+          curl -s -H "Authorization: Bearer \${{ secrets.FLOWFISH_TOKEN }}" \\
+            "\${{ vars.FLOWFISH_URL }}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}" \\
+            > flowfish-deps.json
+          
+          CRITICAL=$(python3 -c "
 import json
 d=json.load(open('flowfish-deps.json'))
 print(d.get('downstream',{}).get('critical_count',0))
 ")
-    echo "critical_deps=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "critical_deps=$CRITICAL" >> $GITHUB_OUTPUT
 
-- name: AI Impact Analysis
-  run: |
-    python ai-agent/analyze.py \\
-      --pr-diff \${{ github.event.pull_request.number }} \\
-      --deps flowfish-deps.json`;
+      - name: AI Impact Analysis
+        run: |
+          python ai-agent/analyze.py \\
+            --pr-diff \${{ github.event.pull_request.number }} \\
+            --deps flowfish-deps.json`;
     }
 
     if (platform === 'gitlab_ci') {
       return `# GitLab CI - Flowfish Integration
+variables:
+  FLOWFISH_QUERY: '${qsStr}'
+
 flowfish_dependencies:
   stage: test
   script:
     - |
       curl -s -H "Authorization: Bearer $FLOWFISH_TOKEN" \\
-        "$FLOWFISH_URL/api/v1/communications/dependencies/summary?\\
-        ${idsQs}&${searchParam}" > flowfish-deps.json
+        "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
+        > flowfish-deps.json
     - python ai-agent/analyze.py --deps flowfish-deps.json
   artifacts:
     paths:
@@ -363,13 +376,14 @@ flowfish_dependencies:
 
     if (platform === 'jenkins') {
       return `// Jenkins Pipeline - Flowfish Integration
+def FLOWFISH_QUERY = '${qsStr}'
+
 stage('Flowfish Dependencies') {
     steps {
         script {
             def deps = sh(returnStdout: true, script: """
                 curl -s -H "Authorization: Bearer \${FLOWFISH_TOKEN}" \\
-                  "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\\
-                  ${idsQs}&${searchParam}"
+                  "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}"
             """).trim()
             writeFile file: 'flowfish-deps.json', text: deps
         }
@@ -378,23 +392,25 @@ stage('Flowfish Dependencies') {
     }
 
     return `# Generic CI/CD - Flowfish Integration
-# Fetch dependencies
+FLOWFISH_QUERY='${qsStr}'
+
 curl -s -H "Authorization: Bearer $FLOWFISH_TOKEN" \\
-  "$FLOWFISH_URL/api/v1/communications/dependencies/summary?\\
-  ${idsQs}&${searchParam}" > flowfish-deps.json`;
-  }, [summaryParams, platform]);
+  "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
+  > flowfish-deps.json`;
+  }, [buildQueryString, platform]);
 
   const buildPythonSnippet = useCallback(() => {
     if (!summaryParams) return '';
-    const idsStr = summaryParams.analysis_ids.map(String).join('", "');
-    const searchLines: string[] = [];
-    if (summaryParams.annotation_key) searchLines.push(`        "annotation_key": "${summaryParams.annotation_key}",`);
-    if (summaryParams.annotation_value) searchLines.push(`        "annotation_value": "${summaryParams.annotation_value}",`);
-    if (summaryParams.label_key) searchLines.push(`        "label_key": "${summaryParams.label_key}",`);
-    if (summaryParams.label_value) searchLines.push(`        "label_value": "${summaryParams.label_value}",`);
-    if (summaryParams.namespace) searchLines.push(`        "namespace": "${summaryParams.namespace}",`);
-    if (summaryParams.owner_name) searchLines.push(`        "owner_name": "${summaryParams.owner_name}",`);
-    if (summaryParams.pod_name) searchLines.push(`        "pod_name": "${summaryParams.pod_name}",`);
+    const paramLines: string[] = [];
+    summaryParams.analysis_ids.forEach(id => paramLines.push(`    ("analysis_ids", "${id}"),`));
+    if (summaryParams.annotation_key) paramLines.push(`    ("annotation_key", "${summaryParams.annotation_key}"),`);
+    if (summaryParams.annotation_value) paramLines.push(`    ("annotation_value", "${summaryParams.annotation_value}"),`);
+    if (summaryParams.label_key) paramLines.push(`    ("label_key", "${summaryParams.label_key}"),`);
+    if (summaryParams.label_value) paramLines.push(`    ("label_value", "${summaryParams.label_value}"),`);
+    if (summaryParams.namespace) paramLines.push(`    ("namespace", "${summaryParams.namespace}"),`);
+    if (summaryParams.owner_name) paramLines.push(`    ("owner_name", "${summaryParams.owner_name}"),`);
+    if (summaryParams.pod_name) paramLines.push(`    ("pod_name", "${summaryParams.pod_name}"),`);
+    if (summaryParams.depth && summaryParams.depth > 1) paramLines.push(`    ("depth", "${summaryParams.depth}"),`);
 
     return `import requests
 
@@ -403,10 +419,9 @@ TOKEN = "your-api-token"
 
 resp = requests.get(
     f"{FLOWFISH_URL}/communications/dependencies/summary",
-    params={
-        "analysis_ids": ["${idsStr}"],
-${searchLines.join('\n')}
-    },
+    params=[
+${paramLines.join('\n')}
+    ],
     headers={"Authorization": f"Bearer {TOKEN}"},
 )
 deps = resp.json()
@@ -432,16 +447,10 @@ for r in affected_repos:
   }, [summaryParams]);
 
   const buildJsSnippet = useCallback(() => {
-    if (!summaryParams) return '';
-    const qs = new URLSearchParams();
-    summaryParams.analysis_ids.forEach(id => qs.append('analysis_ids', String(id)));
-    if (summaryParams.annotation_key) qs.set('annotation_key', summaryParams.annotation_key);
-    if (summaryParams.annotation_value) qs.set('annotation_value', summaryParams.annotation_value);
-    if (summaryParams.namespace) qs.set('namespace', summaryParams.namespace);
-    if (summaryParams.owner_name) qs.set('owner_name', summaryParams.owner_name);
-
+    const qsStr = buildQueryString();
+    if (!qsStr) return '';
     return `const resp = await fetch(
-  \`\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?${qs.toString()}\`,
+  \`\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?${qsStr}\`,
   { headers: { Authorization: \`Bearer \${token}\` } }
 );
 const deps = await resp.json();
@@ -460,7 +469,7 @@ const affectedRepos = Object.entries(deps.downstream?.by_category ?? {})
   );
 
 console.log(\`Found \${affectedRepos.length} affected repos\`);`;
-  }, [summaryParams]);
+  }, [buildQueryString]);
 
   const responseSize = useMemo(() => {
     if (!summaryData) return 0;
@@ -538,7 +547,7 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
               <Col xs={24} md={8} key={item.key}>
                 <Card
                   hoverable
-                  onClick={() => { setIntegrationType(item.key); form.resetFields(); setCurrentStep(1); }}
+                  onClick={() => { setIntegrationType(item.key); form.resetFields(); resetSummary(); setCurrentStep(1); }}
                   style={{
                     borderColor: integrationType === item.key ? '#1677ff' : undefined,
                     borderWidth: integrationType === item.key ? 2 : 1,
@@ -582,42 +591,34 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
       {/* ─── Step 1: Configure ─── */}
       {currentStep === 1 && (
         <Card title="Analysis Scope & Service Identification">
-          {/* Common: Cluster + Analysis selection */}
-          <Row gutter={16}>
-            <Col xs={24} md={12}>
-              <Form.Item label="Cluster" required>
-                <Select
-                  placeholder="Select cluster"
-                  value={selectedClusterId}
-                  onChange={(v) => { setSelectedClusterId(v); setSelectedAnalysisIds([]); }}
-                  allowClear
-                  style={{ width: '100%' }}
-                >
-                  {clusters.map((c: any) => (
-                    <Option key={c.id} value={c.id}>{c.name}</Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item label="Analysis (required, multi-select)" required>
-                <Select
-                  mode="multiple"
-                  placeholder={!selectedClusterId ? 'Select cluster first' : 'Select analyses'}
-                  disabled={!selectedClusterId}
-                  value={selectedAnalysisIds}
-                  onChange={setSelectedAnalysisIds}
-                  style={{ width: '100%' }}
-                >
-                  {analyses.map((a: any) => (
-                    <Option key={a.id} value={a.id}>
-                      {a.name} <Tag color={a.status === 'completed' ? 'green' : 'blue'}>{a.status}</Tag>
-                    </Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
+          <Form.Item label="Analysis (required, multi-select)" required>
+            <Select
+              mode="multiple"
+              placeholder="Select one or more analyses"
+              value={selectedAnalysisIds}
+              onChange={(ids) => { setSelectedAnalysisIds(ids); resetSummary(); }}
+              style={{ width: '100%' }}
+              optionFilterProp="label"
+              showSearch
+            >
+              {(() => {
+                const grouped: Record<string, any[]> = {};
+                analyses.forEach((a: any) => {
+                  const cName = clusterNameMap[a.cluster_id] || `Cluster ${a.cluster_id}`;
+                  (grouped[cName] ||= []).push(a);
+                });
+                return Object.entries(grouped).map(([clusterName, items]) => (
+                  <Select.OptGroup key={clusterName} label={clusterName}>
+                    {items.map((a: any) => (
+                      <Option key={a.id} value={a.id} label={`${clusterName} ${a.name}`}>
+                        {a.name} <Tag color={a.status === 'completed' ? 'green' : 'blue'}>{a.status}</Tag>
+                      </Option>
+                    ))}
+                  </Select.OptGroup>
+                ));
+              })()}
+            </Select>
+          </Form.Item>
 
           {selectedAnalysisIds.length > 0 && (
             <Alert
@@ -651,7 +652,7 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
           {(integrationType === 'cicd' || integrationType === 'agent') && (
             <>
               <Form.Item label="Service Identification Method">
-                <Radio.Group value={idMethod} onChange={(e) => { setIdMethod(e.target.value); form.resetFields(); }}>
+                <Radio.Group value={idMethod} onChange={(e) => { setIdMethod(e.target.value); form.resetFields(); resetSummary(); }}>
                   {ID_METHODS.map(m => <Radio.Button key={m.value} value={m.value}>{m.label}</Radio.Button>)}
                 </Radio.Group>
               </Form.Item>
@@ -754,7 +755,7 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             </Button>
           </div>
 
-          {summaryErrMsg && (
+          {summaryErrMsg && !summaryLoading && (
             <Alert type="error" showIcon style={{ marginTop: 16 }} message={summaryErrMsg} />
           )}
 
@@ -805,9 +806,41 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             </Row>
           </Card>
 
-          {/* Upstream annotations/labels */}
-          {Object.keys(summaryData.service.annotations || {}).length > 0 && (
-            <Card size="small" title="Service Annotations" style={{ marginBottom: 16 }}>
+          {/* Multi-service: show matched upstream services table */}
+          {summaryData.multi_service && summaryData.matched_services && summaryData.matched_services.length > 0 && (
+            <Card size="small" title={`Matched Upstream Services (${summaryData.matched_services.length})`} style={{ marginBottom: 16 }}>
+              <Table<MatchedService>
+                dataSource={summaryData.matched_services}
+                rowKey={(r) => `${r.namespace}/${r.name}`}
+                size="small"
+                pagination={summaryData.matched_services.length > 10 ? { pageSize: 10 } : false}
+                columns={[
+                  { title: 'Name', dataIndex: 'name', key: 'name', render: (v: string) => <Text strong>{v}</Text> },
+                  { title: 'Namespace', dataIndex: 'namespace', key: 'ns' },
+                  { title: 'Kind', dataIndex: 'kind', key: 'kind', render: (v: string) => v ? <Tag>{v}</Tag> : '-' },
+                  { title: 'Downstream', dataIndex: 'downstream_count', key: 'ds', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? '#1677ff' : '#d9d9d9' }} /> },
+                  { title: 'Callers', dataIndex: 'callers_count', key: 'cl', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? '#52c41a' : '#d9d9d9' }} /> },
+                  {
+                    title: 'Metadata',
+                    key: 'meta',
+                    render: (_: unknown, r: MatchedService) => {
+                      const annCount = Object.keys(r.annotations || {}).length;
+                      const lblCount = Object.keys(r.labels || {}).length;
+                      return (
+                        <Tooltip title={`${lblCount} labels, ${annCount} annotations`}>
+                          <Tag>{lblCount}L / {annCount}A</Tag>
+                        </Tooltip>
+                      );
+                    },
+                  },
+                ]}
+              />
+            </Card>
+          )}
+
+          {/* Single-service: show annotations only when not multi */}
+          {!summaryData.multi_service && Object.keys(summaryData.service.annotations || {}).length > 0 && (
+            <Card size="small" title="Upstream Service Metadata" style={{ marginBottom: 16 }}>
               <Descriptions size="small" column={{ xs: 1, sm: 2 }}>
                 {Object.entries(summaryData.service.annotations).map(([k, v]) => (
                   <Descriptions.Item key={k} label={<Text strong style={{ fontSize: 11, color: '#d48806' }}>{k}</Text>}>

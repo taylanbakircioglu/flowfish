@@ -1161,7 +1161,7 @@ class GraphQueryEngine:
             w.host_ip AS host_ip,
             w.pod_uid AS pod_uid,
             w.node AS node
-        LIMIT 10
+        LIMIT 200
         """
         
         find_result = self.execute_query(find_query, params)
@@ -1517,8 +1517,11 @@ class GraphQueryEngine:
     ) -> Dict[str, Any]:
         """Transform find_pod_dependencies output into a compact, AI-agent-friendly
         grouped format. Dependencies are grouped by service_category with only the
-        fields relevant for cross-project impact analysis."""
-        # Normalize IDs to integers for consistent JSON output
+        fields relevant for cross-project impact analysis.
+
+        When multiple pods match (e.g. namespace-wide query), aggregates ALL
+        downstream/caller entries (deduplicated) and exposes matched_services.
+        """
         try:
             int_ids = [int(a) for a in analysis_ids]
         except (ValueError, TypeError):
@@ -1531,8 +1534,10 @@ class GraphQueryEngine:
                 "error": stream_result.get("error", "No results"),
             }
 
-        first = stream_result["results"][0]
+        results = stream_result["results"]
+        first = results[0]
         upstream = first.get("upstream", {})
+        is_multi = len(results) > 1
 
         def _compact_service(entry: dict, direction: str = "downstream") -> dict:
             comm = entry.get("communication") or {}
@@ -1555,6 +1560,15 @@ class GraphQueryEngine:
                 "port": comm.get("port"),
             }
 
+        def _dedup_entries(entries: list) -> list:
+            """Deduplicate dependency entries by (name, namespace), keeping richer entry."""
+            seen: Dict[str, dict] = {}
+            for entry in entries:
+                key = f"{entry.get('namespace', '')}/{entry.get('pod_name') or entry.get('owner_name', '')}"
+                if key not in seen:
+                    seen[key] = entry
+            return list(seen.values())
+
         def _group_by_category(entries: list, direction: str = "downstream") -> dict:
             by_cat: Dict[str, list] = {}
             crit_count = 0
@@ -1570,9 +1584,58 @@ class GraphQueryEngine:
                 "by_category": by_cat,
             }
 
+        if is_multi:
+            all_downstream = []
+            all_callers = []
+            matched_services = []
+            matched_upstream_keys = set()
+            for res in results:
+                up = res.get("upstream", {})
+                ds = res.get("downstream", [])
+                cl = res.get("callers", [])
+                all_downstream.extend(ds)
+                all_callers.extend(cl)
+                up_key = f"{up.get('namespace', '')}/{up.get('owner_name') or up.get('pod_name', '')}"
+                if up_key not in matched_upstream_keys:
+                    matched_upstream_keys.add(up_key)
+                    matched_services.append({
+                        "name": up.get("owner_name") or up.get("pod_name", ""),
+                        "namespace": up.get("namespace", ""),
+                        "kind": up.get("owner_kind", ""),
+                        "annotations": up.get("annotations", {}),
+                        "labels": up.get("labels", {}),
+                        "downstream_count": len(ds),
+                        "callers_count": len(cl),
+                    })
+            all_downstream = _dedup_entries(all_downstream)
+            all_callers = _dedup_entries(all_callers)
+            all_namespaces = sorted(set(s["namespace"] for s in matched_services if s["namespace"]))
+            if len(all_namespaces) == 1:
+                svc_label = f"{all_namespaces[0]} ({len(matched_services)} services)"
+                svc_ns = all_namespaces[0]
+            else:
+                svc_label = f"{len(matched_services)} services across {len(all_namespaces)} namespaces"
+                svc_ns = ", ".join(all_namespaces)
+            return {
+                "success": True,
+                "analysis_ids": int_ids,
+                "multi_service": True,
+                "service": {
+                    "name": svc_label,
+                    "namespace": svc_ns,
+                    "kind": "",
+                    "annotations": {},
+                    "labels": {},
+                },
+                "matched_services": matched_services,
+                "downstream": _group_by_category(all_downstream, "downstream"),
+                "callers": _group_by_category(all_callers, "caller"),
+            }
+
         return {
             "success": True,
             "analysis_ids": int_ids,
+            "multi_service": False,
             "service": {
                 "name": upstream.get("owner_name") or upstream.get("pod_name", ""),
                 "namespace": upstream.get("namespace", ""),
