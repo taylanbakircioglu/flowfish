@@ -68,6 +68,8 @@ tags:
     description: Veri içe ve dışa aktarma
   - name: Settings
     description: Sistem ayarları
+  - name: AI Integration
+    description: AI Agent ve CI/CD pipeline entegrasyonlari icin dependency intelligence API'leri
 
 components:
   securitySchemes:
@@ -372,6 +374,230 @@ components:
           type: string
           format: date-time
     
+    DependencyStreamCommunication:
+      type: object
+      properties:
+        protocol:
+          type: string
+        app_protocol:
+          type: string
+        service_type:
+          type: string
+          description: Detected service type (e.g. postgresql, kafka, redis)
+        service_category:
+          type: string
+          description: Service category (database, cache, message_broker, search_engine, etc.)
+          enum: [database, cache, message_broker, search_engine, service_discovery, identity, object_storage, observability, api_gateway, mail, dns, file_transfer, service]
+        is_critical:
+          type: boolean
+          description: Whether this dependency is classified as infrastructure-critical
+        port:
+          type: integer
+        request_count:
+          type: integer
+        error_rate_percent:
+          type: number
+        retransmit_count:
+          type: integer
+        avg_latency_ms:
+          type: number
+
+    DependencyHealth:
+      type: object
+      properties:
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy, critical]
+        error_rate_percent:
+          type: number
+        retransmit_rate_percent:
+          type: number
+        avg_latency_ms:
+          type: number
+        risk_factors:
+          type: array
+          items:
+            type: string
+
+    DependencyStreamPeer:
+      type: object
+      properties:
+        hop_count:
+          type: integer
+        pod_name:
+          type: string
+        namespace:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        ip:
+          type: string
+        owner_kind:
+          type: string
+        owner_name:
+          type: string
+        communication:
+          $ref: '#/components/schemas/DependencyStreamCommunication'
+        health:
+          $ref: '#/components/schemas/DependencyHealth'
+
+    CommunicationsDependenciesBatchRequest:
+      type: object
+      required:
+        - services
+      properties:
+        analysis_id:
+          type: string
+        cluster_id:
+          type: string
+        services:
+          type: array
+          items:
+            type: object
+            properties:
+              pod_name:
+                type: string
+              namespace:
+                type: string
+              owner_name:
+                type: string
+              label_key:
+                type: string
+              label_value:
+                type: string
+              annotation_key:
+                type: string
+              annotation_value:
+                type: string
+              ip:
+                type: string
+        depth:
+          type: integer
+          default: 1
+        include_communication_details:
+          type: boolean
+          default: true
+
+    CommunicationsDependenciesBatchResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        service_count:
+          type: integer
+        results:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        shared_dependencies:
+          type: array
+          items:
+            type: string
+
+    CommunicationsDependenciesDiffResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        service:
+          type: object
+        analysis_before:
+          type: object
+        analysis_after:
+          type: object
+        added_dependencies:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        removed_dependencies:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        changed_dependencies:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        unchanged_count:
+          type: integer
+        summary:
+          type: object
+
+    CommunicationsDependenciesImpactResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        service:
+          type: object
+        dependencies:
+          type: object
+          properties:
+            downstream:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            callers:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            downstream_count:
+              type: integer
+            callers_count:
+              type: integer
+        impact_assessment:
+          type: object
+          properties:
+            risk_score:
+              type: integer
+              description: Risk score 0-100
+            risk_level:
+              type: string
+              enum: [low, medium, high, critical]
+            blast_radius:
+              type: integer
+              description: Total direct dependency count
+            critical_dependencies:
+              type: array
+              items:
+                type: string
+              description: List of critical service types (e.g. postgresql, redis)
+            recommendation:
+              type: string
+              enum: [proceed, caution, block]
+            suggested_actions:
+              type: array
+              items:
+                type: object
+                properties:
+                  priority:
+                    type: string
+                    enum: [critical, high, medium, low]
+                  action:
+                    type: string
+                  reason:
+                    type: string
+                  automatable:
+                    type: boolean
+            change_type:
+              type: string
+              enum: [image_update, config_change, scale_change, delete]
+
     GraphData:
       type: object
       properties:
@@ -390,6 +616,12 @@ components:
                 type: string
               labels:
                 type: object
+                additionalProperties:
+                  type: string
+              annotations:
+                type: object
+                additionalProperties:
+                  type: string
               metadata:
                 type: object
         edges:
@@ -876,24 +1108,27 @@ paths:
       parameters:
         - name: cluster_id
           in: query
-          required: true
+          description: Opsiyonel; multi-cluster senaryolarında filtreleme için
+          schema:
+            type: integer
+        - name: analysis_id
+          in: query
           schema:
             type: integer
         - name: namespace
           in: query
           schema:
             type: string
-        - name: layout
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            default: 2
+        - name: search
           in: query
           schema:
             type: string
-            enum: [hierarchical, force_directed, circular]
-            default: hierarchical
-        - name: include_external
-          in: query
-          schema:
-            type: boolean
-            default: true
+            minLength: 3
       responses:
         '200':
           description: Graph verisi
@@ -902,38 +1137,244 @@ paths:
               schema:
                 $ref: '#/components/schemas/GraphData'
   
-  /dependencies/upstream/{workload_id}:
+  /communications/dependencies/stream:
     get:
       tags:
-        - Dependencies
-      summary: Upstream bağımlılıkları getir
-      description: Belirtilen workload'a bağlanan tüm upstream workload'ları döndürür
+        - AI Integration
+        - Communications
+      summary: Pod bağımlılıklarını upstream/downstream olarak getir
+      description: |
+        Herhangi bir pod bilgisi (annotation, label, pod name, namespace, ip) ile 
+        istek atılarak o pod'un bağımlı olduğu ve gittiği tüm pod'ları döndürür.
+        Eşleşen pod upstream kabul edilir. İletişim kurduğu pod'lar downstream olarak döner.
+        Bu pod'a bağlanan pod'lar ise callers olarak döner.
       parameters:
-        - name: workload_id
-          in: path
-          required: true
+        - name: analysis_id
+          in: query
           schema:
             type: integer
+        - name: cluster_id
+          in: query
+          schema:
+            type: integer
+        - name: pod_name
+          in: query
+          schema:
+            type: string
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: owner_name
+          in: query
+          description: Deployment/StatefulSet/DaemonSet adı
+          schema:
+            type: string
+        - name: annotation_key
+          in: query
+          schema:
+            type: string
+        - name: annotation_value
+          in: query
+          schema:
+            type: string
+        - name: label_key
+          in: query
+          schema:
+            type: string
+        - name: label_value
+          in: query
+          schema:
+            type: string
+        - name: ip
+          in: query
+          schema:
+            type: string
         - name: depth
           in: query
           schema:
             type: integer
             minimum: 1
             maximum: 5
-            default: 2
+            default: 1
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, mermaid, dot]
+            default: json
       responses:
         '200':
-          description: Upstream workload listesi
+          description: Upstream pod ve downstream bağımlılıkları
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  workloads:
+                  success:
+                    type: boolean
+                  count:
+                    type: integer
+                  results:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Workload'
-  
+                      type: object
+                      properties:
+                        upstream:
+                          type: object
+                          properties:
+                            pod_name:
+                              type: string
+                            namespace:
+                              type: string
+                            labels:
+                              type: object
+                            annotations:
+                              type: object
+                            ip:
+                              type: string
+                            owner_kind:
+                              type: string
+                            owner_name:
+                              type: string
+                        downstream:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/DependencyStreamPeer'
+                        callers:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/DependencyStreamPeer'
+
+  /communications/dependencies/batch:
+    post:
+      tags:
+        - AI Integration
+        - Communications
+      summary: Birden fazla servis için bağımlılıkları toplu sorgula
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommunicationsDependenciesBatchRequest'
+      responses:
+        '200':
+          description: Toplu bağımlılık sonuçları
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunicationsDependenciesBatchResponse'
+
+  /communications/dependencies/diff:
+    get:
+      tags:
+        - AI Integration
+        - Communications
+      summary: İki analiz arasında bağımlılık farkını getir
+      parameters:
+        - name: analysis_id_before
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: analysis_id_after
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: pod_name
+          in: query
+          schema:
+            type: string
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: owner_name
+          in: query
+          schema:
+            type: string
+        - name: cluster_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Bağımlılık diff sonucu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunicationsDependenciesDiffResponse'
+
+  /communications/dependencies/impact:
+    get:
+      tags:
+        - AI Integration
+        - Communications
+      summary: Değişiklik türüne göre bağımlılık etki analizi
+      parameters:
+        - name: analysis_id
+          in: query
+          schema:
+            type: integer
+        - name: cluster_id
+          in: query
+          schema:
+            type: integer
+        - name: pod_name
+          in: query
+          schema:
+            type: string
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: owner_name
+          in: query
+          schema:
+            type: string
+        - name: annotation_key
+          in: query
+          schema:
+            type: string
+        - name: annotation_value
+          in: query
+          schema:
+            type: string
+        - name: label_key
+          in: query
+          schema:
+            type: string
+        - name: label_value
+          in: query
+          schema:
+            type: string
+        - name: ip
+          in: query
+          schema:
+            type: string
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 1
+        - name: change_type
+          in: query
+          schema:
+            type: string
+            enum: [image_update, config_change, scale_change, delete]
+            default: image_update
+      responses:
+        '200':
+          description: Etki analizi sonucu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunicationsDependenciesImpactResponse'
+
   /anomalies:
     get:
       tags:

@@ -722,6 +722,7 @@ class TraceManager:
                             enriched_data['dst_node'] = pod_info.node
                         # Metadata - always set from PodDiscovery (authoritative source)
                         enriched_data['dst_labels'] = pod_info.labels
+                        enriched_data['dst_annotations'] = pod_info.annotations
                         enriched_data['dst_owner_kind'] = pod_info.owner_kind
                         enriched_data['dst_owner_name'] = pod_info.owner_name
                         # Extended metadata
@@ -785,6 +786,7 @@ class TraceManager:
                             enriched_data['src_node'] = pod_info.node
                         # Metadata - always set from PodDiscovery (authoritative source)
                         enriched_data['labels'] = pod_info.labels
+                        enriched_data['annotations'] = pod_info.annotations
                         enriched_data['owner_kind'] = pod_info.owner_kind
                         enriched_data['owner_name'] = pod_info.owner_name
                         # Extended metadata for source

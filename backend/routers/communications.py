@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
+import json
 import structlog
 import httpx
 import re
@@ -129,6 +130,7 @@ class DependencyNode(BaseModel):
     cluster_id: str = ""
     status: str = "active"
     labels: dict = {}
+    annotations: dict = {}
     ip: Optional[str] = None
     node: Optional[str] = None
     owner_kind: Optional[str] = None  # Deployment, StatefulSet, DaemonSet, etc.
@@ -203,6 +205,9 @@ class GraphQueryClient:
                     response = await client.get(url, params=params)
                 
                 if response.status_code == 200:
+                    content_type = response.headers.get("content-type", "")
+                    if "text/plain" in content_type:
+                        return {"content": response.text, "format": "text"}
                     return response.json()
                 else:
                     logger.warning(f"Graph query service returned {response.status_code}", 
@@ -324,12 +329,12 @@ class GraphQueryClient:
     ) -> dict:
         """Return sample graph data when graph-query service is unavailable"""
         nodes = [
-            {"id": "nginx", "name": "nginx", "kind": "Deployment", "namespace": "frontend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "nginx"}},
-            {"id": "api-gateway", "name": "api-gateway", "kind": "Deployment", "namespace": "backend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "api-gateway"}},
-            {"id": "user-service", "name": "user-service", "kind": "Deployment", "namespace": "backend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "user-service"}},
-            {"id": "order-service", "name": "order-service", "kind": "Deployment", "namespace": "backend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "order-service"}},
-            {"id": "postgresql", "name": "postgresql", "kind": "StatefulSet", "namespace": "database", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "postgresql"}},
-            {"id": "redis", "name": "redis", "kind": "StatefulSet", "namespace": "database", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "redis"}},
+            {"id": "nginx", "name": "nginx", "kind": "Deployment", "namespace": "frontend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "nginx"}, "annotations": {}},
+            {"id": "api-gateway", "name": "api-gateway", "kind": "Deployment", "namespace": "backend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "api-gateway"}, "annotations": {}},
+            {"id": "user-service", "name": "user-service", "kind": "Deployment", "namespace": "backend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "user-service"}, "annotations": {}},
+            {"id": "order-service", "name": "order-service", "kind": "Deployment", "namespace": "backend", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "order-service"}, "annotations": {}},
+            {"id": "postgresql", "name": "postgresql", "kind": "StatefulSet", "namespace": "database", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "postgresql"}, "annotations": {}},
+            {"id": "redis", "name": "redis", "kind": "StatefulSet", "namespace": "database", "cluster_id": str(cluster_id), "status": "active", "labels": {"app": "redis"}, "annotations": {}},
         ]
         
         edges = [
@@ -557,10 +562,17 @@ class GraphQueryClient:
                     src_labels = record.get("source_labels", {})
                     if isinstance(src_labels, str):
                         try:
-                            import json
                             src_labels = json.loads(src_labels)
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             src_labels = {}
+                    
+                    # Parse annotations from JSON string if needed
+                    src_annotations = record.get("source_annotations", {})
+                    if isinstance(src_annotations, str):
+                        try:
+                            src_annotations = json.loads(src_annotations)
+                        except (json.JSONDecodeError, TypeError):
+                            src_annotations = {}
                     
                     # Multi-cluster: parse cluster_id from node ID, fallback to record or passed cluster_id
                     src_cluster_id = (
@@ -579,6 +591,7 @@ class GraphQueryClient:
                         "cluster_id": str(src_cluster_id),
                         "status": "active",
                         "labels": src_labels or {},
+                        "annotations": src_annotations or {},
                         "ip": record.get("source_ip"),
                         "node": record.get("source_node"),
                         "owner_kind": record.get("source_owner_kind"),
@@ -599,10 +612,17 @@ class GraphQueryClient:
                     dst_labels = record.get("destination_labels", {})
                     if isinstance(dst_labels, str):
                         try:
-                            import json
                             dst_labels = json.loads(dst_labels)
-                        except:
+                        except (json.JSONDecodeError, TypeError):
                             dst_labels = {}
+                    
+                    # Parse annotations from JSON string if needed
+                    dst_annotations = record.get("destination_annotations", {})
+                    if isinstance(dst_annotations, str):
+                        try:
+                            dst_annotations = json.loads(dst_annotations)
+                        except (json.JSONDecodeError, TypeError):
+                            dst_annotations = {}
                     
                     # Multi-cluster: parse cluster_id from node ID, fallback to record or passed cluster_id
                     dst_cluster_id = (
@@ -621,6 +641,7 @@ class GraphQueryClient:
                         "cluster_id": str(dst_cluster_id),
                         "status": "active",
                         "labels": dst_labels or {},
+                        "annotations": dst_annotations or {},
                         "ip": record.get("destination_ip"),
                         "node": record.get("destination_node"),
                         "owner_kind": record.get("destination_owner_kind"),
@@ -1328,3 +1349,264 @@ async def _get_neo4j_error_stats(
             analysis_id=analysis_id,
             namespace=namespace
         )
+
+
+@router.get("/dependencies/stream")
+async def find_pod_dependencies(
+    analysis_id: Optional[int] = Query(None, description="Analysis ID for scope"),
+    cluster_id: Optional[int] = Query(None, description="Cluster ID for scope"),
+    pod_name: Optional[str] = Query(None, description="Pod/workload name to search"),
+    namespace: Optional[str] = Query(None, description="Namespace to narrow search"),
+    owner_name: Optional[str] = Query(None, description="Deployment/StatefulSet/DaemonSet name to search"),
+    label_key: Optional[str] = Query(None, description="Label key to match"),
+    label_value: Optional[str] = Query(None, description="Label value to match"),
+    annotation_key: Optional[str] = Query(None, description="Annotation key to match"),
+    annotation_value: Optional[str] = Query(None, description="Annotation value to match"),
+    ip: Optional[str] = Query(None, description="Pod IP to search"),
+    depth: int = Query(1, ge=1, le=5, description="Traversal depth"),
+    format: Optional[str] = Query("json", description="Response format: json, mermaid, dot"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Find a pod by any metadata and return upstream/downstream dependencies.
+    
+    The matched pod is the **upstream**. All pods it connects to are **downstream**.
+    All pods that connect TO it are **callers**.
+    
+    Search by any combination: pod_name, namespace, owner_name, annotation_key/value, label_key/value, ip.
+    Use format=mermaid or format=dot for text-based graph output.
+    """
+    try:
+        params = {}
+        if analysis_id:
+            params["analysis_id"] = str(analysis_id)
+        if cluster_id:
+            params["cluster_id"] = str(cluster_id)
+        if pod_name:
+            params["pod_name"] = pod_name
+        if namespace:
+            params["namespace"] = namespace
+        if owner_name:
+            params["owner_name"] = owner_name
+        if label_key:
+            params["label_key"] = label_key
+        if label_value:
+            params["label_value"] = label_value
+        if annotation_key:
+            params["annotation_key"] = annotation_key
+        if annotation_value:
+            params["annotation_value"] = annotation_value
+        if ip:
+            params["ip"] = ip
+        params["depth"] = depth
+        if format and format in ("mermaid", "dot"):
+            params["format"] = format
+        
+        result = await graph_query_client._call_graph_query(
+            "/dependencies/stream",
+            params=params
+        )
+        
+        if result:
+            if isinstance(result, dict) and result.get("format") == "text":
+                from fastapi.responses import PlainTextResponse
+                return PlainTextResponse(
+                    content=result.get("content", ""),
+                    media_type="text/plain"
+                )
+            return result
+        
+        raise HTTPException(
+            status_code=503,
+            detail="Graph query service unavailable"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to find pod dependencies", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to find pod dependencies: {str(e)}"
+        )
+
+
+@router.post("/dependencies/batch")
+async def batch_find_dependencies(
+    request: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Batch find dependencies for multiple services in one request."""
+    try:
+        result = await graph_query_client._call_graph_query(
+            "/dependencies/batch",
+            json_body=request
+        )
+        if result:
+            return result
+        raise HTTPException(status_code=503, detail="Graph query service unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to batch find dependencies", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dependencies/diff")
+async def diff_dependencies(
+    analysis_id_before: str = Query(..., description="Analysis ID before"),
+    analysis_id_after: str = Query(..., description="Analysis ID after"),
+    pod_name: Optional[str] = Query(None),
+    namespace: Optional[str] = Query(None),
+    owner_name: Optional[str] = Query(None),
+    cluster_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Compare dependencies between two analysis runs."""
+    try:
+        params = {
+            "analysis_id_before": analysis_id_before,
+            "analysis_id_after": analysis_id_after,
+        }
+        if pod_name:
+            params["pod_name"] = pod_name
+        if namespace:
+            params["namespace"] = namespace
+        if owner_name:
+            params["owner_name"] = owner_name
+        if cluster_id:
+            params["cluster_id"] = str(cluster_id)
+
+        result = await graph_query_client._call_graph_query(
+            "/dependencies/diff",
+            params=params
+        )
+        if result:
+            return result
+        raise HTTPException(status_code=503, detail="Graph query service unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to diff dependencies", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dependencies/impact")
+async def get_dependency_impact(
+    analysis_id: Optional[int] = Query(None, description="Analysis ID"),
+    cluster_id: Optional[int] = Query(None, description="Cluster ID"),
+    pod_name: Optional[str] = Query(None),
+    namespace: Optional[str] = Query(None),
+    owner_name: Optional[str] = Query(None),
+    label_key: Optional[str] = Query(None),
+    label_value: Optional[str] = Query(None),
+    annotation_key: Optional[str] = Query(None),
+    annotation_value: Optional[str] = Query(None),
+    ip: Optional[str] = Query(None),
+    depth: int = Query(1, ge=1, le=5),
+    change_type: str = Query("image_update", description="Change type: image_update, config_change, scale_change, delete"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Combined dependency lookup + impact/risk assessment in a single response.
+    AI Agent one-stop-shop endpoint.
+    """
+    try:
+        params = {}
+        if analysis_id:
+            params["analysis_id"] = str(analysis_id)
+        if cluster_id:
+            params["cluster_id"] = str(cluster_id)
+        if pod_name:
+            params["pod_name"] = pod_name
+        if namespace:
+            params["namespace"] = namespace
+        if owner_name:
+            params["owner_name"] = owner_name
+        if label_key:
+            params["label_key"] = label_key
+        if label_value:
+            params["label_value"] = label_value
+        if annotation_key:
+            params["annotation_key"] = annotation_key
+        if annotation_value:
+            params["annotation_value"] = annotation_value
+        if ip:
+            params["ip"] = ip
+        params["depth"] = depth
+
+        dep_result = await graph_query_client._call_graph_query(
+            "/dependencies/stream",
+            params=params
+        )
+
+        if not dep_result or not dep_result.get("success"):
+            detail = dep_result.get("error", "No matching pod found") if isinstance(dep_result, dict) else "No matching pod found"
+            raise HTTPException(status_code=404, detail=detail)
+
+        first = dep_result.get("results", [{}])[0] if dep_result.get("results") else {}
+        upstream = first.get("upstream", {})
+        downstream = first.get("downstream", [])
+        callers = first.get("callers", [])
+
+        direct_count = len(downstream) + len(callers)
+        indirect_count = sum(1 for d in downstream if d.get("hop_count", 1) > 1)
+        indirect_count += sum(1 for c in callers if c.get("hop_count", 1) > 1)
+
+        critical_deps = []
+        for d in downstream:
+            comm = d.get("communication") or {}
+            if comm.get("is_critical"):
+                critical_deps.append(comm.get("service_type") or comm.get("service_category") or d.get("pod_name", "unknown"))
+
+        now = datetime.utcnow()
+        is_business_hours = 9 <= now.hour <= 18 and now.weekday() < 5
+
+        from routers.blast_radius import calculate_risk_score, generate_suggested_actions
+        risk_score, risk_level, _confidence = calculate_risk_score(
+            change_type=change_type,
+            direct_count=direct_count,
+            indirect_count=indirect_count,
+            critical_services=sorted(set(critical_deps)),
+            is_business_hours=is_business_hours,
+        )
+        suggested_actions = generate_suggested_actions(
+            risk_level=risk_level,
+            direct_count=direct_count,
+            indirect_count=indirect_count,
+            critical_services=sorted(set(critical_deps)),
+            change_type=change_type,
+            is_business_hours=is_business_hours,
+        )
+
+        recommendation = "proceed"
+        if risk_score >= 70:
+            recommendation = "block"
+        elif risk_score >= 40:
+            recommendation = "caution"
+
+        return {
+            "success": True,
+            "service": upstream,
+            "dependencies": {
+                "downstream": downstream,
+                "callers": callers,
+                "downstream_count": len(downstream),
+                "callers_count": len(callers),
+            },
+            "impact_assessment": {
+                "risk_score": risk_score,
+                "risk_level": risk_level.value if hasattr(risk_level, 'value') else str(risk_level),
+                "blast_radius": direct_count,
+                "critical_dependencies": sorted(set(critical_deps)),
+                "recommendation": recommendation,
+                "suggested_actions": [a.model_dump() if hasattr(a, 'model_dump') else (a.dict() if hasattr(a, 'dict') else a) for a in suggested_actions],
+                "change_type": change_type,
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get dependency impact", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

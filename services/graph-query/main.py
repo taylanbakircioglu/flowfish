@@ -43,19 +43,23 @@ class QueryRequest(BaseModel):
     query: str
 
 
-class DependencyRequest(BaseModel):
-    workload_id: str
-    direction: str = "outgoing"  # "outgoing" or "incoming"
+class BatchDependencyServiceItem(BaseModel):
+    pod_name: Optional[str] = None
+    namespace: Optional[str] = None
+    owner_name: Optional[str] = None
+    label_key: Optional[str] = None
+    label_value: Optional[str] = None
+    annotation_key: Optional[str] = None
+    annotation_value: Optional[str] = None
+    ip: Optional[str] = None
 
 
-class SubgraphRequest(BaseModel):
-    namespace: str
-
-
-class PathRequest(BaseModel):
-    source_id: str
-    target_id: str
-    max_hops: int = 5
+class BatchDependencyRequest(BaseModel):
+    analysis_id: Optional[str] = None
+    cluster_id: Optional[str] = None
+    services: List[BatchDependencyServiceItem]
+    depth: int = 1
+    include_communication_details: bool = True
 
 
 @app.get("/health")
@@ -167,44 +171,9 @@ async def get_neo4j_schema():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/dependencies")
-async def get_dependencies(request: DependencyRequest):
-    """Get dependencies for a workload"""
-    try:
-        result = graph_query_engine.get_dependencies(
-            request.workload_id,
-            request.direction
-        )
-        return {"workload_id": request.workload_id, "dependencies": result}
-    except Exception as e:
-        logger.error(f"Failed to get dependencies: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/subgraph")
-async def get_subgraph(request: SubgraphRequest):
-    """Get subgraph for a namespace"""
-    try:
-        result = graph_query_engine.get_subgraph(request.namespace)
-        return result
-    except Exception as e:
-        logger.error(f"Failed to get subgraph: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/path")
-async def find_path(request: PathRequest):
-    """Find path between two workloads"""
-    try:
-        result = graph_query_engine.find_path(
-            request.source_id,
-            request.target_id,
-            request.max_hops
-        )
-        return {"path": result}
-    except Exception as e:
-        logger.error(f"Failed to find path: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# NOTE: POST /dependencies, POST /subgraph, POST /path endpoints removed.
+# GraphQueryEngine does not implement get_dependencies(), get_subgraph(), find_path().
+# Use GET /dependencies/stream for dependency lookups instead.
 
 
 @app.get("/communications")
@@ -366,6 +335,56 @@ async def get_high_risk_communications(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/dependencies/stream")
+async def find_pod_dependencies(
+    analysis_id: Optional[str] = None,
+    cluster_id: Optional[str] = None,
+    pod_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+    owner_name: Optional[str] = None,
+    label_key: Optional[str] = None,
+    label_value: Optional[str] = None,
+    annotation_key: Optional[str] = None,
+    annotation_value: Optional[str] = None,
+    ip: Optional[str] = None,
+    depth: int = Query(1, ge=1, le=5, description="Traversal depth"),
+    format: Optional[str] = Query("json", description="Response format: json, mermaid, dot")
+):
+    """
+    Find a pod by any metadata and return upstream/downstream dependencies.
+    
+    The matched pod becomes the **upstream**. Pods it communicates with are **downstream**.
+    Pods that communicate TO the matched pod are returned as **callers**.
+    
+    Search by any combination of: pod_name, namespace, owner_name, annotation_key/value, label_key/value, ip.
+    At least one search parameter is required.
+    
+    Use format=mermaid or format=dot for text-based graph output suitable for LLMs.
+    """
+    try:
+        result = graph_query_engine.find_pod_dependencies(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            pod_name=pod_name,
+            namespace=namespace,
+            owner_name=owner_name,
+            label_key=label_key,
+            label_value=label_value,
+            annotation_key=annotation_key,
+            annotation_value=annotation_value,
+            ip=ip,
+            depth=depth
+        )
+        if format and format in ("mermaid", "dot"):
+            from fastapi.responses import PlainTextResponse
+            text = graph_query_engine.format_dependency_graph(result, format)
+            return PlainTextResponse(content=text, media_type="text/plain")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to find pod dependencies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/external")
 async def get_external_communications(
     namespace: Optional[str] = None,
@@ -384,6 +403,49 @@ async def get_external_communications(
         return result
     except Exception as e:
         logger.error(f"Failed to get external communications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/dependencies/batch")
+async def batch_find_dependencies(request: BatchDependencyRequest):
+    """Batch find dependencies for multiple services in one request."""
+    try:
+        services = [s.model_dump() for s in request.services]
+        result = graph_query_engine.batch_find_dependencies(
+            analysis_id=request.analysis_id,
+            cluster_id=request.cluster_id,
+            services=services,
+            depth=request.depth,
+            include_communication_details=request.include_communication_details,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to batch find dependencies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dependencies/diff")
+async def diff_dependencies(
+    analysis_id_before: str = Query(..., description="Analysis ID for before state"),
+    analysis_id_after: str = Query(..., description="Analysis ID for after state"),
+    pod_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+    owner_name: Optional[str] = None,
+    cluster_id: Optional[str] = None,
+):
+    """Diff dependencies between two analysis runs."""
+    try:
+        result = graph_query_engine.diff_pod_dependencies(
+            analysis_id_before=analysis_id_before,
+            analysis_id_after=analysis_id_after,
+            pod_name=pod_name,
+            namespace=namespace,
+            owner_name=owner_name,
+            cluster_id=cluster_id,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to diff dependencies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

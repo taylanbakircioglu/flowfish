@@ -208,6 +208,7 @@ class GraphQueryEngine:
             src.ip AS source_ip,
             src.node AS source_node,
             src.labels AS source_labels,
+            src.annotations AS source_annotations,
             src.owner_kind AS source_owner_kind,
             src.owner_name AS source_owner_name,
             src.pod_uid AS source_pod_uid,
@@ -223,6 +224,7 @@ class GraphQueryEngine:
             dst.ip AS destination_ip,
             dst.node AS destination_node,
             dst.labels AS destination_labels,
+            dst.annotations AS destination_annotations,
             dst.owner_kind AS destination_owner_kind,
             dst.owner_name AS destination_owner_name,
             dst.pod_uid AS destination_pod_uid,
@@ -784,6 +786,7 @@ class GraphQueryEngine:
                 COALESCE(w.cluster_id, '1') AS cluster_id,
                 COALESCE(w.status, 'unknown') AS status,
                 w.labels AS labels,
+                w.annotations AS annotations,
                 COALESCE(w.is_external, false) AS is_external,
                 w.ip AS ip,
                 w.host_ip AS host_ip,
@@ -870,7 +873,7 @@ class GraphQueryEngine:
         logger.warning(f"[GRAPH_QUERY_DEBUG] Final result: {len(nodes)} nodes, {len(all_edges)} edges")
         
         # Post-process nodes: parse JSON string fields
-        # Neo4j stores labels as JSON string, but frontend expects object
+        # Neo4j stores labels/annotations as JSON string, but frontend expects object
         for node in nodes:
             # Parse labels from JSON string to dict
             labels_raw = node.get("labels")
@@ -884,6 +887,19 @@ class GraphQueryEngine:
                     node["labels"] = {}
             else:
                 node["labels"] = {}
+            
+            # Parse annotations from JSON string to dict
+            annotations_raw = node.get("annotations")
+            if annotations_raw:
+                if isinstance(annotations_raw, str):
+                    try:
+                        node["annotations"] = json.loads(annotations_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        node["annotations"] = {}
+                elif not isinstance(annotations_raw, dict):
+                    node["annotations"] = {}
+            else:
+                node["annotations"] = {}
         
         return {
             "nodes": nodes,
@@ -1000,6 +1016,922 @@ class GraphQueryEngine:
                 "error": str(e)
             }
     
+    def find_pod_dependencies(
+        self,
+        analysis_id: Optional[str] = None,
+        cluster_id: Optional[str] = None,
+        pod_name: Optional[str] = None,
+        namespace: Optional[str] = None,
+        owner_name: Optional[str] = None,
+        label_key: Optional[str] = None,
+        label_value: Optional[str] = None,
+        annotation_key: Optional[str] = None,
+        annotation_value: Optional[str] = None,
+        ip: Optional[str] = None,
+        depth: int = 1,
+        include_communication_details: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Find a pod by any metadata and return its upstream/downstream dependencies.
+        
+        The matched pod is the "upstream" (source). All pods it communicates with
+        are "downstream" (targets). Pods that communicate TO the matched pod are
+        also returned as callers (reverse upstream).
+        
+        Any combination of search parameters can be used. At least one is required.
+        
+        Args:
+            analysis_id: Analysis ID for scope
+            cluster_id: Cluster ID for scope
+            pod_name: Pod/workload name to search
+            namespace: Namespace to narrow search
+            owner_name: Deployment/StatefulSet/DaemonSet name to search
+            label_key/label_value: Label key=value to match
+            annotation_key/annotation_value: Annotation key=value to match
+            ip: Pod IP to search
+            depth: Traversal depth for dependencies (default 1)
+        
+        Returns:
+            Dict with upstream pod info and downstream dependencies
+        """
+        # Build match conditions to find the target pod
+        match_conditions = []
+        params = {}
+        
+        if analysis_id:
+            analysis_id_str = str(analysis_id)
+            analysis_id_prefix = f"{analysis_id_str}-"
+            params["analysis_id"] = analysis_id_str
+            params["analysis_id_prefix"] = analysis_id_prefix
+        
+        if cluster_id:
+            params["cluster_id"] = str(cluster_id)
+        
+        if pod_name:
+            match_conditions.append("toLower(w.name) CONTAINS toLower($pod_name)")
+            params["pod_name"] = pod_name
+        
+        if namespace:
+            match_conditions.append("w.namespace = $namespace")
+            params["namespace"] = namespace
+        
+        if owner_name:
+            match_conditions.append("toLower(w.owner_name) CONTAINS toLower($owner_name)")
+            params["owner_name"] = owner_name
+        
+        if ip:
+            match_conditions.append("w.ip = $ip")
+            params["ip"] = ip
+        
+        if annotation_key and annotation_value:
+            match_conditions.append(
+                "w.annotations CONTAINS $annotation_search"
+            )
+            params["annotation_search"] = f'"{annotation_key}"'
+            params["annotation_value"] = annotation_value
+        elif annotation_key:
+            match_conditions.append(
+                "w.annotations CONTAINS $annotation_key_search"
+            )
+            params["annotation_key_search"] = f'"{annotation_key}"'
+        
+        if label_key and label_value:
+            match_conditions.append(
+                "w.labels CONTAINS $label_search"
+            )
+            params["label_search"] = f'"{label_key}"'
+            params["label_value"] = label_value
+        elif label_key:
+            match_conditions.append(
+                "w.labels CONTAINS $label_key_search"
+            )
+            params["label_key_search"] = f'"{label_key}"'
+        
+        if not match_conditions:
+            return {"success": False, "error": "At least one search parameter required (pod_name, namespace, owner_name, ip, annotation_key, label_key)", "count": 0, "results": []}
+        
+        # Add analysis_id filter if provided
+        if analysis_id:
+            match_conditions.append(
+                "(w.analysis_id = $analysis_id OR w.analysis_id STARTS WITH $analysis_id_prefix)"
+            )
+        if cluster_id:
+            match_conditions.append("w.cluster_id = $cluster_id")
+        
+        where_clause = " AND ".join(match_conditions)
+        
+        # Step 1: Find the upstream pod(s) matching criteria
+        find_query = f"""
+        MATCH (w:Workload)
+        WHERE {where_clause}
+        RETURN 
+            w.id AS id,
+            w.name AS name,
+            w.namespace AS namespace,
+            w.cluster_id AS cluster_id,
+            w.ip AS ip,
+            w.labels AS labels,
+            w.annotations AS annotations,
+            w.owner_kind AS owner_kind,
+            w.owner_name AS owner_name,
+            w.phase AS phase,
+            w.image AS image,
+            w.container AS container,
+            w.service_account AS service_account,
+            w.host_ip AS host_ip,
+            w.pod_uid AS pod_uid,
+            w.node AS node
+        LIMIT 10
+        """
+        
+        find_result = self.execute_query(find_query, params)
+        
+        if not find_result.get("success") or not find_result.get("data"):
+            return {
+                "success": False,
+                "error": "No pod found matching the given criteria",
+                "search_params": {
+                    k: v for k, v in {
+                        "pod_name": pod_name, "namespace": namespace,
+                        "owner_name": owner_name,
+                        "annotation_key": annotation_key, "annotation_value": annotation_value,
+                        "label_key": label_key, "label_value": label_value,
+                        "ip": ip
+                    }.items() if v
+                }
+            }
+        
+        # Post-filter for annotation_value and label_value (JSON string matching)
+        matched_pods = find_result["data"]
+        if annotation_key and annotation_value:
+            filtered = []
+            for pod in matched_pods:
+                ann_raw = pod.get("annotations", "{}")
+                if isinstance(ann_raw, str):
+                    try:
+                        ann = json.loads(ann_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        ann = {}
+                else:
+                    ann = ann_raw or {}
+                if ann.get(annotation_key) == annotation_value:
+                    filtered.append(pod)
+            matched_pods = filtered
+        
+        if label_key and label_value:
+            filtered = []
+            for pod in matched_pods:
+                lbl_raw = pod.get("labels", "{}")
+                if isinstance(lbl_raw, str):
+                    try:
+                        lbl = json.loads(lbl_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        lbl = {}
+                else:
+                    lbl = lbl_raw or {}
+                if lbl.get(label_key) == label_value:
+                    filtered.append(pod)
+            matched_pods = filtered
+        
+        if not matched_pods:
+            return {
+                "success": False,
+                "error": "No pod found matching the given criteria after filtering",
+                "search_params": {
+                    k: v for k, v in {
+                        "pod_name": pod_name, "namespace": namespace,
+                        "owner_name": owner_name,
+                        "annotation_key": annotation_key, "annotation_value": annotation_value,
+                        "label_key": label_key, "label_value": label_value,
+                        "ip": ip
+                    }.items() if v
+                }
+            }
+        
+        results = []
+        
+        for upstream_pod in matched_pods:
+            pod_id = upstream_pod["id"]
+            
+            # Parse JSON fields
+            for field in ["labels", "annotations"]:
+                raw = upstream_pod.get(field, "{}")
+                if isinstance(raw, str):
+                    try:
+                        upstream_pod[field] = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError):
+                        upstream_pod[field] = {}
+                elif not isinstance(raw, dict):
+                    upstream_pod[field] = {}
+            
+            # Step 2: Get downstream (pods this upstream connects TO)
+            depth_val = max(1, min(depth, 5))
+            downstream_query = f"""
+            MATCH path = (src:Workload {{id: $pod_id}})-[:COMMUNICATES_WITH*1..{depth_val}]->(dst)
+            WHERE dst.id <> $pod_id
+            WITH dst, path, length(path) as hops
+            ORDER BY hops ASC
+            WITH dst, collect(path)[0] as sp
+            WITH dst, length(sp) as hop_count, relationships(sp) as rels
+            WITH dst, hop_count, rels[size(rels)-1] as r
+            RETURN 
+                dst.id AS id,
+                dst.name AS name,
+                dst.namespace AS namespace,
+                dst.cluster_id AS cluster_id,
+                dst.ip AS ip,
+                dst.labels AS labels,
+                dst.annotations AS annotations,
+                dst.owner_kind AS owner_kind,
+                dst.owner_name AS owner_name,
+                dst.phase AS phase,
+                dst.image AS image,
+                dst.container AS container,
+                dst.service_account AS service_account,
+                dst.host_ip AS host_ip,
+                dst.pod_uid AS pod_uid,
+                dst.node AS node,
+                hop_count,
+                r.protocol AS protocol,
+                r.port AS port,
+                r.destination_port AS destination_port,
+                r.app_protocol AS app_protocol,
+                r.request_count AS request_count,
+                r.bytes_transferred AS bytes_transferred,
+                r.error_count AS error_count,
+                r.retransmit_count AS retransmit_count,
+                r.avg_latency_ms AS avg_latency_ms,
+                r.last_seen AS last_seen
+            ORDER BY hop_count, dst.name
+            LIMIT 200
+            """
+            
+            downstream_result = self.execute_query(downstream_query, {"pod_id": pod_id})
+            downstream_pods = []
+            
+            if downstream_result.get("success"):
+                for d in downstream_result.get("data", []):
+                    for field in ["labels", "annotations"]:
+                        raw = d.get(field, "{}")
+                        if isinstance(raw, str):
+                            try:
+                                d[field] = json.loads(raw)
+                            except (json.JSONDecodeError, TypeError):
+                                d[field] = {}
+                        elif not isinstance(raw, dict):
+                            d[field] = {}
+                    
+                    port = d.get("destination_port") or d.get("port")
+                    request_count = d.get("request_count") or 0
+                    error_count = d.get("error_count") or 0
+                    retransmit_count = d.get("retransmit_count") or 0
+                    avg_latency = d.get("avg_latency_ms") or 0
+                    
+                    dep_entry = {
+                        "pod_name": d.get("name"),
+                        "namespace": d.get("namespace"),
+                        "cluster_id": d.get("cluster_id"),
+                        "ip": d.get("ip"),
+                        "labels": d.get("labels", {}),
+                        "annotations": d.get("annotations", {}),
+                        "owner_kind": d.get("owner_kind"),
+                        "owner_name": d.get("owner_name"),
+                        "phase": d.get("phase"),
+                        "image": d.get("image"),
+                        "container": d.get("container"),
+                        "service_account": d.get("service_account"),
+                        "host_ip": d.get("host_ip"),
+                        "node": d.get("node"),
+                        "hop_count": d.get("hop_count", 1),
+                    }
+                    if include_communication_details:
+                        dep_entry["communication"] = self._build_communication_contract(
+                            d.get("protocol"), d.get("app_protocol"), port,
+                            request_count, d.get("bytes_transferred"),
+                            error_count, retransmit_count, avg_latency,
+                            d.get("last_seen"),
+                            workload_name=d.get("name", "")
+                        )
+                        dep_entry["health"] = self._calculate_dependency_health(
+                            request_count, error_count, retransmit_count, avg_latency
+                        )
+                    downstream_pods.append(dep_entry)
+            
+            # Step 3: Get callers (pods that connect TO this upstream pod - reverse direction)
+            callers_query = f"""
+            MATCH path = (caller)-[:COMMUNICATES_WITH*1..{depth_val}]->(target:Workload {{id: $pod_id}})
+            WHERE caller.id <> $pod_id
+            WITH caller, path, length(path) as hops
+            ORDER BY hops ASC
+            WITH caller, collect(path)[0] as sp
+            WITH caller, length(sp) as hop_count, relationships(sp) as rels
+            WITH caller, hop_count, rels[size(rels)-1] as r
+            RETURN 
+                caller.id AS id,
+                caller.name AS name,
+                caller.namespace AS namespace,
+                caller.cluster_id AS cluster_id,
+                caller.ip AS ip,
+                caller.labels AS labels,
+                caller.annotations AS annotations,
+                caller.owner_kind AS owner_kind,
+                caller.owner_name AS owner_name,
+                caller.phase AS phase,
+                caller.image AS image,
+                caller.container AS container,
+                caller.service_account AS service_account,
+                caller.host_ip AS host_ip,
+                caller.pod_uid AS pod_uid,
+                caller.node AS node,
+                hop_count,
+                r.protocol AS protocol,
+                r.port AS port,
+                r.destination_port AS destination_port,
+                r.app_protocol AS app_protocol,
+                r.request_count AS request_count,
+                r.bytes_transferred AS bytes_transferred,
+                r.error_count AS error_count,
+                r.retransmit_count AS retransmit_count,
+                r.avg_latency_ms AS avg_latency_ms,
+                r.last_seen AS last_seen
+            ORDER BY hop_count, caller.name
+            LIMIT 200
+            """
+            
+            callers_result = self.execute_query(callers_query, {"pod_id": pod_id})
+            caller_pods = []
+            
+            if callers_result.get("success"):
+                for c in callers_result.get("data", []):
+                    for field in ["labels", "annotations"]:
+                        raw = c.get(field, "{}")
+                        if isinstance(raw, str):
+                            try:
+                                c[field] = json.loads(raw)
+                            except (json.JSONDecodeError, TypeError):
+                                c[field] = {}
+                        elif not isinstance(raw, dict):
+                            c[field] = {}
+                    
+                    port = c.get("destination_port") or c.get("port")
+                    request_count = c.get("request_count") or 0
+                    error_count = c.get("error_count") or 0
+                    retransmit_count = c.get("retransmit_count") or 0
+                    avg_latency = c.get("avg_latency_ms") or 0
+                    
+                    caller_entry = {
+                        "pod_name": c.get("name"),
+                        "namespace": c.get("namespace"),
+                        "cluster_id": c.get("cluster_id"),
+                        "ip": c.get("ip"),
+                        "labels": c.get("labels", {}),
+                        "annotations": c.get("annotations", {}),
+                        "owner_kind": c.get("owner_kind"),
+                        "owner_name": c.get("owner_name"),
+                        "phase": c.get("phase"),
+                        "image": c.get("image"),
+                        "container": c.get("container"),
+                        "service_account": c.get("service_account"),
+                        "host_ip": c.get("host_ip"),
+                        "node": c.get("node"),
+                        "hop_count": c.get("hop_count", 1),
+                    }
+                    if include_communication_details:
+                        caller_entry["communication"] = self._build_communication_contract(
+                            c.get("protocol"), c.get("app_protocol"), port,
+                            request_count, c.get("bytes_transferred"),
+                            error_count, retransmit_count, avg_latency,
+                            c.get("last_seen"),
+                            workload_name=c.get("name", "")
+                        )
+                        caller_entry["health"] = self._calculate_dependency_health(
+                            request_count, error_count, retransmit_count, avg_latency
+                        )
+                    caller_pods.append(caller_entry)
+            
+            results.append({
+                "upstream": {
+                    "pod_name": upstream_pod.get("name"),
+                    "namespace": upstream_pod.get("namespace"),
+                    "cluster_id": upstream_pod.get("cluster_id"),
+                    "ip": upstream_pod.get("ip"),
+                    "labels": upstream_pod.get("labels", {}),
+                    "annotations": upstream_pod.get("annotations", {}),
+                    "owner_kind": upstream_pod.get("owner_kind"),
+                    "owner_name": upstream_pod.get("owner_name"),
+                    "phase": upstream_pod.get("phase"),
+                    "image": upstream_pod.get("image"),
+                    "container": upstream_pod.get("container"),
+                    "service_account": upstream_pod.get("service_account"),
+                    "host_ip": upstream_pod.get("host_ip"),
+                    "node": upstream_pod.get("node")
+                },
+                "downstream": downstream_pods,
+                "callers": caller_pods
+            })
+        
+        return {
+            "success": True,
+            "count": len(results),
+            "results": results
+        }
+    
+    def batch_find_dependencies(
+        self,
+        analysis_id: Optional[str] = None,
+        cluster_id: Optional[str] = None,
+        services: List[Dict[str, Any]] = None,
+        depth: int = 1,
+        include_communication_details: bool = True,
+    ) -> Dict[str, Any]:
+        """Batch find dependencies for multiple services in one call."""
+        if not services:
+            return {"error": "services list is required"}
+
+        all_results = []
+        all_downstream_ids: List[set] = []
+
+        for svc in services:
+            result = self.find_pod_dependencies(
+                analysis_id=analysis_id,
+                cluster_id=cluster_id,
+                pod_name=svc.get("pod_name"),
+                namespace=svc.get("namespace"),
+                owner_name=svc.get("owner_name"),
+                label_key=svc.get("label_key"),
+                label_value=svc.get("label_value"),
+                annotation_key=svc.get("annotation_key"),
+                annotation_value=svc.get("annotation_value"),
+                ip=svc.get("ip"),
+                depth=depth,
+                include_communication_details=include_communication_details,
+            )
+            all_results.append(result)
+
+            ids = set()
+            if result.get("success"):
+                for r in result.get("results", []):
+                    for d in r.get("downstream", []):
+                        name = d.get("pod_name") or d.get("owner_name") or ""
+                        ns = d.get("namespace", "")
+                        ids.add(f"{ns}/{name}")
+            all_downstream_ids.append(ids)
+
+        shared = set()
+        if len(all_downstream_ids) >= 2:
+            shared = all_downstream_ids[0]
+            for s in all_downstream_ids[1:]:
+                shared = shared & s
+
+        return {
+            "success": True,
+            "service_count": len(services),
+            "results": all_results,
+            "shared_dependencies": sorted(shared),
+        }
+
+    def diff_pod_dependencies(
+        self,
+        analysis_id_before: str,
+        analysis_id_after: str,
+        pod_name: Optional[str] = None,
+        namespace: Optional[str] = None,
+        owner_name: Optional[str] = None,
+        cluster_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Compare dependencies between two analysis runs."""
+        search_kwargs = dict(
+            pod_name=pod_name, namespace=namespace,
+            owner_name=owner_name, cluster_id=cluster_id, depth=1,
+        )
+
+        before = self.find_pod_dependencies(analysis_id=analysis_id_before, **search_kwargs)
+        after = self.find_pod_dependencies(analysis_id=analysis_id_after, **search_kwargs)
+
+        def _extract_deps(result):
+            deps = {}
+            if result.get("success"):
+                for r in result.get("results", []):
+                    for d in r.get("downstream", []):
+                        key = f"{d.get('namespace', '')}/{d.get('pod_name', '')}"
+                        deps[key] = d
+            return deps
+
+        before_deps = _extract_deps(before)
+        after_deps = _extract_deps(after)
+
+        before_keys = set(before_deps.keys())
+        after_keys = set(after_deps.keys())
+
+        added = []
+        for k in sorted(after_keys - before_keys):
+            d = after_deps[k]
+            comm = d.get("communication", {})
+            added.append({
+                "name": d.get("pod_name"), "namespace": d.get("namespace"),
+                "port": comm.get("port"), "protocol": comm.get("protocol"),
+                "service_type": comm.get("service_type"),
+            })
+
+        removed = []
+        for k in sorted(before_keys - after_keys):
+            d = before_deps[k]
+            comm = d.get("communication", {})
+            removed.append({
+                "name": d.get("pod_name"), "namespace": d.get("namespace"),
+                "port": comm.get("port"), "protocol": comm.get("protocol"),
+                "service_type": comm.get("service_type"),
+            })
+
+        changed = []
+        for k in sorted(before_keys & after_keys):
+            b_comm = before_deps[k].get("communication", {})
+            a_comm = after_deps[k].get("communication", {})
+            changes = []
+            for field in ("port", "protocol", "app_protocol", "service_type"):
+                bv = b_comm.get(field)
+                av = a_comm.get(field)
+                if bv != av:
+                    changes.append(field)
+            if changes:
+                changed.append({
+                    "name": after_deps[k].get("pod_name"),
+                    "namespace": after_deps[k].get("namespace"),
+                    "change": "_".join(changes) + "_changed",
+                    "before": {f: b_comm.get(f) for f in changes},
+                    "after": {f: a_comm.get(f) for f in changes},
+                })
+
+        unchanged_count = len(before_keys & after_keys) - len(changed)
+        service_name = owner_name or pod_name or namespace or "unknown"
+
+        return {
+            "success": True,
+            "service": service_name,
+            "analysis_before": analysis_id_before,
+            "analysis_after": analysis_id_after,
+            "added_dependencies": added,
+            "removed_dependencies": removed,
+            "changed_dependencies": changed,
+            "unchanged_count": unchanged_count,
+            "summary": f"{len(added)} added, {len(removed)} removed, {len(changed)} changed, {unchanged_count} unchanged",
+        }
+
+    def format_dependency_graph(self, result: Dict[str, Any], fmt: str = "json") -> Any:
+        """Format dependency stream result as Mermaid, DOT, or JSON."""
+        if fmt == "json" or not result.get("success"):
+            return result
+
+        lines = []
+        for r in result.get("results", []):
+            upstream = r.get("upstream", {})
+            up_name = (upstream.get("owner_name") or upstream.get("pod_name") or "unknown").replace("-", "_")
+
+            for d in r.get("downstream", []):
+                name = (d.get("owner_name") or d.get("pod_name") or "unknown").replace("-", "_")
+                comm = d.get("communication", {})
+                proto = comm.get("protocol") or "TCP"
+                port = comm.get("port") or 0
+                req = comm.get("request_count") or 0
+                label = f"{proto}:{port} ({self._format_count(req)} req)"
+                lines.append((up_name, name, label, "downstream"))
+
+            for c in r.get("callers", []):
+                name = (c.get("owner_name") or c.get("pod_name") or "unknown").replace("-", "_")
+                comm = c.get("communication", {})
+                proto = comm.get("protocol") or "TCP"
+                port = comm.get("port") or 0
+                req = comm.get("request_count") or 0
+                label = f"{proto}:{port} ({self._format_count(req)} req)"
+                lines.append((name, up_name, label, "caller"))
+
+        if fmt == "mermaid":
+            out = ["graph LR"]
+            for src, dst, label, _ in lines:
+                out.append(f'    {src} -->|"{label}"| {dst}')
+            return "\n".join(out)
+
+        if fmt == "dot":
+            out = ["digraph dependencies {", "    rankdir=LR;"]
+            for src, dst, label, _ in lines:
+                out.append(f'    {src} -> {dst} [label="{label}"];')
+            out.append("}")
+            return "\n".join(out)
+
+        return result
+
+    @staticmethod
+    def _format_count(n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.1f}K"
+        return str(n)
+
+    PORT_SERVICE_MAP = {
+        # Relational databases
+        5432: "postgresql",
+        3306: "mysql", 33060: "mysql-x",
+        1433: "mssql", 1434: "mssql-browser",
+        1521: "oracle", 1830: "oracle-net",
+        50000: "db2",
+        26257: "cockroachdb",
+        4000: "tidb",
+        5433: "postgresql",  # also used by YugabyteDB; name-based detection resolves ambiguity
+        # NoSQL / Document
+        27017: "mongodb", 27018: "mongodb", 27019: "mongodb",
+        5984: "couchdb",
+        8091: "couchbase", 8092: "couchbase", 8093: "couchbase", 11210: "couchbase",
+        8529: "arangodb",
+        8086: "influxdb",
+        # Key-value / Cache
+        6379: "redis", 6380: "redis", 16379: "redis-sentinel", 26379: "redis-sentinel",
+        11211: "memcached",
+        5701: "hazelcast",
+        3001: "aerospike",
+        6060: "dragonflydb",
+        # Wide-column / Column-family
+        9042: "cassandra", 7000: "cassandra-inter", 7001: "cassandra-ssl",
+        9160: "cassandra-thrift",
+        19042: "scylladb",
+        16000: "hbase-master", 16020: "hbase-region",
+        8123: "clickhouse", 9440: "clickhouse-native",
+        8082: "druid",
+        # Graph databases
+        7687: "neo4j", 7474: "neo4j-http",
+        8182: "janusgraph",
+        9080: "dgraph",
+        # Time-series
+        8428: "victoriametrics",
+        4242: "opentsdb",
+        # Message brokers / Streaming
+        9092: "kafka", 9093: "kafka-ssl", 9094: "kafka",
+        5672: "rabbitmq", 15672: "rabbitmq-mgmt", 25672: "rabbitmq-dist",
+        4222: "nats", 6222: "nats-cluster", 8222: "nats-monitor",
+        61616: "activemq", 5673: "activemq-amqp",
+        6650: "pulsar",
+        9876: "rocketmq",
+        1883: "mqtt", 8883: "mqtt-ssl",
+        # Search engines
+        9200: "elasticsearch", 9300: "elasticsearch-transport",
+        7700: "meilisearch",
+        8983: "solr",
+        19530: "milvus",
+        6333: "qdrant", 6334: "qdrant-grpc",
+        # Service discovery / Config
+        2181: "zookeeper",
+        8500: "consul", 8501: "consul-https",
+        2379: "etcd", 2380: "etcd-peer",
+        8848: "nacos",
+        # Object storage
+        9000: "minio",  # also used by ClickHouse native; name-based detection resolves ambiguity
+        # LDAP / Identity
+        389: "ldap", 636: "ldaps",
+        88: "kerberos",
+        # Monitoring / Observability
+        9090: "prometheus",
+        3100: "loki",
+        9411: "zipkin",
+        14268: "jaeger",
+        6831: "jaeger-thrift",
+        4317: "otlp-grpc", 4318: "otlp-http",
+        # HTTP / API (generic -- name-based detection refines ambiguous ports)
+        80: "http-api", 8080: "http-api", 8081: "http-api",
+        443: "https-api", 8443: "https-api",
+        3000: "http-api",
+        # gRPC
+        50051: "grpc", 50052: "grpc",
+        # DNS
+        53: "dns", 5353: "dns",
+        # SSH / FTP
+        22: "ssh", 21: "ftp", 990: "ftps",
+        # SMTP / Mail
+        25: "smtp", 465: "smtps", 587: "smtp-submission",
+        143: "imap", 993: "imaps",
+    }
+
+    SERVICE_CATEGORY_MAP = {
+        "database": {
+            "postgresql", "mysql", "mysql-x", "mssql", "mssql-browser",
+            "oracle", "oracle-net", "db2", "cockroachdb", "tidb",
+            "yugabytedb", "mongodb", "couchdb", "couchbase", "arangodb",
+            "cassandra", "cassandra-inter", "cassandra-ssl", "cassandra-thrift",
+            "scylladb", "hbase-master", "hbase-region", "clickhouse",
+            "clickhouse-native", "druid", "neo4j", "neo4j-http",
+            "janusgraph", "dgraph", "influxdb", "opentsdb",
+            "vitess", "percona", "mariadb", "singlestore", "timescaledb",
+            "cratedb", "voltdb", "greenplum", "citusdb", "spanner",
+            "cosmosdb", "dynamodb", "firestore", "fauna",
+        },
+        "cache": {
+            "redis", "redis-sentinel", "memcached", "hazelcast",
+            "aerospike", "dragonflydb", "varnish", "keydb",
+        },
+        "message_broker": {
+            "kafka", "kafka-ssl", "rabbitmq", "rabbitmq-mgmt", "rabbitmq-dist",
+            "nats", "nats-cluster", "nats-monitor", "activemq", "activemq-amqp",
+            "pulsar", "pulsar-http", "rocketmq", "mqtt", "mqtt-ssl",
+            "redpanda", "amazon-sqs", "azure-servicebus", "google-pubsub",
+        },
+        "search_engine": {
+            "elasticsearch", "elasticsearch-transport", "opensearch",
+            "solr", "meilisearch", "milvus", "qdrant", "qdrant-grpc",
+            "typesense", "algolia", "weaviate", "pinecone",
+        },
+        "service_discovery": {
+            "zookeeper", "consul", "consul-https", "etcd", "etcd-peer",
+            "nacos", "eureka",
+        },
+        "identity": {
+            "ldap", "ldaps", "kerberos", "keycloak",
+            "okta", "auth0",
+        },
+        "object_storage": {
+            "minio", "ceph", "swift",
+        },
+        "observability": {
+            "prometheus", "victoriametrics", "loki", "zipkin", "jaeger",
+            "jaeger-thrift", "otlp-grpc", "otlp-http",
+            "grafana", "datadog", "newrelic", "splunk",
+        },
+        "api_gateway": {
+            "http-api", "https-api", "grpc",
+        },
+        "mail": {
+            "smtp", "smtps", "smtp-submission", "imap", "imaps",
+        },
+        "dns": {"dns"},
+        "file_transfer": {"ssh", "ftp", "ftps"},
+    }
+
+    CRITICAL_CATEGORIES = frozenset({
+        "database", "cache", "message_broker", "search_engine",
+        "service_discovery", "identity", "object_storage",
+    })
+
+    NAME_CATEGORY_PATTERNS = {
+        "database": [
+            "postgres", "mysql", "mariadb", "mssql", "sqlserver", "oracle",
+            "mongo", "couch", "dynamo", "fauna", "cockroach", "tidb",
+            "yugabyte", "cassandra", "scylla", "hbase", "clickhouse",
+            "druid", "neo4j", "janusgraph", "dgraph", "arangodb",
+            "influx", "timescale", "opentsdb", "crate", "voltdb",
+            "greenplum", "citus", "spanner", "cosmos", "firestore",
+            "vitess", "percona", "singlestore", "database", "rds",
+            "-db-", "-db", "db-",
+        ],
+        "cache": [
+            "redis", "memcache", "hazelcast", "aerospike", "dragonfly",
+            "varnish", "keydb", "cache",
+        ],
+        "message_broker": [
+            "kafka", "rabbitmq", "rabbit", "nats", "activemq", "pulsar",
+            "rocketmq", "mqtt", "redpanda", "broker", "queue",
+            "messaging", "eventbus", "servicebus", "pubsub", "stream",
+        ],
+        "search_engine": [
+            "elastic", "opensearch", "solr", "meilisearch", "milvus",
+            "qdrant", "typesense", "weaviate", "pinecone", "algolia",
+            "search",
+        ],
+        "service_discovery": [
+            "zookeeper", "consul", "etcd", "nacos", "eureka",
+            "registry", "discovery",
+        ],
+        "identity": [
+            "ldap", "keycloak", "okta", "auth0", "identity",
+            "iam", "sso",
+        ],
+        "object_storage": [
+            "minio", "ceph", "swift", "s3", "blob", "storage",
+        ],
+    }
+
+    @classmethod
+    def classify_service_category(cls, service_type: str, workload_name: str = "") -> str:
+        if service_type and service_type != "unknown":
+            if service_type in cls.SERVICE_CATEGORY_MAP:
+                return service_type
+            for category, types in cls.SERVICE_CATEGORY_MAP.items():
+                if service_type in types:
+                    return category
+        name_lower = (workload_name or "").lower()
+        if name_lower:
+            for category, patterns in cls.NAME_CATEGORY_PATTERNS.items():
+                for pattern in patterns:
+                    if pattern in name_lower:
+                        return category
+        return "service"
+
+    @classmethod
+    def is_critical_service(cls, service_type: str, workload_name: str = "") -> bool:
+        return cls.classify_service_category(service_type, workload_name) in cls.CRITICAL_CATEGORIES
+
+    def _detect_service_type(self, port: int, app_protocol: str = None, workload_name: str = None) -> str:
+        if app_protocol:
+            proto_lower = str(app_protocol).lower()
+            if proto_lower in ("grpc", "http", "https", "dns"):
+                return proto_lower if proto_lower != "http" else "http-api"
+        if port and port in self.PORT_SERVICE_MAP:
+            return self.PORT_SERVICE_MAP[port]
+        if workload_name:
+            name_lower = workload_name.lower()
+            for category, patterns in self.NAME_CATEGORY_PATTERNS.items():
+                for pattern in patterns:
+                    if pattern in name_lower:
+                        for svc_type in self.SERVICE_CATEGORY_MAP.get(category, set()):
+                            if pattern in svc_type:
+                                return svc_type
+                        return category
+        return "unknown"
+
+    def _build_communication_contract(
+        self, protocol, app_protocol, port,
+        request_count, bytes_transferred,
+        error_count, retransmit_count, avg_latency_ms,
+        last_seen, workload_name: str = ""
+    ) -> dict:
+        port_val = int(port) if port else 0
+        req = int(request_count) if request_count else 0
+        err = int(error_count) if error_count else 0
+        error_rate = round((err / req) * 100, 4) if req > 0 else 0.0
+        svc_type = self._detect_service_type(port_val, app_protocol, workload_name)
+        svc_category = self.classify_service_category(svc_type, workload_name)
+        return {
+            "protocol": protocol,
+            "app_protocol": app_protocol,
+            "port": port_val,
+            "service_type": svc_type,
+            "service_category": svc_category,
+            "is_critical": svc_category in self.CRITICAL_CATEGORIES,
+            "request_count": req,
+            "bytes_transferred": int(bytes_transferred) if bytes_transferred else 0,
+            "error_count": err,
+            "error_rate_percent": error_rate,
+            "retransmit_count": int(retransmit_count) if retransmit_count else 0,
+            "avg_latency_ms": round(float(avg_latency_ms), 2) if avg_latency_ms else 0.0,
+            "last_seen": last_seen,
+        }
+
+    def _calculate_dependency_health(
+        self, request_count, error_count, retransmit_count, avg_latency_ms
+    ) -> dict:
+        req = int(request_count) if request_count else 0
+        err = int(error_count) if error_count else 0
+        retx = int(retransmit_count) if retransmit_count else 0
+        latency = float(avg_latency_ms) if avg_latency_ms else 0.0
+
+        error_rate = (err / req) * 100 if req > 0 else 0.0
+        retransmit_rate = (retx / req) * 100 if req > 0 else 0.0
+
+        score = 100
+        risk_factors = []
+
+        if error_rate > 5:
+            score -= 30
+            risk_factors.append(f"high_error_rate:{error_rate:.2f}%")
+        elif error_rate > 1:
+            score -= 20
+            risk_factors.append(f"elevated_error_rate:{error_rate:.2f}%")
+
+        if retransmit_rate > 10:
+            score -= 20
+            risk_factors.append(f"high_retransmit_rate:{retransmit_rate:.2f}%")
+        elif retransmit_rate > 5:
+            score -= 10
+            risk_factors.append(f"elevated_retransmit_rate:{retransmit_rate:.2f}%")
+
+        if latency > 500:
+            score -= 25
+            risk_factors.append(f"very_high_latency:{latency:.1f}ms")
+        elif latency > 100:
+            score -= 15
+            risk_factors.append(f"high_latency:{latency:.1f}ms")
+
+        if req == 0:
+            score = 0
+            risk_factors.append("no_traffic")
+
+        score = max(0, score)
+
+        if score >= 80:
+            status = "healthy"
+        elif score >= 60:
+            status = "degraded"
+        elif score >= 30:
+            status = "unhealthy"
+        else:
+            status = "critical"
+
+        return {
+            "score": score,
+            "status": status,
+            "error_rate_percent": round(error_rate, 4),
+            "retransmit_rate_percent": round(retransmit_rate, 4),
+            "avg_latency_ms": round(latency, 2),
+            "risk_factors": risk_factors,
+        }
+
     def _is_ip_address(self, value: str) -> bool:
         """Check if a string is a valid IP address"""
         if not value:

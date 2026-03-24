@@ -84,7 +84,9 @@ import {
   BarChartOutlined,
   CheckCircleOutlined,
   AlertOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import {
   ReactFlow,
   Background,
@@ -558,7 +560,7 @@ const isPureInternalDomain = (domain: string): boolean => {
 // Examples:
 // - name="ghcr.io", ip="172.30.0.10", network_type="Service-Network" → PUBLIC ✓
 // - name="quay.io.", ip="10.131.0.122", network_type="Pod-Network" → PUBLIC ✓
-// - name="internal-api.corp", ip="10.244.1.5", network_type="Internal-Network" → NOT PUBLIC ✓
+// - name="internal-api.corp", ip="10.194.1.5", network_type="Internal-Network" → NOT PUBLIC ✓
 // - name="ec2-52-45-34-239.compute-1.amazonaws.com", ip="52.45.34.239" → PUBLIC ✓
 // - name="app.nonprod.internal.corp.", ip="172.30.0.10" → NOT PUBLIC (internal domain) ✓
 const isPublicEndpoint = (node: DependencyNode): boolean => {
@@ -570,18 +572,18 @@ const isPublicEndpoint = (node: DependencyNode): boolean => {
   
   // 1. DNS-enriched node: Check original IP first (most reliable when IP is correct)
   //    Example: name="api.amazonaws.com", ip="52.216.100.5" → PUBLIC (52.x is public)
-  //    Example: name="internal-api.corp", ip="10.244.1.5" → NOT PUBLIC (10.x is private)
+  //    Example: name="internal-api.corp", ip="10.194.1.5" → NOT PUBLIC (10.x is private)
   if (ip && isPublicIP(ip)) return true;
   
   // 2. CRITICAL: If IP is PRIVATE, this CANNOT be a public endpoint!
   //    Trust IP classification over domain name - private IP = internal network
-  //    Example: name="api.example.corp", ip="10.244.30.5" → NOT PUBLIC (private IP!)
+  //    Example: name="api.example.local", ip="10.194.30.5" → NOT PUBLIC (private IP!)
   //    This prevents .bank gTLD domains with private IPs from being classified as public
   if (ip && isPrivateIP(ip)) return false;
   
   // 3. Raw IP node (name IS the IP address)
   //    Example: name="142.250.185.46" → PUBLIC
-  //    Example: name="10.244.1.5" → NOT PUBLIC
+  //    Example: name="10.194.1.5" → NOT PUBLIC
   if (isPublicIP(name)) return true;
   
   // 4. If no IP info available but name is a public IP format
@@ -1727,6 +1729,7 @@ const applyLayout = (
 const MapInner: React.FC = () => {
   const { token } = theme.useToken();
   const { isDark } = useTheme();
+  const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
 
@@ -2679,6 +2682,7 @@ const MapInner: React.FC = () => {
         cluster_name: firstNode.cluster_name || '',
         status: 'active',
         labels: firstNode.labels || {},
+        annotations: firstNode.annotations || {},
         owner_kind: group.ownerKind,
         owner_name: group.workloadName,
         ip: firstNode.ip,
@@ -3664,8 +3668,8 @@ const MapInner: React.FC = () => {
         // These are typically .1 or .2 addresses in pod network ranges
         if (isUnresolvedIP(name) && isPrivateIP(name)) {
           const parts = name.split('.').map(Number);
-          // 10.244.x.1, 10.244.x.2 pattern (SDN Gateway in pod network)
-          if (parts[0] === 10 && parts[1] === 244 && (parts[3] === 1 || parts[3] === 2)) {
+          // 10.194.x.1, 10.194.x.2 pattern (SDN Gateway in pod network)
+          if (parts[0] === 10 && parts[1] === 194 && (parts[3] === 1 || parts[3] === 2)) {
             return true;
           }
           // 10.128.x.1, 10.128.x.2 pattern (common OpenShift SDN)
@@ -5737,7 +5741,7 @@ const MapInner: React.FC = () => {
                   </div>
                 </Tooltip>
                 
-                <Tooltip title="IP Focus: Show nodes with unresolved IP addresses as names (e.g., 10.244.x.x). Includes ALL IPs (both public and private). Useful for identifying dependencies that should use FQDN or Service names." mouseEnterDelay={0.5}>
+                <Tooltip title="IP Focus: Show nodes with unresolved IP addresses as names (e.g., 10.194.x.x). Includes ALL IPs (both public and private). Useful for identifying dependencies that should use FQDN or Service names." mouseEnterDelay={0.5}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Text type="secondary" style={{ fontSize: 11, color: '#722ed1' }}><AimOutlined style={{ marginRight: 4 }} />Unresolved IP</Text>
                     <Switch size="small" checked={focusIPOnly} onChange={setFocusIPOnly} />
@@ -7506,6 +7510,55 @@ const MapInner: React.FC = () => {
                   <Empty description="No labels" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 )
                 ) : null,  // End lazy render for labels tab
+              },
+              {
+                key: 'annotations',
+                label: <span><TagOutlined /> Annotations</span>,
+                children: drawerTab === 'annotations' ? (
+                  (selectedNode as any)?.annotations && Object.keys((selectedNode as any).annotations || {}).length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {Object.entries((selectedNode as any).annotations || {}).map(([key, value]) => (
+                      <div key={key} style={{ 
+                        background: isDark ? token.colorBgContainer : '#fef9f0', 
+                        borderRadius: 4, 
+                        padding: '6px 10px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2
+                      }}>
+                        <Text strong style={{ fontSize: 10, color: isDark ? '#ffc069' : '#d48806' }}>{key}</Text>
+                        <Text type="secondary" style={{ fontSize: 10, wordBreak: 'break-all' }}>{String(value)}</Text>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty description="No annotations" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                )
+                ) : null,
+              },
+              {
+                key: 'ai-hub',
+                label: <span><RobotOutlined /> AI Hub</span>,
+                children: drawerTab === 'ai-hub' ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <Typography.Text type="secondary">
+                      Analyze this service's dependencies, impact radius, and generate integration snippets for AI Agents and CI/CD pipelines.
+                    </Typography.Text>
+                    <Button
+                      type="primary"
+                      icon={<RobotOutlined />}
+                      onClick={() => {
+                        const node = selectedNode as any;
+                        const params = new URLSearchParams();
+                        if (node?.name) params.set('owner_name', node.owner_name || node.name);
+                        if (node?.namespace && node.namespace !== 'external') params.set('namespace', node.namespace);
+                        navigate(`/integration/ai-hub?${params.toString()}`);
+                      }}
+                    >
+                      Open AI Integration Hub
+                    </Button>
+                  </div>
+                ) : null,
               },
               {
                 key: 'connections',

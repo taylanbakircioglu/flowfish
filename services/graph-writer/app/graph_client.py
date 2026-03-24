@@ -246,6 +246,9 @@ class GraphClient:
         # Labels (JSON strings)
         src_labels: str = '{}',
         dst_labels: str = '{}',
+        # Annotations (JSON strings)
+        src_annotations: str = '{}',
+        dst_annotations: str = '{}',
         # Owner info
         src_owner_kind: str = '',
         src_owner_name: str = '',
@@ -313,21 +316,27 @@ class GraphClient:
         ON CREATE SET src.created_at = timestamp(), src.kind = 'Pod', src.status = 'active',
                       src.name = $src_name, src.namespace = $src_ns, src.cluster_id = $src_cluster,
                       src.ip = $src_ip, src.host_ip = $src_host_ip, 
-                      src.labels = $src_labels, src.analysis_id = $analysis_id
+                      src.labels = $src_labels, src.annotations = $src_annotations,
+                      src.analysis_id = $analysis_id
         ON MATCH SET src.analysis_id = coalesce(src.analysis_id, $analysis_id),
                      src.cluster_id = coalesce(src.cluster_id, $src_cluster),
                      src.ip = CASE WHEN $src_ip <> '' THEN $src_ip ELSE coalesce(src.ip, '') END,
-                     src.host_ip = CASE WHEN $src_host_ip <> '' THEN $src_host_ip ELSE coalesce(src.host_ip, '') END
+                     src.host_ip = CASE WHEN $src_host_ip <> '' THEN $src_host_ip ELSE coalesce(src.host_ip, '') END,
+                     src.labels = CASE WHEN $src_labels <> '{{}}' THEN $src_labels ELSE coalesce(src.labels, '{{}}') END,
+                     src.annotations = CASE WHEN $src_annotations <> '{{}}' THEN $src_annotations ELSE coalesce(src.annotations, '{{}}') END
         WITH src
         MERGE (dst:Workload {{id: $dst_vid}})
         ON CREATE SET dst.created_at = timestamp(), dst.kind = 'Pod', dst.status = 'active',
                       dst.name = $dst_name, dst.namespace = $dst_ns, dst.cluster_id = $dst_cluster,
                       dst.ip = $dst_ip, dst.host_ip = $dst_host_ip,
-                      dst.labels = $dst_labels, dst.analysis_id = $analysis_id
+                      dst.labels = $dst_labels, dst.annotations = $dst_annotations,
+                      dst.analysis_id = $analysis_id
         ON MATCH SET dst.analysis_id = coalesce(dst.analysis_id, $analysis_id),
                      dst.cluster_id = coalesce(dst.cluster_id, $dst_cluster),
                      dst.ip = CASE WHEN $dst_ip <> '' THEN $dst_ip ELSE coalesce(dst.ip, '') END,
-                     dst.host_ip = CASE WHEN $dst_host_ip <> '' THEN $dst_host_ip ELSE coalesce(dst.host_ip, '') END
+                     dst.host_ip = CASE WHEN $dst_host_ip <> '' THEN $dst_host_ip ELSE coalesce(dst.host_ip, '') END,
+                     dst.labels = CASE WHEN $dst_labels <> '{{}}' THEN $dst_labels ELSE coalesce(dst.labels, '{{}}') END,
+                     dst.annotations = CASE WHEN $dst_annotations <> '{{}}' THEN $dst_annotations ELSE coalesce(dst.annotations, '{{}}') END
         WITH src, dst
         MERGE (src)-[r:{edge_type}]->(dst)
         SET {set_clause}, 
@@ -347,6 +356,7 @@ class GraphClient:
             "src_ip": src_ip or '',  # Pod IP from enrichment
             "src_host_ip": src_host_ip or '',  # Node/Host IP from enrichment
             "src_labels": src_labels or '{}',
+            "src_annotations": src_annotations or '{}',
             "src_owner_kind": src_owner_kind or '',
             "src_owner_name": src_owner_name or '',
             "src_pod_uid": src_pod_uid or '',
@@ -360,6 +370,7 @@ class GraphClient:
             "dst_ip": dst_ip or '',  # Pod IP from enrichment
             "dst_host_ip": dst_host_ip or '',  # Node/Host IP from enrichment
             "dst_labels": dst_labels or '{}',
+            "dst_annotations": dst_annotations or '{}',
             "dst_owner_kind": dst_owner_kind or '',
             "dst_owner_name": dst_owner_name or '',
             "dst_pod_uid": dst_pod_uid or '',
@@ -459,6 +470,10 @@ class GraphClient:
                     'dst_cluster': dst_cluster,
                     'src_ip': edge.get('src_ip', ''),
                     'dst_ip': edge.get('dst_ip', ''),
+                    'src_labels': edge.get('src_labels', '{}'),
+                    'dst_labels': edge.get('dst_labels', '{}'),
+                    'src_annotations': edge.get('src_annotations', '{}'),
+                    'dst_annotations': edge.get('dst_annotations', '{}'),
                     'props': props
                 })
             
@@ -468,12 +483,18 @@ class GraphClient:
             MERGE (src:Workload {id: item.src_vid})
             ON CREATE SET src.name = item.src_name, src.namespace = item.src_ns, 
                           src.cluster_id = item.src_cluster, src.ip = item.src_ip,
+                          src.labels = item.src_labels, src.annotations = item.src_annotations,
                           src.kind = 'Pod', src.status = 'active', src.created_at = timestamp()
+            ON MATCH SET src.labels = CASE WHEN item.src_labels <> '{}' THEN item.src_labels ELSE coalesce(src.labels, '{}') END,
+                         src.annotations = CASE WHEN item.src_annotations <> '{}' THEN item.src_annotations ELSE coalesce(src.annotations, '{}') END
             WITH src, item
             MERGE (dst:Workload {id: item.dst_vid})
             ON CREATE SET dst.name = item.dst_name, dst.namespace = item.dst_ns,
                           dst.cluster_id = item.dst_cluster, dst.ip = item.dst_ip,
+                          dst.labels = item.dst_labels, dst.annotations = item.dst_annotations,
                           dst.kind = 'Pod', dst.status = 'active', dst.created_at = timestamp()
+            ON MATCH SET dst.labels = CASE WHEN item.dst_labels <> '{}' THEN item.dst_labels ELSE coalesce(dst.labels, '{}') END,
+                         dst.annotations = CASE WHEN item.dst_annotations <> '{}' THEN item.dst_annotations ELSE coalesce(dst.annotations, '{}') END
             WITH src, dst, item
             MERGE (src)-[r:COMMUNICATES_WITH]->(dst)
             SET r += item.props,

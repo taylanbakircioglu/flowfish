@@ -18,6 +18,7 @@ import {
   RadarChartOutlined,
   AlertOutlined,
   RocketOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import FlowfishLogo from '../FlowfishLogo';
 import type { MenuProps } from 'antd';
@@ -92,6 +93,18 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
           key: '/impact/change-detection',
           label: 'Change Detection',
           onClick: () => navigate('/impact/change-detection'),
+        },
+      ],
+    },
+    {
+      key: 'integration',
+      icon: <RobotOutlined />,
+      label: 'AI Integration',
+      children: [
+        {
+          key: '/integration/ai-hub',
+          label: 'AI Integration Hub',
+          onClick: () => navigate('/integration/ai-hub'),
         },
       ],
     },
@@ -182,6 +195,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
     if (path.startsWith('/analysis') || path.startsWith('/analyses')) keys.push('analysis');
     if (path.startsWith('/discovery')) keys.push('discovery');
     if (path.startsWith('/impact')) keys.push('impact');
+    if (path.startsWith('/integration')) keys.push('integration');
     if (path.startsWith('/observability')) keys.push('observability');
     if (path.startsWith('/security')) keys.push('security');
     if (path.startsWith('/dev')) keys.push('dev');
@@ -240,7 +254,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
         theme="dark"
         mode="inline"
         selectedKeys={getSelectedKeys()}
-        defaultOpenKeys={['analysis', 'discovery', 'impact', 'observability', 'security', 'dev', 'management']}
+        defaultOpenKeys={['analysis', 'discovery', 'impact', 'integration', 'observability', 'security', 'dev', 'management']}
         items={menuItems}
         style={{
           borderRight: 0,

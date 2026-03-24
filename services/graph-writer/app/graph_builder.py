@@ -197,9 +197,9 @@ class GraphBuilder:
                     return 'Pod-Network'
                 
                 # Custom OpenShift cluster ranges (configure via CUSTOM_POD_CIDRS env var if needed)
-                if parts[1] == 244:  # 10.244.0.0/16 - Custom pod network
+                if parts[1] == 194:  # 10.194.0.0/16 - Custom pod network (cluster-1)
                     return 'Pod-Network'
-                if parts[1] == 208:  # 10.208.0.0/16 - Custom pod network
+                if parts[1] == 208:  # 10.208.0.0/16 - Custom pod network (cluster-2)
                     return 'Pod-Network'
                 if parts[1] == 196:  # 10.196.0.0/16 - Custom service CIDR
                     return 'Service-Network'
@@ -528,6 +528,13 @@ class GraphBuilder:
                 else:
                     src_labels_str = '{}'
                 
+                # Get annotations from event (enriched by pod discovery)
+                src_annotations = data.get('annotations', {})
+                if isinstance(src_annotations, dict):
+                    src_annotations_str = json.dumps(src_annotations)
+                else:
+                    src_annotations_str = '{}'
+                
                 vertices.append({
                     'vid': src_vid,
                     'tag': 'Pod',
@@ -540,6 +547,7 @@ class GraphBuilder:
                         'ip': src_ip,
                         'node': _to_primitive(data.get('src_node', '')) or _to_primitive(data.get('node', '')),
                         'labels': src_labels_str,
+                        'annotations': src_annotations_str,
                         'owner_kind': _to_primitive(data.get('owner_kind', '')) or _to_primitive(data.get('src_owner_kind', '')),
                         'owner_name': _to_primitive(data.get('owner_name', '')) or _to_primitive(data.get('src_owner_name', '')),
                         # Extended metadata
@@ -578,6 +586,13 @@ class GraphBuilder:
                 else:
                     dst_labels_str = '{}'
                 
+                # Get destination annotations from event (enriched by pod discovery)
+                dst_annotations = data.get('dst_annotations', {})
+                if isinstance(dst_annotations, dict):
+                    dst_annotations_str = json.dumps(dst_annotations)
+                else:
+                    dst_annotations_str = '{}'
+                
                 # Get network_type for grouping in visualization
                 # This enables "Internal-Network", "External-Network" etc. as categories
                 # while keeping each destination IP as a unique node
@@ -596,6 +611,7 @@ class GraphBuilder:
                         'ip': dst_ip or dst_workload,  # Use workload as IP if it's an IP address
                         'node': _to_primitive(data.get('dst_node', '')),
                         'labels': dst_labels_str,
+                        'annotations': dst_annotations_str,
                         'owner_kind': _to_primitive(data.get('dst_owner_kind', '')),
                         'owner_name': _to_primitive(data.get('dst_owner_name', '')),
                         # Extended metadata
@@ -687,6 +703,19 @@ class GraphBuilder:
                 elif not isinstance(dst_labels_for_edge, str):
                     dst_labels_for_edge = '{}'
                 
+                # Get annotations as JSON strings for edge cache
+                src_annotations_for_edge = data.get('annotations', {})
+                if isinstance(src_annotations_for_edge, dict):
+                    src_annotations_for_edge = json.dumps(src_annotations_for_edge)
+                elif not isinstance(src_annotations_for_edge, str):
+                    src_annotations_for_edge = '{}'
+                    
+                dst_annotations_for_edge = data.get('dst_annotations', {})
+                if isinstance(dst_annotations_for_edge, dict):
+                    dst_annotations_for_edge = json.dumps(dst_annotations_for_edge)
+                elif not isinstance(dst_annotations_for_edge, str):
+                    dst_annotations_for_edge = '{}'
+                
                 self.edge_cache[edge_key] = {
                     'src_vid': src_vid,
                     'dst_vid': dst_vid,
@@ -695,6 +724,9 @@ class GraphBuilder:
                     # Labels (JSON strings)
                     'src_labels': src_labels_for_edge,
                     'dst_labels': dst_labels_for_edge,
+                    # Annotations (JSON strings)
+                    'src_annotations': src_annotations_for_edge,
+                    'dst_annotations': dst_annotations_for_edge,
                     # Owner info
                     'src_owner_kind': _to_primitive(data.get('owner_kind', '')) or _to_primitive(data.get('src_owner_kind', '')),
                     'src_owner_name': _to_primitive(data.get('owner_name', '')) or _to_primitive(data.get('src_owner_name', '')),
