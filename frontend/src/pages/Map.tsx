@@ -30,7 +30,8 @@ import {
   Divider,
   ConfigProvider,
   Dropdown,
-  theme
+  theme,
+  message
 } from 'antd';
 import { useTheme } from '../contexts/ThemeContext';
 import { 
@@ -85,6 +86,7 @@ import {
   CheckCircleOutlined,
   AlertOutlined,
   RobotOutlined,
+  CopyOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -7514,27 +7516,95 @@ const MapInner: React.FC = () => {
               {
                 key: 'annotations',
                 label: <span><TagOutlined /> Annotations</span>,
-                children: drawerTab === 'annotations' ? (
-                  (selectedNode as any)?.annotations && Object.keys((selectedNode as any).annotations || {}).length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {Object.entries((selectedNode as any).annotations || {}).map(([key, value]) => (
-                      <div key={key} style={{ 
-                        background: isDark ? token.colorBgContainer : '#fef9f0', 
-                        borderRadius: 4, 
-                        padding: '6px 10px',
+                children: drawerTab === 'annotations' ? (() => {
+                  const allAnnotations = Object.entries((selectedNode as any)?.annotations || {});
+                  if (allAnnotations.length === 0) {
+                    return <Empty description="No annotations" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+                  }
+
+                  const INFRA_PREFIXES = ['k8s.ovn.org/', 'k8s.v1.cni.cncf.io/', 'seccomp.security', 'openshift.openshift.io/'];
+                  const userAnns = allAnnotations.filter(([k]) => !INFRA_PREFIXES.some(p => k.startsWith(p)));
+                  const infraAnns = allAnnotations.filter(([k]) => INFRA_PREFIXES.some(p => k.startsWith(p)));
+
+                  const AnnotationRow = ({ annKey, annValue }: { annKey: string; annValue: unknown }) => {
+                    const strVal = String(annValue);
+                    const isLong = strVal.length > 120;
+                    let isJson = false;
+                    let formattedJson = '';
+                    const trimmed = strVal.trim();
+                    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+                      try { formattedJson = JSON.stringify(JSON.parse(trimmed), null, 2); isJson = true; } catch { /* not valid json */ }
+                    }
+                    const [expanded, setExpanded] = React.useState(false);
+
+                    return (
+                      <div style={{
+                        background: isDark ? token.colorBgContainer : '#fef9f0',
+                        borderRadius: 6,
+                        padding: '8px 12px',
                         display: 'flex',
                         flexDirection: 'column',
-                        gap: 2
+                        gap: 4
                       }}>
-                        <Text strong style={{ fontSize: 10, color: isDark ? '#ffc069' : '#d48806' }}>{key}</Text>
-                        <Text type="secondary" style={{ fontSize: 10, wordBreak: 'break-all' }}>{String(value)}</Text>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Text strong style={{ fontSize: 11, color: isDark ? '#ffc069' : '#d48806' }}>{annKey}</Text>
+                          <Tooltip title="Copy value">
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<CopyOutlined style={{ fontSize: 11 }} />}
+                              style={{ opacity: 0.5 }}
+                              onClick={() => { navigator.clipboard.writeText(strVal); message.success('Copied'); }}
+                            />
+                          </Tooltip>
+                        </div>
+                        {isJson ? (
+                          <div>
+                            <pre style={{
+                              fontSize: 10, margin: 0, padding: '4px 6px',
+                              background: isDark ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.03)',
+                              borderRadius: 4, maxHeight: expanded ? 'none' : 60, overflow: 'hidden',
+                              whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: isDark ? '#d9d9d9' : '#595959'
+                            }}>{formattedJson}</pre>
+                            {formattedJson.split('\n').length > 4 && (
+                              <Button type="link" size="small" style={{ padding: 0, fontSize: 10, height: 'auto' }}
+                                onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</Button>
+                            )}
+                          </div>
+                        ) : isLong ? (
+                          <div>
+                            <Text type="secondary" style={{ fontSize: 11, wordBreak: 'break-all' }}>
+                              {expanded ? strVal : strVal.slice(0, 120) + '...'}
+                            </Text>
+                            <Button type="link" size="small" style={{ padding: 0, fontSize: 10, height: 'auto', marginLeft: 4 }}
+                              onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</Button>
+                          </div>
+                        ) : (
+                          <Text type="secondary" style={{ fontSize: 11, wordBreak: 'break-all' }}>{strVal}</Text>
+                        )}
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <Empty description="No annotations" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                )
-                ) : null,
+                    );
+                  };
+
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {userAnns.map(([k, v]) => <AnnotationRow key={k} annKey={k} annValue={v} />)}
+                      {infraAnns.length > 0 && (
+                        <details style={{ marginTop: userAnns.length > 0 ? 4 : 0 }}>
+                          <summary style={{
+                            cursor: 'pointer', fontSize: 11, color: isDark ? '#8c8c8c' : '#8c8c8c',
+                            padding: '4px 0', userSelect: 'none'
+                          }}>
+                            Infrastructure ({infraAnns.length})
+                          </summary>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+                            {infraAnns.map(([k, v]) => <AnnotationRow key={k} annKey={k} annValue={v} />)}
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  );
+                })() : null,
               },
               {
                 key: 'ai-hub',

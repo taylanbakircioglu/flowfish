@@ -1539,6 +1539,23 @@ class GraphQueryEngine:
         upstream = first.get("upstream", {})
         is_multi = len(results) > 1
 
+        def _is_noise_entry(entry: dict) -> bool:
+            """Filter out noise: reverse DNS, bare IPs with no metadata, 0.0.0.0."""
+            name = entry.get("pod_name") or entry.get("owner_name") or ""
+            if name.endswith(".in-addr.arpa.") or name.endswith(".in-addr.arpa"):
+                return True
+            if name in ("0.0.0.0", "0.0.0.0:0"):
+                return True
+            comm = entry.get("communication") or {}
+            port = comm.get("port") or 0
+            ns = entry.get("namespace", "")
+            ann = entry.get("annotations") or {}
+            lbl = entry.get("labels") or {}
+            owner_kind = entry.get("owner_kind") or ""
+            if port == 0 and not ann and not lbl and not owner_kind and ns in ("external", "cluster-network", ""):
+                return True
+            return False
+
         def _compact_service(entry: dict, direction: str = "downstream") -> dict:
             comm = entry.get("communication") or {}
             svc_type = comm.get("service_type", "unknown")
@@ -1561,13 +1578,17 @@ class GraphQueryEngine:
             }
 
         def _dedup_entries(entries: list) -> list:
-            """Deduplicate dependency entries by (name, namespace), keeping richer entry."""
+            """Deduplicate dependency entries by (owner_name, namespace), collapsing replicas."""
             seen: Dict[str, dict] = {}
             for entry in entries:
-                key = f"{entry.get('namespace', '')}/{entry.get('pod_name') or entry.get('owner_name', '')}"
+                key = f"{entry.get('namespace', '')}/{entry.get('owner_name') or entry.get('pod_name', '')}"
                 if key not in seen:
                     seen[key] = entry
             return list(seen.values())
+
+        def _filter_and_dedup(entries: list) -> list:
+            """Remove noise entries then deduplicate."""
+            return _dedup_entries([e for e in entries if not _is_noise_entry(e)])
 
         def _group_by_category(entries: list, direction: str = "downstream") -> dict:
             by_cat: Dict[str, list] = {}
@@ -1607,8 +1628,8 @@ class GraphQueryEngine:
                         "downstream_count": len(ds),
                         "callers_count": len(cl),
                     })
-            all_downstream = _dedup_entries(all_downstream)
-            all_callers = _dedup_entries(all_callers)
+            all_downstream = _filter_and_dedup(all_downstream)
+            all_callers = _filter_and_dedup(all_callers)
             all_namespaces = sorted(set(s["namespace"] for s in matched_services if s["namespace"]))
             if len(all_namespaces) == 1:
                 svc_label = f"{all_namespaces[0]} ({len(matched_services)} services)"
@@ -1632,6 +1653,8 @@ class GraphQueryEngine:
                 "callers": _group_by_category(all_callers, "caller"),
             }
 
+        single_downstream = _filter_and_dedup(first.get("downstream", []))
+        single_callers = _filter_and_dedup(first.get("callers", []))
         return {
             "success": True,
             "analysis_ids": int_ids,
@@ -1643,8 +1666,8 @@ class GraphQueryEngine:
                 "annotations": upstream.get("annotations", {}),
                 "labels": upstream.get("labels", {}),
             },
-            "downstream": _group_by_category(first.get("downstream", []), "downstream"),
-            "callers": _group_by_category(first.get("callers", []), "caller"),
+            "downstream": _group_by_category(single_downstream, "downstream"),
+            "callers": _group_by_category(single_callers, "caller"),
         }
 
     def diff_pod_dependencies(

@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: backend
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: backend
 spec:
@@ -21,7 +21,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: backend
 spec:
@@ -58,7 +58,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: backend
-        image: taylanbakircioglu/flowfish:backend-latest
+        image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-backend:{{IMAGE_TAG}}
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -132,8 +132,8 @@ spec:
           failureThreshold: 5
         resources:
           requests:
-            cpu: 1000m
-            memory: 2Gi
+            cpu: 2000m
+            memory: 4Gi
           limits:
             cpu: 4000m
             memory: 6Gi
@@ -148,7 +148,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: backend-hpa
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -187,7 +187,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: backend-pdb
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
 spec:
   minAvailable: 1
   selector:

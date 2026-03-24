@@ -41,6 +41,7 @@ import {
   MessageOutlined,
   AuditOutlined,
   ExperimentOutlined,
+  KeyOutlined,
 } from '@ant-design/icons';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
@@ -234,24 +235,25 @@ const AIIntegrationHub: React.FC = () => {
   );
 
   const summaryErrMsg = useMemo(() => {
-    if (summaryError) return (summaryError as any)?.data?.detail || 'Query failed';
-    if (summaryData && !summaryData.success) return summaryData.error || 'No results';
-    return null;
+    const raw = summaryError
+      ? (summaryError as any)?.data?.detail || 'Query failed'
+      : summaryData && !summaryData.success
+        ? summaryData.error || 'No results'
+        : null;
+    if (!raw) return null;
+    if (raw.toLowerCase().includes('no pod') || raw.toLowerCase().includes('no results') || raw.toLowerCase().includes('no matching')) {
+      return `${raw}. Tip: Check the Map view to verify available annotations/labels for your pods. Infrastructure annotations (openshift.io/*, kubernetes.io/*) are filtered — use custom annotations like git-repo, team, or version.`;
+    }
+    return raw;
   }, [summaryError, summaryData]);
 
   const canProceedStep1 = selectedAnalysisIds.length > 0;
 
-  const onTestQuery = useCallback(() => {
+  const buildParamsFromForm = useCallback((): DependencySummaryParams | null => {
     const values = form.getFieldsValue();
-    if (!selectedAnalysisIds.length) {
-      message.warning('Select at least one analysis');
-      return;
-    }
+    if (!selectedAnalysisIds.length) return null;
     const hasSearch = values.annotation_key || values.label_key || values.namespace || values.owner_name || values.pod_name || values.ip;
-    if (!hasSearch) {
-      message.warning('At least one search parameter is required (e.g. namespace, deployment, annotation)');
-      return;
-    }
+    if (!hasSearch) return null;
     const params: DependencySummaryParams = {
       analysis_ids: selectedAnalysisIds,
       depth,
@@ -264,10 +266,37 @@ const AIIntegrationHub: React.FC = () => {
     if (values.owner_name) params.owner_name = values.owner_name;
     if (values.pod_name) params.pod_name = values.pod_name;
     if (values.ip) params.ip = values.ip;
+    return params;
+  }, [form, selectedAnalysisIds, depth]);
+
+  const onTestQuery = useCallback(() => {
+    if (!selectedAnalysisIds.length) {
+      message.warning('Select at least one analysis');
+      return;
+    }
+    const params = buildParamsFromForm();
+    if (!params) {
+      message.warning('At least one search parameter is required (e.g. namespace, deployment, annotation)');
+      return;
+    }
     setSummaryParams(params);
     setSummaryCleared(false);
     triggerSummary(params, false);
-  }, [form, selectedAnalysisIds, depth, triggerSummary]);
+  }, [selectedAnalysisIds, buildParamsFromForm, triggerSummary]);
+
+  const onSkipToSetup = useCallback(() => {
+    if (!selectedAnalysisIds.length) {
+      message.warning('Select at least one analysis');
+      return;
+    }
+    const params = buildParamsFromForm();
+    if (!params) {
+      message.warning('At least one search parameter is required (e.g. namespace, deployment, annotation)');
+      return;
+    }
+    setSummaryParams(params);
+    setCurrentStep(3);
+  }, [selectedAnalysisIds, buildParamsFromForm]);
 
   const buildQueryString = useCallback(() => {
     if (!summaryParams) return '';
@@ -288,7 +317,7 @@ const AIIntegrationHub: React.FC = () => {
   const buildCurlSnippet = useCallback(() => {
     const qsStr = buildQueryString();
     if (!qsStr) return '';
-    return `curl -s -H "Authorization: Bearer $TOKEN" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
+    return `# Get your API key from Settings > API Keys\ncurl -s -H "X-API-Key: $FLOWFISH_API_KEY" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
   }, [buildQueryString]);
 
   const buildPipelineSnippet = useCallback(() => {
@@ -297,13 +326,13 @@ const AIIntegrationHub: React.FC = () => {
 
     if (platform === 'azure_devops') {
       return `# Azure DevOps Pipeline - Flowfish Integration
-# Tested query parameters from AI Integration Hub
+# Get your API key from Flowfish Settings > API Keys
 variables:
   FLOWFISH_QUERY: '${qsStr}'
 
 steps:
   - script: |
-      DEPS=$(curl -s -H "Authorization: Bearer $(FLOWFISH_TOKEN)" \\
+      DEPS=$(curl -s -H "X-API-Key: $(FLOWFISH_API_KEY)" \\
         "$(FLOWFISH_URL)/api/v1/communications/dependencies/summary?$(FLOWFISH_QUERY)")
       echo "$DEPS" > flowfish-deps.json
       
@@ -316,7 +345,7 @@ print(c)
       echo "##vso[task.setvariable variable=CRITICAL_DEPS]$CRITICAL"
     displayName: 'Flowfish: Get Cross-Project Dependencies'
     env:
-      FLOWFISH_TOKEN: $(FLOWFISH_TOKEN)
+      FLOWFISH_API_KEY: $(FLOWFISH_API_KEY)
       FLOWFISH_URL: $(FLOWFISH_URL)
   
   - script: |
@@ -329,6 +358,7 @@ print(c)
 
     if (platform === 'github_actions') {
       return `# GitHub Actions - Flowfish Integration
+# Store your API key in repository secrets as FLOWFISH_API_KEY
 env:
   FLOWFISH_QUERY: '${qsStr}'
 
@@ -338,7 +368,7 @@ jobs:
       - name: Get Flowfish Dependencies
         id: flowfish
         run: |
-          curl -s -H "Authorization: Bearer \${{ secrets.FLOWFISH_TOKEN }}" \\
+          curl -s -H "X-API-Key: \${{ secrets.FLOWFISH_API_KEY }}" \\
             "\${{ vars.FLOWFISH_URL }}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}" \\
             > flowfish-deps.json
           
@@ -358,6 +388,7 @@ print(d.get('downstream',{}).get('critical_count',0))
 
     if (platform === 'gitlab_ci') {
       return `# GitLab CI - Flowfish Integration
+# Store your API key as CI/CD variable FLOWFISH_API_KEY
 variables:
   FLOWFISH_QUERY: '${qsStr}'
 
@@ -365,7 +396,7 @@ flowfish_dependencies:
   stage: test
   script:
     - |
-      curl -s -H "Authorization: Bearer $FLOWFISH_TOKEN" \\
+      curl -s -H "X-API-Key: $FLOWFISH_API_KEY" \\
         "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
         > flowfish-deps.json
     - python ai-agent/analyze.py --deps flowfish-deps.json
@@ -376,13 +407,14 @@ flowfish_dependencies:
 
     if (platform === 'jenkins') {
       return `// Jenkins Pipeline - Flowfish Integration
+// Store your API key in Jenkins credentials as FLOWFISH_API_KEY
 def FLOWFISH_QUERY = '${qsStr}'
 
 stage('Flowfish Dependencies') {
     steps {
         script {
             def deps = sh(returnStdout: true, script: """
-                curl -s -H "Authorization: Bearer \${FLOWFISH_TOKEN}" \\
+                curl -s -H "X-API-Key: \${FLOWFISH_API_KEY}" \\
                   "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}"
             """).trim()
             writeFile file: 'flowfish-deps.json', text: deps
@@ -392,9 +424,10 @@ stage('Flowfish Dependencies') {
     }
 
     return `# Generic CI/CD - Flowfish Integration
+# Get your API key from Flowfish Settings > API Keys
 FLOWFISH_QUERY='${qsStr}'
 
-curl -s -H "Authorization: Bearer $FLOWFISH_TOKEN" \\
+curl -s -H "X-API-Key: $FLOWFISH_API_KEY" \\
   "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
   > flowfish-deps.json`;
   }, [buildQueryString, platform]);
@@ -415,14 +448,14 @@ curl -s -H "Authorization: Bearer $FLOWFISH_TOKEN" \\
     return `import requests
 
 FLOWFISH_URL = "${API_BASE}"
-TOKEN = "your-api-token"
+API_KEY = "fk_your_api_key_here"  # Get from Settings > API Keys
 
 resp = requests.get(
     f"{FLOWFISH_URL}/communications/dependencies/summary",
     params=[
 ${paramLines.join('\n')}
     ],
-    headers={"Authorization": f"Bearer {TOKEN}"},
+    headers={"X-API-Key": API_KEY},
 )
 deps = resp.json()
 
@@ -449,9 +482,10 @@ for r in affected_repos:
   const buildJsSnippet = useCallback(() => {
     const qsStr = buildQueryString();
     if (!qsStr) return '';
-    return `const resp = await fetch(
+    return `// Get your API key from Flowfish Settings > API Keys
+const resp = await fetch(
   \`\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?${qsStr}\`,
-  { headers: { Authorization: \`Bearer \${token}\` } }
+  { headers: { "X-API-Key": FLOWFISH_API_KEY } }
 );
 const deps = await resp.json();
 
@@ -524,7 +558,7 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             if (n < currentStep) setCurrentStep(n);
             else if (n === 1 && integrationType) setCurrentStep(n);
             else if (n === 2 && summaryData?.success) setCurrentStep(n);
-            else if (n === 3 && summaryData?.success) setCurrentStep(n);
+            else if (n === 3 && (summaryData?.success || summaryParams)) setCurrentStep(n);
           }}
           items={[
             { title: 'Integration Type', icon: <ApiOutlined /> },
@@ -662,8 +696,12 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
                   {(idMethod === 'annotation' || idMethod === 'advanced') && (
                     <>
                       <Col xs={24} sm={12}>
-                        <Form.Item name="annotation_key" label="Annotation Key">
-                          <Input placeholder="e.g. git-repo" />
+                        <Form.Item
+                          name="annotation_key"
+                          label="Annotation Key"
+                          tooltip="Use custom annotations set during deployment (e.g. git-repo, team, version). Infrastructure annotations like openshift.io/* and kubernetes.io/* are not indexed."
+                        >
+                          <Input placeholder="e.g. git-repo, build-id, team" />
                         </Form.Item>
                       </Col>
                       <Col xs={24} sm={12}>
@@ -780,7 +818,24 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             />
           )}
 
-          <StepNav disableNext={!summaryData?.success} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24 }}>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(0)}>Back</Button>
+            <Space>
+              {!summaryData?.success && (
+                <Button onClick={onSkipToSetup} disabled={!canProceedStep1}>
+                  Skip to Setup <ArrowRightOutlined />
+                </Button>
+              )}
+              <Button
+                type="primary"
+                icon={<ArrowRightOutlined />}
+                disabled={!summaryData?.success}
+                onClick={() => setCurrentStep(2)}
+              >
+                Preview Results
+              </Button>
+            </Space>
+          </div>
         </Card>
       )}
 
@@ -881,8 +936,16 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
       )}
 
       {/* ─── Step 3: Integration Setup ─── */}
-      {currentStep === 3 && summaryData?.success && (
+      {currentStep === 3 && (summaryData?.success || summaryParams) && (
         <div>
+          {!summaryData?.success && (
+            <Alert
+              type="warning"
+              showIcon
+              message="Test Query was skipped — snippets are generated from your configured parameters. Run Test Query in the Configure step to preview and validate results."
+              style={{ marginBottom: 16 }}
+            />
+          )}
           <Alert
             type="info"
             showIcon
@@ -915,6 +978,27 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             ]}
           />
 
+          <Card
+            title={<span><KeyOutlined /> Authentication</span>}
+            size="small"
+            style={{ marginTop: 16 }}
+          >
+            <Paragraph>
+              All API calls require authentication via <Text strong>API Key</Text>. Include the header <Text code>X-API-Key: fk_your_key</Text> in every request.
+            </Paragraph>
+            <ol>
+              <li>Go to <Link to="/settings"><Text strong>Settings</Text></Link> and open the <Text strong>API Keys</Text> tab</li>
+              <li>Click <Text strong>Generate New API Key</Text> and give it a descriptive name (e.g. "azure-devops-pipeline")</li>
+              <li>Copy the generated key (starts with <Text code>fk_</Text>) and store it securely in your CI/CD platform's secrets/variables</li>
+            </ol>
+            <Alert
+              type="warning"
+              showIcon
+              message="API keys provide full API access. Store them as encrypted secrets in your pipeline platform, never in source code."
+              style={{ marginTop: 8 }}
+            />
+          </Card>
+
           {(integrationType === 'cicd' || integrationType === 'agent') && (
             <Card title="How Your AI Agent Uses This Data" size="small" style={{ marginTop: 16 }}>
               <Paragraph>
@@ -934,7 +1018,9 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
           )}
 
           <div style={{ marginTop: 24 }}>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(2)}>Back to Preview</Button>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(summaryData?.success ? 2 : 1)}>
+              {summaryData?.success ? 'Back to Preview' : 'Back to Configure'}
+            </Button>
           </div>
         </div>
       )}
