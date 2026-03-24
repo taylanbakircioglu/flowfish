@@ -174,6 +174,32 @@ async def lifespan(app: FastAPI):
     logger.info("👋 Flowfish Backend shutdown complete")
 
 
+# OpenAPI tag metadata -- controls ordering and descriptions in Swagger / ReDoc
+openapi_tags = [
+    {"name": "Authentication", "description": "Login, logout, JWT token management, 2FA"},
+    {"name": "Clusters", "description": "Kubernetes cluster registration, connection, and management"},
+    {"name": "Analyses", "description": "Traffic analysis creation, lifecycle, and run management"},
+    {"name": "Workloads", "description": "Kubernetes workload inventory and metadata"},
+    {"name": "Communications", "description": "Service-to-service communication graph, dependency map, and topology"},
+    {"name": "AI Integration", "description": "AI agent and CI/CD pipeline integration endpoints for dependency discovery, impact analysis, and cross-project dependency mapping"},
+    {"name": "Impact Analysis", "description": "Blast radius assessment, impact simulation, and pre-deployment risk evaluation"},
+    {"name": "Events", "description": "eBPF event statistics, queries, and timeline"},
+    {"name": "Changes", "description": "Change detection and infrastructure drift tracking"},
+    {"name": "Cluster Resources", "description": "Namespace inventory and management"},
+    {"name": "Event Types", "description": "Event type definitions"},
+    {"name": "Export", "description": "Data export in various formats"},
+    {"name": "Dev Console", "description": "Developer query interface for Neo4j and ClickHouse"},
+    {"name": "Settings", "description": "System configuration and enterprise settings"},
+    {"name": "Simulation", "description": "Impact simulation and network policy testing"},
+    {"name": "Blast Radius", "description": "Pre-deployment blast radius assessment"},
+    {"name": "API Keys", "description": "API key creation and management for service integrations"},
+    {"name": "Scheduled Reports", "description": "Scheduled report configuration"},
+    {"name": "Report History", "description": "Report execution history"},
+    {"name": "Users", "description": "User management"},
+    {"name": "Roles", "description": "Role-based access control"},
+    {"name": "WebSocket", "description": "Real-time updates via WebSocket"},
+]
+
 # Create FastAPI application
 app = FastAPI(
     title="Flowfish Platform API",
@@ -205,6 +231,7 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
+    openapi_tags=openapi_tags,
     lifespan=lifespan
 )
 

@@ -13,58 +13,76 @@ import {
   Space,
   Typography,
   Alert,
-  Slider,
   Divider,
   Empty,
   Tooltip,
-  Progress,
   message,
   Spin,
   Row,
   Col,
   Descriptions,
   Statistic,
+  Radio,
 } from 'antd';
 import {
   RobotOutlined,
-  SearchOutlined,
   ApartmentOutlined,
-  ThunderboltOutlined,
   CodeOutlined,
   CopyOutlined,
-  DownloadOutlined,
   ApiOutlined,
   CheckCircleOutlined,
-  WarningOutlined,
-  CloseCircleOutlined,
   ArrowLeftOutlined,
   ArrowRightOutlined,
   ArrowDownOutlined,
   ArrowUpOutlined,
-  PlusCircleOutlined,
-  MinusCircleOutlined,
-  SwapOutlined,
+  RocketOutlined,
+  EyeOutlined,
+  AlertOutlined,
+  MessageOutlined,
+  AuditOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons';
 import { Link, useSearchParams } from 'react-router-dom';
+import { useGetClustersQuery } from '../store/api/clusterApi';
+import { useGetAnalysesQuery } from '../store/api/analysisApi';
 import {
-  useGetPodDependencyStreamQuery,
-  useGetDependencyImpactQuery,
-  useGetDependencyDiffQuery,
-  PodDependencyStreamParams,
-  PodDependencyInfo,
-  DependencyHealthScore,
-  SuggestedAction,
+  useGetDependencySummaryQuery,
+  DependencySummaryParams,
+  DependencySummaryService,
+  DependencySummaryGroup,
 } from '../store/api/communicationApi';
 
 const { Text, Title, Paragraph } = Typography;
+const { Option } = Select;
 
 const API_BASE = typeof window !== 'undefined' ? `${window.location.origin}/api/v1` : '/api/v1';
 
-const CHANGE_TYPES = [
-  { value: 'image_update', label: 'Image Update' },
-  { value: 'config_change', label: 'Config Change' },
-  { value: 'scale_change', label: 'Scale Change' },
-  { value: 'delete', label: 'Delete' },
+type IntegrationType = 'cicd' | 'agent' | 'explorer' | null;
+
+const PIPELINE_PLATFORMS = [
+  { value: 'azure_devops', label: 'Azure DevOps' },
+  { value: 'github_actions', label: 'GitHub Actions' },
+  { value: 'gitlab_ci', label: 'GitLab CI' },
+  { value: 'jenkins', label: 'Jenkins' },
+  { value: 'tekton', label: 'Tekton' },
+  { value: 'argocd', label: 'ArgoCD' },
+  { value: 'other', label: 'Other' },
+];
+
+const AGENT_TYPES = [
+  { value: 'code_review', label: 'Code Review' },
+  { value: 'security_scan', label: 'Security Scan' },
+  { value: 'architecture', label: 'Architecture Compliance' },
+  { value: 'migration', label: 'Migration Impact' },
+  { value: 'custom', label: 'Custom' },
+];
+
+const ID_METHODS = [
+  { value: 'annotation', label: 'Annotation (e.g. git-repo URL)' },
+  { value: 'label', label: 'Label (e.g. app name)' },
+  { value: 'namespace_deployment', label: 'Namespace + Deployment' },
+  { value: 'pod_name', label: 'Pod Name' },
+  { value: 'advanced', label: 'Advanced (any combination)' },
 ];
 
 const CODE_BLOCK_STYLE: React.CSSProperties = {
@@ -78,78 +96,6 @@ const CODE_BLOCK_STYLE: React.CSSProperties = {
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-all',
 };
-
-function healthScoreToVisual(score: number | undefined) {
-  if (score == null || Number.isNaN(score)) return { label: 'Unknown', color: 'default' };
-  if (score >= 80) return { label: 'Healthy', color: 'success' };
-  if (score >= 60) return { label: 'Degraded', color: 'warning' };
-  if (score >= 30) return { label: 'Unhealthy', color: 'orange' };
-  return { label: 'Critical', color: 'error' };
-}
-
-function HealthBadge({ health }: { health?: DependencyHealthScore }) {
-  const score = health?.score;
-  const { label } = healthScoreToVisual(score);
-  const display = score != null ? `${Math.round(score)}` : '\u2014';
-  const badgeColor =
-    score == null || Number.isNaN(score)
-      ? '#d9d9d9'
-      : score >= 80
-        ? '#52c41a'
-        : score >= 60
-          ? '#faad14'
-          : score >= 30
-            ? '#fa8c16'
-            : '#cf1322';
-  return (
-    <Tooltip title={health ? `${label} \u00b7 err ${health.error_rate_percent?.toFixed?.(2) ?? 0}%` : undefined}>
-      <Badge color={badgeColor} text={display} />
-    </Tooltip>
-  );
-}
-
-function riskProgressColor(percent: number): string {
-  if (percent >= 70) return '#cf1322';
-  if (percent >= 40) return '#faad14';
-  return '#52c41a';
-}
-
-function RecommendationBadge({ rec }: { rec: 'proceed' | 'caution' | 'block' }) {
-  const map = {
-    proceed: { color: 'success' as const, icon: <CheckCircleOutlined />, text: 'Proceed' },
-    caution: { color: 'warning' as const, icon: <WarningOutlined />, text: 'Caution' },
-    block: { color: 'error' as const, icon: <CloseCircleOutlined />, text: 'Block' },
-  };
-  const m = map[rec] ?? map.proceed;
-  return <Tag icon={m.icon} color={m.color}>{m.text}</Tag>;
-}
-
-function UpstreamBanner({ upstream, downstream, callers }: {
-  upstream?: PodDependencyInfo;
-  downstream: PodDependencyInfo[];
-  callers: PodDependencyInfo[];
-}) {
-  if (!upstream) return null;
-  return (
-    <Card size="small" style={{ borderLeft: '3px solid #1677ff' }}>
-      <Row gutter={16} align="middle">
-        <Col flex="auto">
-          <Space split={<Divider type="vertical" />}>
-            <Text strong>{upstream.owner_name || upstream.pod_name}</Text>
-            <Text type="secondary">{upstream.namespace}</Text>
-            {upstream.owner_kind && <Tag>{upstream.owner_kind}</Tag>}
-          </Space>
-        </Col>
-        <Col>
-          <Space size="large">
-            <Statistic title={<><ArrowDownOutlined /> Downstream</>} value={downstream.length} valueStyle={{ fontSize: 18 }} />
-            <Statistic title={<><ArrowUpOutlined /> Callers</>} value={callers.length} valueStyle={{ fontSize: 18 }} />
-          </Space>
-        </Col>
-      </Row>
-    </Card>
-  );
-}
 
 function CodeBlockWithCopy({ code, label }: { code: string; label: string }) {
   const copy = async () => {
@@ -175,835 +121,790 @@ function CodeBlockWithCopy({ code, label }: { code: string; label: string }) {
   );
 }
 
-function buildExportMermaid(root: PodDependencyInfo, downstream: PodDependencyInfo[]): string {
-  const lines = ['flowchart LR', `  root["${root.pod_name}\\n${root.namespace}"]`];
-  downstream.slice(0, 24).forEach((d, i) => {
-    lines.push(`  d${i}["${d.pod_name}\\n${d.namespace}"]`);
-    lines.push(`  root --> d${i}`);
-  });
-  return lines.join('\n');
-}
-
-function buildExportDot(root: PodDependencyInfo, downstream: PodDependencyInfo[]): string {
-  const lines = ['digraph G {', `  root [label="${root.pod_name}\\n${root.namespace}"];`];
-  downstream.slice(0, 24).forEach((d, i) => {
-    lines.push(`  d${i} [label="${d.pod_name}\\n${d.namespace}"];`);
-    lines.push(`  root -> d${i};`);
-  });
-  lines.push('}');
-  return lines.join('\n');
-}
-
-const URL_PARAM_FIELDS = [
-  'analysis_id', 'cluster_id', 'namespace', 'pod_name', 'owner_name',
-  'label_key', 'label_value', 'annotation_key', 'annotation_value', 'ip',
-] as const;
-
-const AIIntegrationHub: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const [form] = Form.useForm();
-  const [currentStep, setCurrentStep] = useState(0);
-  const [depth, setDepth] = useState(2);
-  const [changeType, setChangeType] = useState('image_update');
-  const [streamParams, setStreamParams] = useState<PodDependencyStreamParams | null>(null);
-  const [diffAnalysisBefore, setDiffAnalysisBefore] = useState('');
-  const [diffAnalysisAfter, setDiffAnalysisAfter] = useState('');
-
-  useEffect(() => {
-    const prefill: Record<string, string> = {};
-    let hasAny = false;
-    for (const key of URL_PARAM_FIELDS) {
-      const val = searchParams.get(key);
-      if (val) {
-        prefill[key] = val;
-        hasAny = true;
-      }
-    }
-    if (hasAny) {
-      form.setFieldsValue(prefill);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const {
-    data: streamData,
-    isFetching: streamLoading,
-    isError: streamIsError,
-    error: streamError,
-  } = useGetPodDependencyStreamQuery(streamParams as PodDependencyStreamParams, {
-    skip: !streamParams,
-  });
-
-  const firstResult = streamData?.results?.[0];
-  const upstream = firstResult?.upstream;
-  const downstreamRows = firstResult?.downstream ?? [];
-  const callerRows = firstResult?.callers ?? [];
-
-  const impactParams = useMemo(() => {
-    if (!streamParams) return undefined;
-    return {
-      analysis_id: streamParams.analysis_id,
-      cluster_id: streamParams.cluster_id,
-      pod_name: streamParams.pod_name ?? upstream?.pod_name,
-      namespace: streamParams.namespace ?? upstream?.namespace,
-      owner_name: streamParams.owner_name,
-      label_key: streamParams.label_key,
-      label_value: streamParams.label_value,
-      annotation_key: streamParams.annotation_key,
-      annotation_value: streamParams.annotation_value,
-      ip: streamParams.ip,
-      depth,
-      change_type: changeType,
-    };
-  }, [streamParams, upstream, depth, changeType]);
-
-  const {
-    data: impactData,
-    isFetching: impactLoading,
-    isError: impactIsError,
-    error: impactError,
-  } = useGetDependencyImpactQuery(impactParams!, {
-    skip: !impactParams || currentStep !== 2,
-  });
-
-  const diffParams = useMemo(() => {
-    if (!diffAnalysisBefore.trim() || !diffAnalysisAfter.trim()) return undefined;
-    return {
-      analysis_id_before: diffAnalysisBefore.trim(),
-      analysis_id_after: diffAnalysisAfter.trim(),
-      pod_name: streamParams?.pod_name ?? upstream?.pod_name,
-      namespace: streamParams?.namespace ?? upstream?.namespace,
-      owner_name: streamParams?.owner_name,
-      cluster_id: streamParams?.cluster_id,
-    };
-  }, [diffAnalysisBefore, diffAnalysisAfter, streamParams, upstream]);
-
-  const {
-    data: diffData,
-    isFetching: diffLoading,
-    isError: diffIsError,
-    error: diffError,
-  } = useGetDependencyDiffQuery(diffParams!, {
-    skip: currentStep !== 2 || !diffParams,
-  });
-
-  const onSearch = useCallback(async () => {
-    try {
-      const values = await form.validateFields();
-      const next: PodDependencyStreamParams = {
-        analysis_id: values.analysis_id != null && values.analysis_id !== '' ? Number(values.analysis_id) : undefined,
-        cluster_id: values.cluster_id != null && values.cluster_id !== '' ? Number(values.cluster_id) : undefined,
-        namespace: values.namespace?.trim() || undefined,
-        pod_name: values.pod_name?.trim() || undefined,
-        owner_name: values.owner_name?.trim() || undefined,
-        label_key: values.label_key?.trim() || undefined,
-        label_value: values.label_value?.trim() || undefined,
-        annotation_key: values.annotation_key?.trim() || undefined,
-        annotation_value: values.annotation_value?.trim() || undefined,
-        ip: values.ip?.trim() || undefined,
-        depth,
-      };
-      setStreamParams(next);
-    } catch {
-      /* validation */
-    }
-  }, [form, depth]);
-
-  const onDepthChange = (v: number) => {
-    setDepth(v);
-    setStreamParams((prev) => (prev ? { ...prev, depth: v } : null));
-  };
-
-  const goNext = () => setCurrentStep((s) => Math.min(3, s + 1));
-  const goPrev = () => setCurrentStep((s) => Math.max(0, s - 1));
-
-  const queryStringFromParams = (p: PodDependencyStreamParams) => {
-    const sp = new URLSearchParams();
-    if (p.analysis_id != null) sp.set('analysis_id', String(p.analysis_id));
-    if (p.cluster_id != null) sp.set('cluster_id', String(p.cluster_id));
-    if (p.namespace) sp.set('namespace', p.namespace);
-    if (p.pod_name) sp.set('pod_name', p.pod_name);
-    if (p.owner_name) sp.set('owner_name', p.owner_name);
-    if (p.label_key) sp.set('label_key', p.label_key);
-    if (p.label_value) sp.set('label_value', p.label_value);
-    if (p.annotation_key) sp.set('annotation_key', p.annotation_key);
-    if (p.annotation_value) sp.set('annotation_value', p.annotation_value);
-    if (p.ip) sp.set('ip', p.ip);
-    if (p.depth != null) sp.set('depth', String(p.depth));
-    return sp.toString();
-  };
-
-  const snippets = useMemo(() => {
-    const qs = streamParams ? queryStringFromParams(streamParams) : '';
-    const streamUrl = `${API_BASE}/communications/dependencies/stream`;
-    const impactUrl = `${API_BASE}/communications/dependencies/impact`;
-
-    const curl = `curl -sS -H "Authorization: Bearer $FLOWFISH_API_TOKEN" \\
-  "${streamUrl}?${qs}"`;
-
-    const curlImpact = `curl -sS -H "Authorization: Bearer $FLOWFISH_API_TOKEN" \\
-  "${impactUrl}?${qs}&change_type=image_update"`;
-
-    const filteredEntries = streamParams
-      ? Object.entries({
-          analysis_id: streamParams.analysis_id,
-          cluster_id: streamParams.cluster_id,
-          namespace: streamParams.namespace,
-          pod_name: streamParams.pod_name,
-          owner_name: streamParams.owner_name,
-          label_key: streamParams.label_key,
-          label_value: streamParams.label_value,
-          annotation_key: streamParams.annotation_key,
-          annotation_value: streamParams.annotation_value,
-          ip: streamParams.ip,
-          depth: streamParams.depth,
-        }).filter(([, v]) => v != null && v !== '')
-      : [];
-
-    const pyParamsBlock = filteredEntries.length
-      ? filteredEntries.map(([k, v]) => `    "${k}": ${JSON.stringify(v)},`).join('\n')
-      : '    # add query params';
-
-    const python = `import os, requests
-
-BASE = os.environ.get("FLOWFISH_API_BASE", "${API_BASE}")
-TOKEN = os.environ["FLOWFISH_API_TOKEN"]
-HEADERS = {"Authorization": f"Bearer {TOKEN}"}
-
-# 1. Get dependency stream
-params = {
-${pyParamsBlock}
-}
-deps = requests.get(f"{BASE}/communications/dependencies/stream", params=params, headers=HEADERS).json()
-print(f"Found {deps.get('count', 0)} upstream matches")
-
-# 2. Get impact assessment (optional)
-params["change_type"] = "image_update"
-impact = requests.get(f"{BASE}/communications/dependencies/impact", params=params, headers=HEADERS).json()
-print(f"Risk: {impact.get('impact_assessment', {}).get('risk_score', '?')}/100")`;
-
-    const jsParamsObj = streamParams
-      ? JSON.stringify(
-          Object.fromEntries(filteredEntries),
-          null,
-          2,
-        )
-      : '{}';
-
-    const javascript = `const BASE = process.env.FLOWFISH_API_BASE || "${API_BASE}";
-const TOKEN = process.env.FLOWFISH_API_TOKEN;
-const headers = { Authorization: \`Bearer \${TOKEN}\` };
-
-// 1. Dependency stream
-const qs = new URLSearchParams(${jsParamsObj});
-const deps = await fetch(\`\${BASE}/communications/dependencies/stream?\${qs}\`, { headers });
-const data = await deps.json();
-console.log(\`Upstream: \${data.results?.[0]?.upstream?.pod_name}\`);
-console.log(\`Downstream: \${data.results?.[0]?.downstream?.length} services\`);
-
-// 2. Impact assessment (optional)
-qs.set("change_type", "image_update");
-const impact = await fetch(\`\${BASE}/communications/dependencies/impact?\${qs}\`, { headers });
-console.log(await impact.json());`;
-
-    const azure = `# Azure Pipelines \u2014 Flowfish dependency & impact gate
-trigger:
-  - main
-
-pool:
-  vmImage: ubuntu-latest
-
-steps:
-  - bash: |
-      set -e
-      DEPS=$(curl -sS -f -H "Authorization: Bearer $(FLOWFISH_API_TOKEN)" \\
-        "${streamUrl}?${qs}")
-      echo "$DEPS" | jq '.results[0] | {upstream: .upstream.pod_name, downstream: (.downstream | length), callers: (.callers | length)}'
-
-      IMPACT=$(curl -sS -f -H "Authorization: Bearer $(FLOWFISH_API_TOKEN)" \\
-        "${impactUrl}?${qs}&change_type=image_update")
-      RISK=$(echo "$IMPACT" | jq '.impact_assessment.risk_score')
-      echo "Risk score: $RISK"
-      if [ "$RISK" -ge 70 ]; then echo "##vso[task.logissue type=error]High risk deployment!"; exit 1; fi
-    displayName: Flowfish Impact Gate
-    env:
-      FLOWFISH_API_TOKEN: $(FLOWFISH_API_TOKEN)`;
-
-    const gha = `name: flowfish-impact-gate
-on: [push, workflow_dispatch]
-
-jobs:
-  impact-check:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check dependencies & impact
-        env:
-          FLOWFISH_API_TOKEN: \${{ secrets.FLOWFISH_API_TOKEN }}
-        run: |
-          set -e
-          DEPS=$(curl -sS -f -H "Authorization: Bearer $FLOWFISH_API_TOKEN" \\
-            "${streamUrl}?${qs}")
-          echo "$DEPS" | jq '.results[0] | {upstream: .upstream.pod_name, downstream: (.downstream | length)}'
-
-          IMPACT=$(curl -sS -f -H "Authorization: Bearer $FLOWFISH_API_TOKEN" \\
-            "${impactUrl}?${qs}&change_type=image_update")
-          RISK=$(echo "$IMPACT" | jq '.impact_assessment.risk_score')
-          echo "::notice::Risk score: $RISK/100"
-          if [ "$RISK" -ge 70 ]; then echo "::error::High risk! Blocking."; exit 1; fi`;
-
-    return { curl, curlImpact, python, javascript, azure, gha };
-  }, [streamParams]);
-
-  const downstreamColumns = useMemo(
-    () => [
-      { title: 'Name', dataIndex: 'pod_name', key: 'pod_name', ellipsis: true },
-      { title: 'Namespace', dataIndex: 'namespace', key: 'namespace', width: 140 },
-      {
-        title: 'Type',
-        key: 'service_type',
-        width: 150,
-        render: (_: unknown, r: PodDependencyInfo) => {
-          const t = r.communication?.service_type;
-          const cat = r.communication?.service_category;
-          const critical = r.communication?.is_critical;
-          if (!t || t === 'unknown') return <Text type="secondary">{'\u2014'}</Text>;
-          return (
-            <Space size={4} wrap>
-              <Tag color={critical ? 'red' : undefined}>{t}</Tag>
-              {cat && cat !== 'service' && cat !== t && <Text type="secondary" style={{ fontSize: 11 }}>{cat}</Text>}
-            </Space>
-          );
-        },
-      },
-      {
-        title: 'Port',
-        key: 'port',
-        width: 72,
-        render: (_: unknown, r: PodDependencyInfo) => r.communication?.port ?? '\u2014',
-      },
-      {
-        title: 'Protocol',
-        key: 'proto',
-        width: 100,
-        render: (_: unknown, r: PodDependencyInfo) =>
-          r.communication?.app_protocol || r.communication?.protocol || '\u2014',
-      },
-      {
-        title: 'Health',
-        key: 'health',
-        width: 90,
-        render: (_: unknown, r: PodDependencyInfo) => <HealthBadge health={r.health} />,
-      },
-      {
-        title: 'Hop',
-        key: 'hop',
-        width: 56,
-        render: (_: unknown, r: PodDependencyInfo) => r.hop_count ?? '\u2014',
-      },
-      {
-        title: 'Requests',
-        key: 'req',
-        width: 100,
-        render: (_: unknown, r: PodDependencyInfo) => {
-          const c = r.communication?.request_count;
-          return c != null ? c.toLocaleString() : '\u2014';
-        },
-      },
-      {
-        title: 'Error Rate',
-        key: 'err',
-        width: 100,
-        render: (_: unknown, r: PodDependencyInfo) => {
-          const er = r.health?.error_rate_percent ?? r.communication?.error_rate_percent;
-          if (er == null) return '\u2014';
-          const val = Number(er);
-          return <Text type={val > 5 ? 'danger' : val > 1 ? 'warning' : undefined}>{val.toFixed(2)}%</Text>;
-        },
-      },
-    ],
-    []
-  );
-
-  const canGoNextFromStep0 = Boolean(streamParams && streamData?.success && (streamData?.count ?? 0) > 0);
-  const assessment = impactData?.impact_assessment;
-  const riskPct = Math.min(100, Math.max(0, assessment?.risk_score ?? 0));
-
-  const streamErrMsg =
-    streamIsError && streamError && 'data' in streamError
-      ? String((streamError as { data?: { detail?: string } }).data?.detail ?? 'Request failed')
-      : streamIsError
-        ? 'Failed to load dependency stream'
-        : null;
-
-  const StepNav = ({ disableNext }: { disableNext?: boolean }) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
-      <Button
-        icon={<ArrowLeftOutlined />}
-        disabled={currentStep === 0}
-        onClick={goPrev}
-      >
-        Previous
-      </Button>
-      <Button
-        type="primary"
-        icon={<ArrowRightOutlined />}
-        disabled={currentStep === 3 || disableNext}
-        onClick={goNext}
-      >
-        {currentStep === 2 ? 'Go to Integration Setup' : 'Next'}
-      </Button>
-    </div>
-  );
+function CategoryGroup({ group, title }: { group: DependencySummaryGroup; title: string }) {
+  if (!group || group.total === 0) {
+    return <Empty description={`No ${title.toLowerCase()}`} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+  }
 
   return (
-    <div style={{ maxWidth: 1120, margin: '0 auto', padding: 24 }}>
-      <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <Title level={2} style={{ marginBottom: 4 }}>
-              <RobotOutlined /> AI Integration Hub
-            </Title>
-            <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Discover service dependencies and generate integration snippets for AI agents and CI/CD pipelines.
-            </Paragraph>
-          </div>
-          <Link to="/discovery/map">
-            <Button type="link">Back to Map</Button>
-          </Link>
-        </div>
-
-        <Card>
-          <Steps
-            current={currentStep}
-            onChange={(n) => {
-              if (n <= currentStep || (n === 1 && canGoNextFromStep0)) setCurrentStep(n);
-            }}
-            items={[
-              { title: 'Service Selection', icon: <SearchOutlined /> },
-              { title: 'Dependencies', icon: <ApartmentOutlined /> },
-              { title: 'Impact Analysis', icon: <ThunderboltOutlined /> },
-              { title: 'Integration', icon: <CodeOutlined /> },
+    <div>
+      <Row gutter={16} style={{ marginBottom: 12 }}>
+        <Col><Statistic title="Total" value={group.total} valueStyle={{ fontSize: 20 }} /></Col>
+        {(group.critical_count ?? 0) > 0 && (
+          <Col><Statistic title="Critical" value={group.critical_count} valueStyle={{ fontSize: 20, color: '#cf1322' }} /></Col>
+        )}
+        <Col><Statistic title="Categories" value={Object.keys(group.by_category || {}).length} valueStyle={{ fontSize: 20 }} /></Col>
+      </Row>
+      {Object.entries(group.by_category || {}).map(([cat, services]) => (
+        <Card
+          key={cat}
+          size="small"
+          title={<><Tag color={cat === 'database' ? 'blue' : cat === 'cache' ? 'green' : cat === 'message_broker' ? 'purple' : 'default'}>{cat}</Tag> <Text type="secondary">({services.length})</Text></>}
+          style={{ marginBottom: 8 }}
+        >
+          <Table
+            dataSource={services}
+            rowKey={(r) => `${r.namespace}/${r.name}`}
+            size="small"
+            pagination={false}
+            columns={[
+              { title: 'Name', dataIndex: 'name', key: 'name', render: (v: string, r: DependencySummaryService) => <><Text strong>{v}</Text>{r.is_critical && <Tag color="red" style={{ marginLeft: 4 }}>critical</Tag>}</> },
+              { title: 'Namespace', dataIndex: 'namespace', key: 'ns' },
+              { title: 'Kind', dataIndex: 'kind', key: 'kind', render: (v: string) => v ? <Tag>{v}</Tag> : '-' },
+              { title: 'Port', dataIndex: 'port', key: 'port', render: (v: number) => v ?? '-' },
+              {
+                title: 'Annotations',
+                key: 'ann',
+                render: (_: unknown, r: DependencySummaryService) => {
+                  const entries = Object.entries(r.annotations || {});
+                  if (!entries.length) return <Text type="secondary">-</Text>;
+                  const gitRepo = r.annotations['git-repo'] || r.annotations['gitRepo'] || r.annotations['source-repo'];
+                  if (gitRepo) return <Tooltip title={gitRepo}><Tag color="geekblue">git-repo</Tag></Tooltip>;
+                  return <Tooltip title={entries.map(([k, v]) => `${k}=${v}`).join(', ')}><Tag>{entries.length} annotations</Tag></Tooltip>;
+                },
+              },
             ]}
           />
         </Card>
+      ))}
+    </div>
+  );
+}
 
-        {currentStep > 0 && upstream && (
-          <UpstreamBanner upstream={upstream} downstream={downstreamRows} callers={callerRows} />
-        )}
+const AIIntegrationHub: React.FC = () => {
+  const [currentStep, setCurrentStep] = useState(0);
+  const [integrationType, setIntegrationType] = useState<IntegrationType>(null);
+  const [form] = Form.useForm();
 
-        {/* Step 0: Service Selection */}
-        {currentStep === 0 && (
-          <Card title="Find your service">
-            <Paragraph type="secondary" style={{ marginBottom: 16 }}>
-              Search by any combination of filters. At least one search parameter is required.
-            </Paragraph>
-            <Form
-              form={form}
-              layout="vertical"
-              onFinish={onSearch}
-              initialValues={{ analysis_id: undefined, cluster_id: undefined }}
-            >
-              <Row gutter={16}>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="namespace" label="Namespace">
-                    <Input placeholder="e.g. production" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="owner_name" label="Owner / Deployment name">
-                    <Input placeholder="e.g. payment-service" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="pod_name" label="Pod name">
-                    <Input placeholder="e.g. payment-service-7b9d4" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="annotation_key" label="Annotation key">
-                    <Input placeholder="e.g. app.company.com/team" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="annotation_value" label="Annotation value">
-                    <Input placeholder="e.g. platform-team" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="ip" label="Pod IP">
-                    <Input placeholder="e.g. 10.244.1.15" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="label_key" label="Label key">
-                    <Input placeholder="e.g. app.kubernetes.io/name" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="label_value" label="Label value">
-                    <Input placeholder="e.g. nginx" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="analysis_id" label="Analysis ID">
-                    <Input type="number" placeholder="e.g. 42" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12} md={8}>
-                  <Form.Item name="cluster_id" label="Cluster ID">
-                    <Input type="number" placeholder="e.g. 1" />
-                  </Form.Item>
-                </Col>
-              </Row>
-              <Button type="primary" icon={<SearchOutlined />} onClick={onSearch} loading={streamLoading} size="large">
-                Search Service
-              </Button>
-            </Form>
+  // Step 1 state
+  const [selectedClusterId, setSelectedClusterId] = useState<number | undefined>();
+  const [selectedAnalysisIds, setSelectedAnalysisIds] = useState<number[]>([]);
+  const [platform, setPlatform] = useState('azure_devops');
+  const [agentType, setAgentType] = useState('code_review');
+  const [idMethod, setIdMethod] = useState('annotation');
+  const [depth, setDepth] = useState(1);
 
-            {streamErrMsg && (
-              <Alert type="error" showIcon style={{ marginTop: 16 }} message={streamErrMsg} />
-            )}
+  // Query trigger
+  const [summaryParams, setSummaryParams] = useState<DependencySummaryParams | null>(null);
 
-            {streamLoading && (
-              <div style={{ marginTop: 24, textAlign: 'center' }}><Spin tip="Searching..." /></div>
-            )}
+  // Pre-fill from URL params (e.g. when navigating from Map page)
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const urlOwner = searchParams.get('owner_name');
+    const urlNs = searchParams.get('namespace');
+    const urlAnnotationKey = searchParams.get('annotation_key');
+    const urlAnnotationValue = searchParams.get('annotation_value');
+    if (urlOwner || urlNs || urlAnnotationKey) {
+      setIntegrationType('explorer');
+      setCurrentStep(1);
+      if (urlAnnotationKey) setIdMethod('annotation');
+      else if (urlOwner && urlNs) setIdMethod('namespace_deployment');
+      else if (urlOwner) setIdMethod('pod_name');
+      setTimeout(() => {
+        const fields: Record<string, string> = {};
+        if (urlOwner) fields.owner_name = urlOwner;
+        if (urlNs) fields.namespace = urlNs;
+        if (urlAnnotationKey) fields.annotation_key = urlAnnotationKey;
+        if (urlAnnotationValue) fields.annotation_value = urlAnnotationValue;
+        form.setFieldsValue(fields);
+      }, 0);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-            {streamData && !streamLoading && (
-              <>
-                {!streamData.success || !upstream ? (
-                  <Alert type="warning" showIcon style={{ marginTop: 16 }} message={streamData.error || 'No matching workload found. Try different search criteria.'} />
-                ) : (
-                  <Alert
-                    type="success"
-                    showIcon
-                    icon={<CheckCircleOutlined />}
-                    style={{ marginTop: 16 }}
-                    message={
-                      <span>
-                        Found <Text strong>{upstream.owner_name || upstream.pod_name}</Text> in{' '}
-                        <Text strong>{upstream.namespace}</Text>
-                        {' \u2014 '}
-                        {downstreamRows.length} downstream, {callerRows.length} callers
-                      </span>
-                    }
-                    description={
-                      <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }} style={{ marginTop: 8 }}>
-                        {upstream.owner_kind && <Descriptions.Item label="Kind">{upstream.owner_kind}</Descriptions.Item>}
-                        {upstream.image && <Descriptions.Item label="Image"><Text code style={{ fontSize: 11 }}>{upstream.image}</Text></Descriptions.Item>}
-                        {upstream.ip && <Descriptions.Item label="IP">{upstream.ip}</Descriptions.Item>}
-                        {upstream.node && <Descriptions.Item label="Node">{upstream.node}</Descriptions.Item>}
-                        {upstream.service_account && <Descriptions.Item label="Service Account">{upstream.service_account}</Descriptions.Item>}
-                      </Descriptions>
-                    }
-                  />
-                )}
-              </>
-            )}
+  // Data hooks
+  const { data: clustersData } = useGetClustersQuery();
+  const clusters: any[] = (clustersData as any)?.clusters || [];
+  const { data: analysesData } = useGetAnalysesQuery(
+    { cluster_id: selectedClusterId },
+    { skip: !selectedClusterId }
+  );
+  const analyses: any[] = (Array.isArray(analysesData) ? analysesData : [])
+    .filter((a: any) => a.status === 'completed' || a.status === 'running');
 
-            <StepNav disableNext={!canGoNextFromStep0} />
-          </Card>
-        )}
+  const {
+    data: summaryData,
+    isLoading: summaryLoading,
+    error: summaryError,
+  } = useGetDependencySummaryQuery(summaryParams!, { skip: !summaryParams });
 
-        {/* Step 1: Dependency Discovery */}
-        {currentStep === 1 && (
-          <Card title="Dependency Discovery">
-            <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
-              <Col flex="auto">
-                <Text strong>Traversal depth: {depth}</Text>
-                <Slider min={1} max={5} value={depth} onChange={onDepthChange} marks={{ 1: '1', 2: '2', 3: '3', 4: '4', 5: '5' }} style={{ maxWidth: 300 }} />
+  const summaryErrMsg = useMemo(() => {
+    if (summaryError) return (summaryError as any)?.data?.detail || 'Query failed';
+    if (summaryData && !summaryData.success) return summaryData.error || 'No results';
+    return null;
+  }, [summaryError, summaryData]);
+
+  const canProceedStep1 = selectedAnalysisIds.length > 0;
+
+  const onTestQuery = useCallback(() => {
+    const values = form.getFieldsValue();
+    if (!selectedAnalysisIds.length) {
+      message.warning('Select at least one analysis');
+      return;
+    }
+    const hasSearch = values.annotation_key || values.label_key || values.namespace || values.owner_name || values.pod_name || values.ip;
+    if (!hasSearch) {
+      message.warning('At least one search parameter is required');
+      return;
+    }
+    const params: DependencySummaryParams = {
+      analysis_ids: selectedAnalysisIds,
+      depth,
+    };
+    if (selectedClusterId) params.cluster_id = selectedClusterId;
+    if (values.annotation_key) params.annotation_key = values.annotation_key;
+    if (values.annotation_value) params.annotation_value = values.annotation_value;
+    if (values.label_key) params.label_key = values.label_key;
+    if (values.label_value) params.label_value = values.label_value;
+    if (values.namespace) params.namespace = values.namespace;
+    if (values.owner_name) params.owner_name = values.owner_name;
+    if (values.pod_name) params.pod_name = values.pod_name;
+    if (values.ip) params.ip = values.ip;
+    setSummaryParams(params);
+  }, [form, selectedAnalysisIds, selectedClusterId, depth]);
+
+  // Build curl snippet from summaryParams
+  const buildCurlSnippet = useCallback(() => {
+    if (!summaryParams) return '';
+    const qs = new URLSearchParams();
+    summaryParams.analysis_ids.forEach(id => qs.append('analysis_ids', String(id)));
+    if (summaryParams.cluster_id) qs.set('cluster_id', String(summaryParams.cluster_id));
+    if (summaryParams.annotation_key) qs.set('annotation_key', summaryParams.annotation_key);
+    if (summaryParams.annotation_value) qs.set('annotation_value', summaryParams.annotation_value);
+    if (summaryParams.label_key) qs.set('label_key', summaryParams.label_key);
+    if (summaryParams.label_value) qs.set('label_value', summaryParams.label_value);
+    if (summaryParams.namespace) qs.set('namespace', summaryParams.namespace);
+    if (summaryParams.owner_name) qs.set('owner_name', summaryParams.owner_name);
+    if (summaryParams.pod_name) qs.set('pod_name', summaryParams.pod_name);
+    if (summaryParams.ip) qs.set('ip', summaryParams.ip);
+    if (summaryParams.depth && summaryParams.depth > 1) qs.set('depth', String(summaryParams.depth));
+    return `curl -s -H "Authorization: Bearer $TOKEN" \\\n  "${API_BASE}/communications/dependencies/summary?${qs.toString()}"`;
+  }, [summaryParams]);
+
+  const buildPipelineSnippet = useCallback(() => {
+    if (!summaryParams) return '';
+    const idsQs = summaryParams.analysis_ids.map(id => `analysis_ids=${id}`).join('&');
+    const searchParam = summaryParams.annotation_key
+      ? `annotation_key=${summaryParams.annotation_key}&annotation_value=\${SERVICE_IDENTIFIER}`
+      : summaryParams.label_key
+        ? `label_key=${summaryParams.label_key}&label_value=\${SERVICE_IDENTIFIER}`
+        : summaryParams.owner_name
+          ? `owner_name=\${SERVICE_IDENTIFIER}`
+          : summaryParams.namespace
+            ? `namespace=\${SERVICE_IDENTIFIER}`
+            : 'owner_name=${SERVICE_IDENTIFIER}';
+
+    if (platform === 'azure_devops') {
+      return `# Azure DevOps Pipeline - Flowfish Integration
+steps:
+  - script: |
+      DEPS=$(curl -s -H "Authorization: Bearer $(FLOWFISH_TOKEN)" \\
+        "$(FLOWFISH_URL)/api/v1/communications/dependencies/summary?\\
+        ${idsQs}&${searchParam}")
+      echo "$DEPS" > flowfish-deps.json
+      
+      # Check for critical dependencies
+      CRITICAL=$(echo "$DEPS" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+c=d.get('downstream',{}).get('critical_count',0)
+print(c)
+")
+      echo "##vso[task.setvariable variable=CRITICAL_DEPS]$CRITICAL"
+    displayName: 'Flowfish: Get Cross-Project Dependencies'
+    env:
+      FLOWFISH_TOKEN: $(FLOWFISH_TOKEN)
+      FLOWFISH_URL: $(FLOWFISH_URL)
+  
+  - script: |
+      python ai-agent/analyze.py \\
+        --pr-diff $(System.PullRequest.PullRequestId) \\
+        --deps flowfish-deps.json
+    displayName: 'AI Impact Analysis (Cross-Project)'
+    condition: succeededOrFailed()`;
+    }
+
+    if (platform === 'github_actions') {
+      return `# GitHub Actions - Flowfish Integration
+- name: Get Flowfish Dependencies
+  id: flowfish
+  run: |
+    curl -s -H "Authorization: Bearer \${{ secrets.FLOWFISH_TOKEN }}" \\
+      "\${{ vars.FLOWFISH_URL }}/api/v1/communications/dependencies/summary?\\
+      ${idsQs}&${searchParam}" > flowfish-deps.json
+    
+    CRITICAL=$(python3 -c "
+import json
+d=json.load(open('flowfish-deps.json'))
+print(d.get('downstream',{}).get('critical_count',0))
+")
+    echo "critical_deps=$CRITICAL" >> $GITHUB_OUTPUT
+
+- name: AI Impact Analysis
+  run: |
+    python ai-agent/analyze.py \\
+      --pr-diff \${{ github.event.pull_request.number }} \\
+      --deps flowfish-deps.json`;
+    }
+
+    if (platform === 'gitlab_ci') {
+      return `# GitLab CI - Flowfish Integration
+flowfish_dependencies:
+  stage: test
+  script:
+    - |
+      curl -s -H "Authorization: Bearer $FLOWFISH_TOKEN" \\
+        "$FLOWFISH_URL/api/v1/communications/dependencies/summary?\\
+        ${idsQs}&${searchParam}" > flowfish-deps.json
+    - python ai-agent/analyze.py --deps flowfish-deps.json
+  artifacts:
+    paths:
+      - flowfish-deps.json`;
+    }
+
+    if (platform === 'jenkins') {
+      return `// Jenkins Pipeline - Flowfish Integration
+stage('Flowfish Dependencies') {
+    steps {
+        script {
+            def deps = sh(returnStdout: true, script: """
+                curl -s -H "Authorization: Bearer \${FLOWFISH_TOKEN}" \\
+                  "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\\
+                  ${idsQs}&${searchParam}"
+            """).trim()
+            writeFile file: 'flowfish-deps.json', text: deps
+        }
+    }
+}`;
+    }
+
+    return `# Generic CI/CD - Flowfish Integration
+# Fetch dependencies
+curl -s -H "Authorization: Bearer $FLOWFISH_TOKEN" \\
+  "$FLOWFISH_URL/api/v1/communications/dependencies/summary?\\
+  ${idsQs}&${searchParam}" > flowfish-deps.json`;
+  }, [summaryParams, platform]);
+
+  const buildPythonSnippet = useCallback(() => {
+    if (!summaryParams) return '';
+    const idsStr = summaryParams.analysis_ids.map(String).join('", "');
+    const searchLines: string[] = [];
+    if (summaryParams.annotation_key) searchLines.push(`        "annotation_key": "${summaryParams.annotation_key}",`);
+    if (summaryParams.annotation_value) searchLines.push(`        "annotation_value": "${summaryParams.annotation_value}",`);
+    if (summaryParams.label_key) searchLines.push(`        "label_key": "${summaryParams.label_key}",`);
+    if (summaryParams.label_value) searchLines.push(`        "label_value": "${summaryParams.label_value}",`);
+    if (summaryParams.namespace) searchLines.push(`        "namespace": "${summaryParams.namespace}",`);
+    if (summaryParams.owner_name) searchLines.push(`        "owner_name": "${summaryParams.owner_name}",`);
+    if (summaryParams.pod_name) searchLines.push(`        "pod_name": "${summaryParams.pod_name}",`);
+
+    return `import requests
+
+FLOWFISH_URL = "${API_BASE}"
+TOKEN = "your-api-token"
+
+resp = requests.get(
+    f"{FLOWFISH_URL}/communications/dependencies/summary",
+    params={
+        "analysis_ids": ["${idsStr}"],
+${searchLines.join('\n')}
+    },
+    headers={"Authorization": f"Bearer {TOKEN}"},
+)
+deps = resp.json()
+
+# Extract affected git repos from downstream annotations
+affected_repos = []
+for category, services in deps.get("downstream", {}).get("by_category", {}).items():
+    for svc in services:
+        repo = svc.get("annotations", {}).get("git-repo")
+        if repo:
+            affected_repos.append({
+                "repo": repo,
+                "service": svc["name"],
+                "namespace": svc["namespace"],
+                "category": category,
+                "critical": svc.get("is_critical", False),
+            })
+
+print(f"Found {len(affected_repos)} affected repositories")
+for r in affected_repos:
+    flag = " [CRITICAL]" if r["critical"] else ""
+    print(f"  {r['service']} ({r['category']}){flag} -> {r['repo']}")`;
+  }, [summaryParams]);
+
+  const buildJsSnippet = useCallback(() => {
+    if (!summaryParams) return '';
+    const qs = new URLSearchParams();
+    summaryParams.analysis_ids.forEach(id => qs.append('analysis_ids', String(id)));
+    if (summaryParams.annotation_key) qs.set('annotation_key', summaryParams.annotation_key);
+    if (summaryParams.annotation_value) qs.set('annotation_value', summaryParams.annotation_value);
+    if (summaryParams.namespace) qs.set('namespace', summaryParams.namespace);
+    if (summaryParams.owner_name) qs.set('owner_name', summaryParams.owner_name);
+
+    return `const resp = await fetch(
+  \`\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?${qs.toString()}\`,
+  { headers: { Authorization: \`Bearer \${token}\` } }
+);
+const deps = await resp.json();
+
+// Extract affected repos
+const affectedRepos = Object.entries(deps.downstream?.by_category ?? {})
+  .flatMap(([category, services]) =>
+    services
+      .filter(svc => svc.annotations?.["git-repo"])
+      .map(svc => ({
+        repo: svc.annotations["git-repo"],
+        service: svc.name,
+        category,
+        critical: svc.is_critical,
+      }))
+  );
+
+console.log(\`Found \${affectedRepos.length} affected repos\`);`;
+  }, [summaryParams]);
+
+  const responseSize = useMemo(() => {
+    if (!summaryData) return 0;
+    return Math.round(JSON.stringify(summaryData).length / 1024 * 10) / 10;
+  }, [summaryData]);
+
+  // Step navigation helper
+  function StepNav({ disableNext, nextLabel }: { disableNext?: boolean; nextLabel?: string }) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
+        <Button
+          icon={<ArrowLeftOutlined />}
+          disabled={currentStep === 0}
+          onClick={() => setCurrentStep(s => s - 1)}
+        >
+          Back
+        </Button>
+        <Button
+          type="primary"
+          icon={<ArrowRightOutlined />}
+          disabled={disableNext || currentStep === 3}
+          onClick={() => setCurrentStep(s => s + 1)}
+        >
+          {nextLabel || 'Next'}
+        </Button>
+      </div>
+    );
+  }
+
+  // ───────────────────────── RENDER ─────────────────────────
+
+  return (
+    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <Title level={2} style={{ marginBottom: 4 }}>
+            <RobotOutlined /> AI Integration Hub
+          </Title>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            Set up CI/CD pipeline and AI agent integrations with Flowfish dependency data.
+          </Paragraph>
+        </div>
+        <Link to="/discovery/map">
+          <Button type="link">Back to Map</Button>
+        </Link>
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Steps
+          current={currentStep}
+          onChange={(n) => {
+            if (n < currentStep) setCurrentStep(n);
+            else if (n === 1 && integrationType) setCurrentStep(n);
+            else if (n === 2 && summaryData?.success) setCurrentStep(n);
+            else if (n === 3 && summaryData?.success) setCurrentStep(n);
+          }}
+          items={[
+            { title: 'Integration Type', icon: <ApiOutlined /> },
+            { title: 'Configure', icon: <ExperimentOutlined /> },
+            { title: 'Preview', icon: <EyeOutlined /> },
+            { title: 'Integration Setup', icon: <CodeOutlined /> },
+          ]}
+        />
+      </Card>
+
+      {/* ─── Step 0: Integration Type ─── */}
+      {currentStep === 0 && (
+        <div>
+          <Row gutter={[16, 16]}>
+            {[
+              { key: 'cicd' as const, icon: <RocketOutlined style={{ fontSize: 28 }} />, title: 'CI/CD Pipeline', desc: 'PR validation, deployment gates, build job dependency and impact analysis', tags: ['Azure DevOps', 'GitHub Actions', 'GitLab CI', 'Jenkins'] },
+              { key: 'agent' as const, icon: <RobotOutlined style={{ fontSize: 28 }} />, title: 'AI Agent', desc: 'Code review agents, security scan agents, architecture compliance', tags: ['Code Review', 'Security', 'Compliance'] },
+              { key: 'explorer' as const, icon: <ApartmentOutlined style={{ fontSize: 28 }} />, title: 'Analysis Explorer', desc: 'Browse analysis dependencies, export data, generate reports', tags: ['Browse', 'Export', 'Audit'] },
+            ].map(item => (
+              <Col xs={24} md={8} key={item.key}>
+                <Card
+                  hoverable
+                  onClick={() => { setIntegrationType(item.key); form.resetFields(); setCurrentStep(1); }}
+                  style={{
+                    borderColor: integrationType === item.key ? '#1677ff' : undefined,
+                    borderWidth: integrationType === item.key ? 2 : 1,
+                    height: '100%',
+                  }}
+                >
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    {item.icon}
+                    <Text strong style={{ fontSize: 16 }}>{item.title}</Text>
+                    <Text type="secondary" style={{ fontSize: 13 }}>{item.desc}</Text>
+                    <div>{item.tags.map(t => <Tag key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}</div>
+                  </Space>
+                </Card>
               </Col>
-            </Row>
+            ))}
+          </Row>
 
-            {streamLoading && <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>}
+          <Divider>Coming Soon</Divider>
 
-            <Tabs
-              defaultActiveKey="downstream"
-              items={[
-                {
-                  key: 'downstream',
-                  label: <span><ArrowDownOutlined /> Downstream ({downstreamRows.length})</span>,
-                  children: (
-                    <Table
-                      rowKey={(r, i) => `${r.namespace}-${r.pod_name}-${i}`}
-                      loading={streamLoading}
-                      columns={downstreamColumns}
-                      dataSource={downstreamRows}
-                      pagination={downstreamRows.length > 10 ? { pageSize: 10 } : false}
-                      locale={{ emptyText: <Empty description="No downstream dependencies found" /> }}
-                      scroll={{ x: 960 }}
-                      size="small"
-                    />
-                  ),
-                },
-                {
-                  key: 'callers',
-                  label: <span><ArrowUpOutlined /> Callers ({callerRows.length})</span>,
-                  children: (
-                    <Table
-                      rowKey={(r, i) => `caller-${r.namespace}-${r.pod_name}-${i}`}
-                      loading={streamLoading}
-                      columns={downstreamColumns}
-                      dataSource={callerRows}
-                      pagination={callerRows.length > 10 ? { pageSize: 10 } : false}
-                      locale={{ emptyText: <Empty description="No callers found" /> }}
-                      scroll={{ x: 960 }}
-                      size="small"
-                    />
-                  ),
-                },
-              ]}
-            />
-
-            <StepNav />
-          </Card>
-        )}
-
-        {/* Step 2: Impact Analysis */}
-        {currentStep === 2 && (
-          <Card title="Impact Analysis">
-            <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
-              <Col>
-                <Text strong>Change type:</Text>
+          <Row gutter={[16, 16]}>
+            {[
+              { icon: <AlertOutlined />, title: 'Monitoring & Alerting', desc: 'Prometheus/Grafana dashboards, PagerDuty/OpsGenie' },
+              { icon: <AuditOutlined />, title: 'Change Management', desc: 'ServiceNow/Jira change request enrichment' },
+              { icon: <MessageOutlined />, title: 'ChatOps', desc: 'Slack/Teams bot dependency queries' },
+            ].map(item => (
+              <Col xs={24} md={8} key={item.title}>
+                <Card style={{ opacity: 0.55, cursor: 'not-allowed' }}>
+                  <Space direction="vertical" size={4}>
+                    {item.icon}
+                    <Text strong>{item.title}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{item.desc}</Text>
+                    <Badge count="Coming Soon" style={{ backgroundColor: '#d9d9d9', color: '#666' }} />
+                  </Space>
+                </Card>
               </Col>
-              <Col>
+            ))}
+          </Row>
+        </div>
+      )}
+
+      {/* ─── Step 1: Configure ─── */}
+      {currentStep === 1 && (
+        <Card title="Analysis Scope & Service Identification">
+          {/* Common: Cluster + Analysis selection */}
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item label="Cluster" required>
                 <Select
-                  style={{ minWidth: 200 }}
-                  value={changeType}
-                  onChange={setChangeType}
-                  options={CHANGE_TYPES}
-                />
-              </Col>
-            </Row>
+                  placeholder="Select cluster"
+                  value={selectedClusterId}
+                  onChange={(v) => { setSelectedClusterId(v); setSelectedAnalysisIds([]); }}
+                  allowClear
+                  style={{ width: '100%' }}
+                >
+                  {clusters.map((c: any) => (
+                    <Option key={c.id} value={c.id}>{c.name}</Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Analysis (required, multi-select)" required>
+                <Select
+                  mode="multiple"
+                  placeholder={!selectedClusterId ? 'Select cluster first' : 'Select analyses'}
+                  disabled={!selectedClusterId}
+                  value={selectedAnalysisIds}
+                  onChange={setSelectedAnalysisIds}
+                  style={{ width: '100%' }}
+                >
+                  {analyses.map((a: any) => (
+                    <Option key={a.id} value={a.id}>
+                      {a.name} <Tag color={a.status === 'completed' ? 'green' : 'blue'}>{a.status}</Tag>
+                    </Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </Col>
+          </Row>
 
-            {impactLoading && <div style={{ textAlign: 'center', padding: 24 }}><Spin tip="Calculating impact..." /></div>}
-            {impactIsError && (
-              <Alert
-                type="error"
-                showIcon
-                message={
-                  impactError && 'data' in impactError
-                    ? String((impactError as { data?: { detail?: string } }).data?.detail ?? 'Impact request failed')
-                    : 'Impact analysis failed'
-                }
-              />
-            )}
-
-            {!impactLoading && assessment && (
-              <Card size="small" style={{ marginBottom: 24 }}>
-                <Row gutter={[24, 24]}>
-                  <Col xs={24} md={6} style={{ textAlign: 'center' }}>
-                    <Progress
-                      type="dashboard"
-                      percent={riskPct}
-                      strokeColor={riskProgressColor(riskPct)}
-                      format={(p) => <span style={{ fontSize: 22, fontWeight: 700 }}>{p}</span>}
-                      size={120}
-                    />
-                    <div style={{ marginTop: 4 }}>
-                      <Tag color="blue">{assessment.risk_level}</Tag>
-                      <RecommendationBadge rec={assessment.recommendation} />
-                    </div>
-                  </Col>
-                  <Col xs={24} md={18}>
-                    <Row gutter={[16, 16]}>
-                      <Col xs={12} sm={6}>
-                        <Statistic title="Blast Radius" value={assessment.blast_radius} suffix="deps" />
-                      </Col>
-                      <Col xs={12} sm={6}>
-                        <Statistic title="Downstream" value={downstreamRows.length} />
-                      </Col>
-                      <Col xs={12} sm={6}>
-                        <Statistic title="Callers" value={callerRows.length} />
-                      </Col>
-                      <Col xs={12} sm={6}>
-                        <Statistic title="Critical" value={assessment.critical_dependencies?.length ?? 0} valueStyle={assessment.critical_dependencies?.length ? { color: '#cf1322' } : undefined} />
-                      </Col>
-                    </Row>
-                    {(assessment.critical_dependencies?.length ?? 0) > 0 && (
-                      <div style={{ marginTop: 12 }}>
-                        <Text strong>Critical dependencies: </Text>
-                        {assessment.critical_dependencies!.map((d) => <Tag color="red" key={d}>{d}</Tag>)}
-                      </div>
-                    )}
-                    {(assessment.suggested_actions?.length ?? 0) > 0 && (
-                      <div style={{ marginTop: 12 }}>
-                        <Text strong>Suggested actions:</Text>
-                        <ul style={{ marginBottom: 0, paddingLeft: 20, marginTop: 4 }}>
-                          {assessment.suggested_actions.map((a: SuggestedAction, i: number) => (
-                            <li key={i}>
-                              <Tag color={a.priority === 'critical' ? 'red' : a.priority === 'high' ? 'orange' : a.priority === 'medium' ? 'gold' : 'blue'} style={{ marginRight: 6 }}>
-                                {a.priority}
-                              </Tag>
-                              <Text>{a.action}</Text>
-                              {a.reason && <Text type="secondary" style={{ marginLeft: 4 }}>({a.reason})</Text>}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </Col>
-                </Row>
-              </Card>
-            )}
-
-            <Divider orientation="left"><SwapOutlined /> Dependency Diff</Divider>
-            <Paragraph type="secondary">
-              Compare two analysis runs to detect added, removed, or changed dependencies over time.
-            </Paragraph>
-            <Row gutter={16} style={{ marginBottom: 12 }}>
-              <Col xs={24} sm={12}>
-                <Input
-                  addonBefore="Before"
-                  placeholder="Analysis ID"
-                  value={diffAnalysisBefore}
-                  onChange={(e) => setDiffAnalysisBefore(e.target.value)}
-                />
-              </Col>
-              <Col xs={24} sm={12}>
-                <Input
-                  addonBefore="After"
-                  placeholder="Analysis ID"
-                  value={diffAnalysisAfter}
-                  onChange={(e) => setDiffAnalysisAfter(e.target.value)}
-                />
-              </Col>
-            </Row>
-            {diffLoading && <div style={{ textAlign: 'center', padding: 16 }}><Spin /></div>}
-            {diffIsError && diffParams && (
-              <Alert
-                type="warning"
-                showIcon
-                message={
-                  diffError && 'data' in diffError
-                    ? String((diffError as { data?: { detail?: string } }).data?.detail ?? 'Diff request failed')
-                    : 'Could not load dependency diff'
-                }
-              />
-            )}
-            {diffData?.success && (
-              <Card size="small" style={{ marginTop: 8 }}>
-                <Row gutter={16}>
-                  <Col xs={6}><Statistic title={<><PlusCircleOutlined /> Added</>} value={diffData.added_dependencies?.length ?? 0} valueStyle={{ color: '#52c41a' }} /></Col>
-                  <Col xs={6}><Statistic title={<><MinusCircleOutlined /> Removed</>} value={diffData.removed_dependencies?.length ?? 0} valueStyle={{ color: '#cf1322' }} /></Col>
-                  <Col xs={6}><Statistic title={<><SwapOutlined /> Changed</>} value={diffData.changed_dependencies?.length ?? 0} valueStyle={{ color: '#faad14' }} /></Col>
-                  <Col xs={6}><Statistic title="Unchanged" value={diffData.unchanged_count ?? 0} /></Col>
-                </Row>
-              </Card>
-            )}
-            {!diffParams && !diffLoading && (
-              <Text type="secondary">Enter both analysis IDs above to generate a diff report.</Text>
-            )}
-
-            <StepNav />
-          </Card>
-        )}
-
-        {/* Step 3: Integration Setup */}
-        {currentStep === 3 && (
-          <Card title="Integration Setup">
+          {selectedAnalysisIds.length > 0 && (
             <Alert
               type="info"
               showIcon
-              icon={<ApiOutlined />}
-              style={{ marginBottom: 20 }}
-              message="API Authentication"
-              description={
+              icon={<CheckCircleOutlined />}
+              message={`${selectedAnalysisIds.length} analysis selected`}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+
+          <Divider />
+
+          {/* Integration-type-specific config */}
+          {integrationType === 'cicd' && (
+            <Form.Item label="Pipeline Platform">
+              <Select value={platform} onChange={setPlatform} style={{ width: 300 }}>
+                {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
+              </Select>
+            </Form.Item>
+          )}
+
+          {integrationType === 'agent' && (
+            <Form.Item label="Agent Type">
+              <Select value={agentType} onChange={setAgentType} style={{ width: 300 }}>
+                {AGENT_TYPES.map(a => <Option key={a.value} value={a.value}>{a.label}</Option>)}
+              </Select>
+            </Form.Item>
+          )}
+
+          {(integrationType === 'cicd' || integrationType === 'agent') && (
+            <>
+              <Form.Item label="Service Identification Method">
+                <Radio.Group value={idMethod} onChange={(e) => { setIdMethod(e.target.value); form.resetFields(); }}>
+                  {ID_METHODS.map(m => <Radio.Button key={m.value} value={m.value}>{m.label}</Radio.Button>)}
+                </Radio.Group>
+              </Form.Item>
+
+              <Form form={form} layout="vertical">
+                <Row gutter={16}>
+                  {(idMethod === 'annotation' || idMethod === 'advanced') && (
+                    <>
+                      <Col xs={24} sm={12}>
+                        <Form.Item name="annotation_key" label="Annotation Key">
+                          <Input placeholder="e.g. git-repo" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={12}>
+                        <Form.Item name="annotation_value" label="Annotation Value">
+                          <Input placeholder="e.g. https://tfs.company.com/.../my-service" />
+                        </Form.Item>
+                      </Col>
+                    </>
+                  )}
+                  {(idMethod === 'label' || idMethod === 'advanced') && (
+                    <>
+                      <Col xs={24} sm={12}>
+                        <Form.Item name="label_key" label="Label Key">
+                          <Input placeholder="e.g. app" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={12}>
+                        <Form.Item name="label_value" label="Label Value">
+                          <Input placeholder="e.g. payment-service" />
+                        </Form.Item>
+                      </Col>
+                    </>
+                  )}
+                  {(idMethod === 'namespace_deployment' || idMethod === 'advanced') && (
+                    <>
+                      <Col xs={24} sm={12}>
+                        <Form.Item name="namespace" label="Namespace">
+                          <Input placeholder="e.g. production" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={12}>
+                        <Form.Item name="owner_name" label="Deployment Name">
+                          <Input placeholder="e.g. payment-service" />
+                        </Form.Item>
+                      </Col>
+                    </>
+                  )}
+                  {(idMethod === 'pod_name' || idMethod === 'advanced') && (
+                    <Col xs={24} sm={12}>
+                      <Form.Item name="pod_name" label="Pod Name">
+                        <Input placeholder="e.g. payment-service-7b9d4" />
+                      </Form.Item>
+                    </Col>
+                  )}
+                  {idMethod === 'advanced' && (
+                    <Col xs={24} sm={12}>
+                      <Form.Item name="ip" label="Pod IP">
+                        <Input placeholder="e.g. 10.244.1.15" />
+                      </Form.Item>
+                    </Col>
+                  )}
+                </Row>
+              </Form>
+            </>
+          )}
+
+          {integrationType === 'explorer' && (
+            <Form form={form} layout="vertical">
+              <Row gutter={16}>
+                <Col xs={24} sm={12}>
+                  <Form.Item name="namespace" label="Namespace (optional)">
+                    <Input placeholder="e.g. production" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item name="owner_name" label="Workload Name (optional)">
+                    <Input placeholder="e.g. payment-service" />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </Form>
+          )}
+
+          <Form.Item label="Traversal Depth" style={{ maxWidth: 200 }}>
+            <Select value={depth} onChange={setDepth}>
+              {[1, 2, 3, 4, 5].map(d => <Option key={d} value={d}>Depth {d}{d === 1 ? ' (direct only)' : ''}</Option>)}
+            </Select>
+          </Form.Item>
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <Button
+              type="primary"
+              icon={<ExperimentOutlined />}
+              onClick={onTestQuery}
+              loading={summaryLoading}
+              disabled={!canProceedStep1}
+            >
+              Test Query
+            </Button>
+          </div>
+
+          {summaryErrMsg && (
+            <Alert type="error" showIcon style={{ marginTop: 16 }} message={summaryErrMsg} />
+          )}
+
+          {summaryLoading && (
+            <div style={{ marginTop: 24, textAlign: 'center' }}><Spin tip="Querying Flowfish..." /></div>
+          )}
+
+          {summaryData?.success && !summaryLoading && (
+            <Alert
+              type="success"
+              showIcon
+              icon={<CheckCircleOutlined />}
+              style={{ marginTop: 16 }}
+              message={
                 <span>
-                  Generate an API key from <Link to="/settings">Settings</Link> and use it as{' '}
-                  <Text code>FLOWFISH_API_TOKEN</Text> in your integrations.
+                  Found <Text strong>{summaryData.service.name}</Text> in <Text strong>{summaryData.service.namespace}</Text>
+                  {' \u2014 '}
+                  {summaryData.downstream.total} downstream, {summaryData.callers.total} callers
+                  {summaryData.downstream.critical_count ? <Tag color="red" style={{ marginLeft: 8 }}>{summaryData.downstream.critical_count} critical</Tag> : null}
                 </span>
               }
             />
+          )}
 
-            <Tabs
-              items={[
-                {
-                  key: 'curl',
-                  label: 'cURL',
-                  children: (
-                    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                      <div>
-                        <Text strong>Dependency Stream</Text>
-                        <CodeBlockWithCopy code={snippets.curl} label="cURL (stream)" />
-                      </div>
-                      <div>
-                        <Text strong>Impact Assessment</Text>
-                        <CodeBlockWithCopy code={snippets.curlImpact} label="cURL (impact)" />
-                      </div>
-                    </Space>
-                  ),
-                },
-                {
-                  key: 'py',
-                  label: 'Python',
-                  children: <CodeBlockWithCopy code={snippets.python} label="Python" />,
-                },
-                {
-                  key: 'js',
-                  label: 'JavaScript',
-                  children: <CodeBlockWithCopy code={snippets.javascript} label="JavaScript" />,
-                },
-                {
-                  key: 'ado',
-                  label: 'Azure DevOps',
-                  children: <CodeBlockWithCopy code={snippets.azure} label="Azure DevOps YAML" />,
-                },
-                {
-                  key: 'gha',
-                  label: 'GitHub Actions',
-                  children: <CodeBlockWithCopy code={snippets.gha} label="GitHub Actions" />,
-                },
-              ]}
-            />
+          <StepNav disableNext={!summaryData?.success} />
+        </Card>
+      )}
 
-            <Divider orientation="left"><DownloadOutlined /> Export Dependency Graph</Divider>
-            <Space wrap>
-              <Button
-                type="primary"
-                icon={<DownloadOutlined />}
-                disabled={!streamData}
-                onClick={() => {
-                  const blob = new Blob([JSON.stringify(streamData ?? {}, null, 2)], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'flowfish-dependency-stream.json';
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  message.success('Download started');
-                }}
-              >
-                Download JSON
-              </Button>
-              <Button
-                icon={<CopyOutlined />}
-                disabled={!upstream}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(upstream ? buildExportMermaid(upstream, downstreamRows) : '');
-                    message.success('Mermaid copied');
-                  } catch { message.error('Clipboard unavailable'); }
-                }}
-              >
-                Copy Mermaid
-              </Button>
-              <Button
-                icon={<CopyOutlined />}
-                disabled={!upstream}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(upstream ? buildExportDot(upstream, downstreamRows) : '');
-                    message.success('DOT copied');
-                  } catch { message.error('Clipboard unavailable'); }
-                }}
-              >
-                Copy DOT
-              </Button>
-            </Space>
-
-            <StepNav />
+      {/* ─── Step 2: Preview & Validate ─── */}
+      {currentStep === 2 && summaryData?.success && (
+        <div>
+          {/* Service banner */}
+          <Card size="small" style={{ borderLeft: '3px solid #1677ff', marginBottom: 16 }}>
+            <Row gutter={16} align="middle">
+              <Col flex="auto">
+                <Space split={<Divider type="vertical" />}>
+                  <Text strong style={{ fontSize: 16 }}>{summaryData.service.name}</Text>
+                  <Text type="secondary">{summaryData.service.namespace}</Text>
+                  {summaryData.service.kind && <Tag>{summaryData.service.kind}</Tag>}
+                </Space>
+              </Col>
+              <Col>
+                <Space size="large">
+                  <Statistic title={<><ArrowDownOutlined /> Downstream</>} value={summaryData.downstream.total} valueStyle={{ fontSize: 18 }} />
+                  <Statistic title={<><ArrowUpOutlined /> Callers</>} value={summaryData.callers.total} valueStyle={{ fontSize: 18 }} />
+                </Space>
+              </Col>
+            </Row>
           </Card>
-        )}
-      </Space>
+
+          {/* Upstream annotations/labels */}
+          {Object.keys(summaryData.service.annotations || {}).length > 0 && (
+            <Card size="small" title="Service Annotations" style={{ marginBottom: 16 }}>
+              <Descriptions size="small" column={{ xs: 1, sm: 2 }}>
+                {Object.entries(summaryData.service.annotations).map(([k, v]) => (
+                  <Descriptions.Item key={k} label={<Text strong style={{ fontSize: 11, color: '#d48806' }}>{k}</Text>}>
+                    <Text style={{ fontSize: 11, wordBreak: 'break-all' }}>{v}</Text>
+                  </Descriptions.Item>
+                ))}
+              </Descriptions>
+            </Card>
+          )}
+
+          <Tabs
+            items={[
+              {
+                key: 'downstream',
+                label: <span><ArrowDownOutlined /> Downstream ({summaryData.downstream.total})</span>,
+                children: <CategoryGroup group={summaryData.downstream} title="Downstream" />,
+              },
+              {
+                key: 'callers',
+                label: <span><ArrowUpOutlined /> Callers ({summaryData.callers.total})</span>,
+                children: <CategoryGroup group={summaryData.callers} title="Callers" />,
+              },
+              {
+                key: 'raw',
+                label: <span><CodeOutlined /> Raw JSON</span>,
+                children: (
+                  <div>
+                    <Text type="secondary" style={{ marginBottom: 8, display: 'block' }}>Response size: ~{responseSize} KB</Text>
+                    <CodeBlockWithCopy code={JSON.stringify(summaryData, null, 2)} label="JSON" />
+                  </div>
+                ),
+              },
+            ]}
+          />
+
+          <StepNav />
+        </div>
+      )}
+
+      {/* ─── Step 3: Integration Setup ─── */}
+      {currentStep === 3 && summaryData?.success && (
+        <div>
+          <Alert
+            type="info"
+            showIcon
+            message="All snippets below use your selected parameters. Copy and adapt to your environment."
+            style={{ marginBottom: 16 }}
+          />
+
+          <Tabs
+            items={[
+              ...(integrationType === 'cicd' ? [{
+                key: 'pipeline',
+                label: <span><RocketOutlined /> {PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline'}</span>,
+                children: <CodeBlockWithCopy code={buildPipelineSnippet()} label="Pipeline YAML" />,
+              }] : []),
+              {
+                key: 'curl',
+                label: <span><CodeOutlined /> curl</span>,
+                children: <CodeBlockWithCopy code={buildCurlSnippet()} label="curl" />,
+              },
+              {
+                key: 'python',
+                label: <span><CodeOutlined /> Python</span>,
+                children: <CodeBlockWithCopy code={buildPythonSnippet()} label="Python" />,
+              },
+              {
+                key: 'js',
+                label: <span><CodeOutlined /> JavaScript</span>,
+                children: <CodeBlockWithCopy code={buildJsSnippet()} label="JavaScript" />,
+              },
+            ]}
+          />
+
+          {(integrationType === 'cicd' || integrationType === 'agent') && (
+            <Card title="How Your AI Agent Uses This Data" size="small" style={{ marginTop: 16 }}>
+              <Paragraph>
+                The <Text code>/dependencies/summary</Text> response groups all dependencies by <Text strong>service category</Text> (database, cache, api, message_broker, etc.).
+                Each dependency includes its Kubernetes <Text strong>annotations</Text> and <Text strong>labels</Text>.
+              </Paragraph>
+              <Paragraph>
+                Your AI agent should:
+              </Paragraph>
+              <ol>
+                <li>Extract <Text code>annotations["git-repo"]</Text> from each downstream service to identify affected repositories</li>
+                <li>Check <Text code>is_critical</Text> flag to prioritize critical dependency changes</li>
+                <li>Use <Text code>service_category</Text> grouping to understand the type of each dependency (database, cache, API, etc.)</li>
+                <li>Examine <Text code>callers</Text> to understand which services call the changed service</li>
+              </ol>
+            </Card>
+          )}
+
+          <div style={{ marginTop: 24 }}>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(2)}>Back to Preview</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

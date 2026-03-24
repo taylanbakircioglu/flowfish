@@ -1351,7 +1351,7 @@ async def _get_neo4j_error_stats(
         )
 
 
-@router.get("/dependencies/stream")
+@router.get("/dependencies/stream", tags=["AI Integration"])
 async def find_pod_dependencies(
     analysis_id: Optional[int] = Query(None, description="Analysis ID for scope"),
     cluster_id: Optional[int] = Query(None, description="Cluster ID for scope"),
@@ -1431,7 +1431,7 @@ async def find_pod_dependencies(
         )
 
 
-@router.post("/dependencies/batch")
+@router.post("/dependencies/batch", tags=["AI Integration"])
 async def batch_find_dependencies(
     request: dict,
     current_user: dict = Depends(get_current_user)
@@ -1452,7 +1452,7 @@ async def batch_find_dependencies(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/dependencies/diff")
+@router.get("/dependencies/diff", tags=["AI Integration"])
 async def diff_dependencies(
     analysis_id_before: str = Query(..., description="Analysis ID before"),
     analysis_id_after: str = Query(..., description="Analysis ID after"),
@@ -1491,7 +1491,65 @@ async def diff_dependencies(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/dependencies/impact")
+@router.get("/dependencies/summary", tags=["AI Integration"])
+async def get_dependency_summary(
+    analysis_ids: List[int] = Query(..., description="Analysis IDs (required, at least one)"),
+    cluster_id: Optional[int] = Query(None, description="Cluster ID"),
+    pod_name: Optional[str] = Query(None),
+    namespace: Optional[str] = Query(None),
+    owner_name: Optional[str] = Query(None),
+    label_key: Optional[str] = Query(None),
+    label_value: Optional[str] = Query(None),
+    annotation_key: Optional[str] = Query(None),
+    annotation_value: Optional[str] = Query(None),
+    ip: Optional[str] = Query(None),
+    depth: int = Query(1, ge=1, le=5),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    AI-agent-friendly dependency summary grouped by service category.
+    Designed for CI/CD pipelines and AI code agents.
+    Requires at least one analysis_id and one search parameter.
+    """
+    try:
+        params = {
+            "analysis_ids": [str(a) for a in analysis_ids],
+            "depth": depth,
+        }
+        if cluster_id:
+            params["cluster_id"] = str(cluster_id)
+        if pod_name:
+            params["pod_name"] = pod_name
+        if namespace:
+            params["namespace"] = namespace
+        if owner_name:
+            params["owner_name"] = owner_name
+        if label_key:
+            params["label_key"] = label_key
+        if label_value:
+            params["label_value"] = label_value
+        if annotation_key:
+            params["annotation_key"] = annotation_key
+        if annotation_value:
+            params["annotation_value"] = annotation_value
+        if ip:
+            params["ip"] = ip
+
+        result = await graph_query_client._call_graph_query(
+            "/dependencies/summary",
+            params=params
+        )
+        if result:
+            return result
+        raise HTTPException(status_code=503, detail="Graph query service unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get dependency summary", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dependencies/impact", tags=["AI Integration"])
 async def get_dependency_impact(
     analysis_id: Optional[int] = Query(None, description="Analysis ID"),
     cluster_id: Optional[int] = Query(None, description="Cluster ID"),

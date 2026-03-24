@@ -125,6 +125,7 @@ message PodInfo {
     map<string, string> labels = 6;
     string ip = 7;
     string created_at = 8;
+    map<string, string> annotations = 9;
 }
 
 message ListPodsResponse {
@@ -299,9 +300,9 @@ message ListNodesRequest {
 }
 
 message NodeInfo {
-    string name = 1;           // worker1.internal.example.corp
+    string name = 1;           // worker1.internal.example.local
     string uid = 2;
-    string internal_ip = 3;    // 10.0.1.100
+    string internal_ip = 3;    // 10.180.143.26
     string external_ip = 4;    // (if available)
     string status = 5;         // Ready, NotReady
     map<string, string> labels = 6;

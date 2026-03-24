@@ -22,6 +22,7 @@ export interface Deployment {
   replicas: number;
   available_replicas: number;
   labels: Record<string, string>;
+  annotations: Record<string, string>;
   image?: string;
   created_at?: string;
 }
@@ -33,6 +34,7 @@ export interface Pod {
   status: string;
   node_name?: string;
   labels: Record<string, string>;
+  annotations: Record<string, string>;
   ip?: string;
   created_at?: string;
 }
@@ -50,6 +52,7 @@ export interface Service {
     protocol: string;
   }>;
   labels: Record<string, string>;
+  annotations: Record<string, string>;
   selector?: Record<string, string>;
   created_at?: string;
 }

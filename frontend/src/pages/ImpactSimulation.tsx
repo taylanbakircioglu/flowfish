@@ -1811,14 +1811,31 @@ const ImpactSimulation: React.FC = () => {
     return fuzzyMatches.map(n => n.id);
   }, [graphData, selectedTarget, targetType, targetId]);
 
-  // Use backend simulation response for affected services
+  // Use backend simulation response for affected services, enriched with graph metadata
   const affectedServices = useMemo((): AffectedService[] => {
     if (!simulationRun || !backendSimulationResponse) return [];
     
-    // Use backend's affected_services directly - it has proper kind classification,
-    // risk_factors, deduplication, and filtering applied
-    return backendSimulationResponse.affected_services || [];
-  }, [simulationRun, backendSimulationResponse]);
+    const services = backendSimulationResponse.affected_services || [];
+    if (!graphData?.nodes?.length) return services;
+    
+    // Build a lookup map from graph nodes for labels/annotations enrichment
+    const nodeMap = new Map<string, typeof graphData.nodes[0]>();
+    graphData.nodes.forEach(n => {
+      nodeMap.set(`${n.namespace}/${n.name}`, n);
+    });
+    
+    return services.map(svc => {
+      const graphNode = nodeMap.get(`${svc.namespace}/${svc.name}`);
+      if (graphNode) {
+        return {
+          ...svc,
+          labels: svc.labels || graphNode.labels || {},
+          annotations: svc.annotations || graphNode.annotations || {},
+        };
+      }
+      return svc;
+    });
+  }, [simulationRun, backendSimulationResponse, graphData]);
 
   // Determine no dependency scenario
   // Use backend's no_dependency_info if available
@@ -2079,6 +2096,8 @@ const ImpactSimulation: React.FC = () => {
           risk_score: s.risk_score,
           risk_factors: s.risk_factors || [],
           recovery_info: s.recovery_info,
+          labels: s.labels || {},
+          annotations: s.annotations || {},
         };
       }),
       recommendations: Array.from(new Set(affectedServices.map(s => s.recommendation))),
@@ -2148,7 +2167,7 @@ const ImpactSimulation: React.FC = () => {
       ['Indirect Dependencies', String(affectedServices.filter(s => s.dependency === 'indirect').length)],
       [],
       ['# Affected Services'],
-      ['Name', 'Namespace', 'Kind', 'Impact Level', 'Impact Category', 'Dependency Type', 'Protocol', 'Port', 'Request Count', 'Risk Score', 'Risk Factors', 'Recommendation'],
+      ['Name', 'Namespace', 'Kind', 'Impact Level', 'Impact Category', 'Dependency Type', 'Protocol', 'Port', 'Request Count', 'Risk Score', 'Risk Factors', 'Recommendation', 'Labels', 'Annotations'],
       ...affectedServices.map(s => {
         // Determine the correct category for this service
         const category = s.impact_category || 
@@ -2169,6 +2188,8 @@ const ImpactSimulation: React.FC = () => {
           String(s.risk_score),
           (s.risk_factors || []).join('; '),
           s.recommendation,
+          Object.entries(s.labels || {}).map(([k, v]) => `${k}=${v}`).join('; '),
+          Object.entries(s.annotations || {}).map(([k, v]) => `${k}=${v}`).join('; '),
         ];
       }),
       [],
@@ -3490,6 +3511,37 @@ const ImpactSimulation: React.FC = () => {
                                   </div>
                                 </Col>
                               </Row>
+                              {/* Kubernetes Metadata (Labels & Annotations) */}
+                              {(Object.keys(record.labels || {}).length > 0 || Object.keys(record.annotations || {}).length > 0) && (
+                                <Row gutter={24} style={{ marginTop: 12 }}>
+                                  {Object.keys(record.labels || {}).length > 0 && (
+                                    <Col span={12}>
+                                      <Text strong>Labels</Text>
+                                      <div style={{ marginTop: 4 }}>
+                                        <Space wrap size={4}>
+                                          {Object.entries(record.labels!).map(([k, v]) => (
+                                            <Tag key={k} style={{ fontSize: 10 }}>{k}={v}</Tag>
+                                          ))}
+                                        </Space>
+                                      </div>
+                                    </Col>
+                                  )}
+                                  {Object.keys(record.annotations || {}).length > 0 && (
+                                    <Col span={12}>
+                                      <Text strong>Annotations</Text>
+                                      <div style={{ marginTop: 4 }}>
+                                        <Space wrap size={4}>
+                                          {Object.entries(record.annotations!).map(([k, v]) => (
+                                            <Tag key={k} color="blue" style={{ fontSize: 10 }}>
+                                              {k}={String(v).length > 60 ? String(v).slice(0, 60) + '…' : v}
+                                            </Tag>
+                                          ))}
+                                        </Space>
+                                      </div>
+                                    </Col>
+                                  )}
+                                </Row>
+                              )}
                             </div>
                           );
                         },

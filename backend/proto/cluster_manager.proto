@@ -122,6 +122,7 @@ message PodInfo {
     map<string, string> labels = 6;
     string ip = 7;
     string created_at = 8;
+    map<string, string> annotations = 9;
 }
 
 message ListPodsResponse {

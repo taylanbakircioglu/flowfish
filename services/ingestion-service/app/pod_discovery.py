@@ -86,7 +86,7 @@ class PodInfo:
 class NodeInfo:
     """Kubernetes Node metadata"""
     name: str           # worker1.internal.corp
-    internal_ip: str    # 10.0.1.100
+    internal_ip: str    # 10.180.143.26
     external_ip: str    # (optional)
     status: str         # Ready, NotReady
     labels: Dict[str, str]
@@ -269,8 +269,8 @@ class PodDiscovery:
             ("172.30.0.0/16", "Service-Network"),   # OpenShift default service network
             
             # Custom OpenShift cluster ranges (configure if needed for your environment)
-            ("10.244.0.0/16", "Pod-Network"),       # Custom pod network
-            ("10.208.0.0/16", "Pod-Network"),       # Custom pod network
+            ("10.194.0.0/16", "Pod-Network"),       # Custom pod network (cluster-1)
+            ("10.208.0.0/16", "Pod-Network"),       # Custom pod network (cluster-2)
             ("10.196.0.0/16", "Service-Network"),   # Custom service CIDR
             
             # Common Kubernetes service CIDR ranges
@@ -510,6 +510,7 @@ class PodDiscovery:
                         
                         # Try to extract owner from common label patterns
                         labels = dict(pod.labels) if pod.labels else {}
+                        annotations = dict(pod.annotations) if pod.annotations else {}
                         if 'app.kubernetes.io/name' in labels:
                             owner_name = labels['app.kubernetes.io/name']
                         elif 'app' in labels:
@@ -523,7 +524,8 @@ class PodDiscovery:
                             labels=labels,
                             owner_kind=owner_kind,
                             owner_name=owner_name,
-                            phase=pod.status
+                            phase=pod.status,
+                            annotations=annotations
                         )
                         pods[pod_ip] = pod_info
                         
@@ -1311,7 +1313,7 @@ class PodDiscovery:
         - *.*.*.2 addresses: SDN gateway (OpenShift OVN)
         
         IMPORTANT: Ordered list is used so more specific ranges are checked first.
-        E.g., 10.244.0.0/16 (Pod-Network) is checked before 10.0.0.0/8 (Internal-Network)
+        E.g., 10.194.0.0/16 (Pod-Network) is checked before 10.0.0.0/8 (Internal-Network)
         """
         try:
             addr = ipaddress.ip_address(ip)
@@ -1327,8 +1329,8 @@ class PodDiscovery:
                     # Only check CONFIRMED pod network ranges (not datacenter IPs)
                     confirmed_pod_ranges = [
                         "10.128.0.0/14",  # OpenShift default
-                        "10.244.0.0/16",  # Custom pod network
-                        "10.208.0.0/16",  # Custom pod network
+                        "10.194.0.0/16",  # Custom cluster-1
+                        "10.208.0.0/16",  # Custom cluster-2
                         "10.244.0.0/16",  # Flannel
                         "10.42.0.0/16",   # K3s/RKE
                     ]

@@ -188,6 +188,7 @@ curl -X GET "${baseUrl}/api/v1/communications/graph?cluster_id=1" \\
           <li><Text strong>Workloads</Text> - Kubernetes workload inventory and metadata</li>
           <li><Text strong>Analyses</Text> - Traffic analysis creation, scheduling, and lifecycle</li>
           <li><Text strong>Communications</Text> - Service-to-service communication and dependency graphs</li>
+          <li><Text strong>AI Integration</Text> - Dependency discovery, impact analysis, and CI/CD pipeline integration endpoints</li>
           <li><Text strong>Events & Event Types</Text> - eBPF event statistics, queries, and type definitions</li>
           <li><Text strong>Changes</Text> - Change detection and infrastructure drift tracking</li>
           <li><Text strong>Simulation & Blast Radius</Text> - Impact simulation and pre-deployment assessment</li>

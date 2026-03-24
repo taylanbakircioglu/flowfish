@@ -272,6 +272,19 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
             logger.error("ListDeployments failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListDeploymentsResponse(error=str(e))
     
+    @staticmethod
+    def _filter_annotations(raw_annotations: dict) -> dict:
+        """Filter out internal/large annotations, keep user-defined ones"""
+        if not raw_annotations:
+            return {}
+        return {
+            k: v for k, v in raw_annotations.items()
+            if not k.startswith('kubectl.kubernetes.io/')
+            and not k.startswith('kubernetes.io/')
+            and not k.startswith('openshift.io/')
+            and len(str(v)) < 500
+        }
+
     async def ListPods(self, request, context):
         """List pods"""
         cluster_id = request.cluster_id or "default"
@@ -292,6 +305,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                     status=pod.get("status") or "",
                     node_name=pod.get("node_name") or "",
                     labels=pod.get("labels") or {},
+                    annotations=self._filter_annotations(pod.get("annotations")),
                     ip=pod.get("ip") or "",
                     created_at=pod.get("created_at") or ""
                 )

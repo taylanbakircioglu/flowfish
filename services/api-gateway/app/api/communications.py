@@ -4,7 +4,7 @@ Communications Router - Proxies to graph-query service
 
 import logging
 import httpx
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
@@ -203,6 +203,32 @@ async def diff_dependencies(
         "owner_name": owner_name, "cluster_id": cluster_id,
     }
     return await proxy_to_graph_query("/dependencies/diff", params)
+
+@router.get("/communications/dependencies/summary")
+async def get_dependency_summary(
+    analysis_ids: List[int] = Query(...),
+    cluster_id: Optional[int] = Query(None),
+    pod_name: Optional[str] = Query(None),
+    namespace: Optional[str] = Query(None),
+    owner_name: Optional[str] = Query(None),
+    label_key: Optional[str] = Query(None),
+    label_value: Optional[str] = Query(None),
+    annotation_key: Optional[str] = Query(None),
+    annotation_value: Optional[str] = Query(None),
+    ip: Optional[str] = Query(None),
+    depth: int = Query(1, ge=1, le=5),
+):
+    """Proxy: AI-agent-friendly dependency summary grouped by category"""
+    params = {
+        "analysis_ids": [str(a) for a in analysis_ids],
+        "cluster_id": cluster_id, "pod_name": pod_name,
+        "namespace": namespace, "owner_name": owner_name,
+        "label_key": label_key, "label_value": label_value,
+        "annotation_key": annotation_key, "annotation_value": annotation_value,
+        "ip": ip, "depth": depth,
+    }
+    return await proxy_to_graph_query("/dependencies/summary", params)
+
 
 # NOTE: /communications/dependencies/impact is backend-only (requires blast_radius logic).
 # External clients should call the backend API directly for impact assessments.

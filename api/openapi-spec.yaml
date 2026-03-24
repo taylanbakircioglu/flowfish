@@ -233,6 +233,10 @@ components:
           type: object
           additionalProperties:
             type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
         ip_address:
           type: string
           format: ipv4
@@ -597,6 +601,62 @@ components:
             change_type:
               type: string
               enum: [image_update, config_change, scale_change, delete]
+
+    DependencySummaryService:
+      type: object
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        kind:
+          type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        is_critical:
+          type: boolean
+        service_type:
+          type: string
+        port:
+          type: integer
+
+    DependencySummaryGroup:
+      type: object
+      properties:
+        total:
+          type: integer
+        critical_count:
+          type: integer
+        by_category:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/DependencySummaryService'
+
+    DependencySummaryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        analysis_ids:
+          type: array
+          items:
+            type: integer
+        service:
+          $ref: '#/components/schemas/DependencySummaryService'
+        downstream:
+          $ref: '#/components/schemas/DependencySummaryGroup'
+        callers:
+          $ref: '#/components/schemas/DependencySummaryGroup'
+        error:
+          type: string
 
     GraphData:
       type: object
@@ -1374,6 +1434,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommunicationsDependenciesImpactResponse'
+
+  /communications/dependencies/summary:
+    get:
+      tags:
+        - AI Integration
+      summary: AI-agent-friendly dependency summary grouped by category
+      description: |
+        Returns a compact, grouped dependency summary for AI agents and CI/CD pipelines.
+        Dependencies are grouped by service_category. Annotations and labels are prominently
+        exposed for cross-project impact analysis (e.g. git-repo URLs, team info).
+        Requires at least one analysis_id and one search parameter.
+      parameters:
+        - name: analysis_ids
+          in: query
+          required: true
+          description: Analysis IDs (at least one required)
+          schema:
+            type: array
+            items:
+              type: integer
+            minItems: 1
+        - name: cluster_id
+          in: query
+          schema:
+            type: integer
+        - name: pod_name
+          in: query
+          schema:
+            type: string
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: owner_name
+          in: query
+          schema:
+            type: string
+        - name: annotation_key
+          in: query
+          schema:
+            type: string
+        - name: annotation_value
+          in: query
+          schema:
+            type: string
+        - name: label_key
+          in: query
+          schema:
+            type: string
+        - name: label_value
+          in: query
+          schema:
+            type: string
+        - name: ip
+          in: query
+          schema:
+            type: string
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 1
+      responses:
+        '200':
+          description: Grouped dependency summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DependencySummaryResponse'
 
   /anomalies:
     get:

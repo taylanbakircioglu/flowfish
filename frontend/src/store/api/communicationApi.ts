@@ -323,6 +323,47 @@ export interface DependencyImpactParams {
   change_type?: string;
 }
 
+// AI-agent-friendly dependency summary (grouped by category)
+export interface DependencySummaryParams {
+  analysis_ids: number[];
+  cluster_id?: number;
+  pod_name?: string;
+  namespace?: string;
+  owner_name?: string;
+  annotation_key?: string;
+  annotation_value?: string;
+  label_key?: string;
+  label_value?: string;
+  ip?: string;
+  depth?: number;
+}
+
+export interface DependencySummaryService {
+  name: string;
+  namespace: string;
+  kind?: string;
+  annotations: Record<string, string>;
+  labels: Record<string, string>;
+  is_critical?: boolean;
+  service_type?: string;
+  port?: number;
+}
+
+export interface DependencySummaryGroup {
+  total: number;
+  critical_count?: number;
+  by_category: Record<string, DependencySummaryService[]>;
+}
+
+export interface DependencySummaryResponse {
+  success: boolean;
+  analysis_ids: number[];
+  service: DependencySummaryService;
+  downstream: DependencySummaryGroup;
+  callers: DependencySummaryGroup;
+  error?: string;
+}
+
 export interface DependencyGraphQueryParams {
   cluster_id?: number;  // Optional for multi-cluster analysis (use analysis_id only)
   analysis_id?: number;
@@ -442,6 +483,19 @@ export const communicationApi = createApi({
       }),
       providesTags: ['Communication'],
     }),
+
+    // AI-agent-friendly dependency summary grouped by service category
+    getDependencySummary: builder.query<DependencySummaryResponse, DependencySummaryParams>({
+      query: ({ analysis_ids, ...rest }) => {
+        const searchParams = new URLSearchParams();
+        analysis_ids.forEach(id => searchParams.append('analysis_ids', String(id)));
+        Object.entries(rest).forEach(([k, v]) => {
+          if (v !== undefined && v !== null) searchParams.append(k, String(v));
+        });
+        return `/communications/dependencies/summary?${searchParams.toString()}`;
+      },
+      providesTags: ['Communication'],
+    }),
   }),
 });
 
@@ -456,5 +510,6 @@ export const {
   useBatchDependencyMutation,
   useGetDependencyDiffQuery,
   useGetDependencyImpactQuery,
+  useGetDependencySummaryQuery,
 } = communicationApi;
 

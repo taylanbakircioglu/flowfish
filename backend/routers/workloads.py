@@ -23,6 +23,7 @@ class WorkloadResponse(BaseModel):
     workload_type: str = "unknown"
     name: str = "unknown"
     labels: Dict[str, str] = {}
+    annotations: Dict[str, str] = {}
     status: str = "unknown"
     is_active: bool = True
     created_at: Optional[datetime] = None
@@ -47,7 +48,7 @@ async def get_workloads(
         # Build query
         query = """
         SELECT w.id, w.cluster_id, n.name as namespace, w.workload_type, w.name,
-               w.labels, w.status, w.is_active, w.created_at, w.updated_at
+               w.labels, w.annotations, w.status, w.is_active, w.created_at, w.updated_at
         FROM workloads w
         JOIN namespaces n ON w.namespace_id = n.id
         WHERE w.cluster_id = :cluster_id
@@ -80,6 +81,7 @@ async def get_workloads(
                 workload_type=workload["workload_type"],
                 name=workload["name"],
                 labels=workload["labels"] or {},
+                annotations=workload["annotations"] or {},
                 status=workload["status"],
                 is_active=workload["is_active"],
                 created_at=workload["created_at"],

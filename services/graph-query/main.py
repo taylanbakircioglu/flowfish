@@ -424,6 +424,47 @@ async def batch_find_dependencies(request: BatchDependencyRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/dependencies/summary")
+async def get_dependency_summary(
+    analysis_ids: List[str] = Query(..., description="Analysis IDs (required, at least one)"),
+    cluster_id: Optional[str] = None,
+    pod_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+    owner_name: Optional[str] = None,
+    label_key: Optional[str] = None,
+    label_value: Optional[str] = None,
+    annotation_key: Optional[str] = None,
+    annotation_value: Optional[str] = None,
+    ip: Optional[str] = None,
+    depth: int = Query(1, ge=1, le=5, description="Traversal depth"),
+):
+    """
+    AI-agent-friendly dependency summary. Returns grouped, compact JSON.
+
+    Requires at least one analysis_id and one search parameter.
+    Dependencies are grouped by service_category with annotations/labels
+    prominently exposed for cross-project impact analysis.
+    """
+    try:
+        stream_result = graph_query_engine.find_pod_dependencies(
+            analysis_ids=analysis_ids,
+            cluster_id=cluster_id,
+            pod_name=pod_name,
+            namespace=namespace,
+            owner_name=owner_name,
+            label_key=label_key,
+            label_value=label_value,
+            annotation_key=annotation_key,
+            annotation_value=annotation_value,
+            ip=ip,
+            depth=depth,
+        )
+        return graph_query_engine.format_dependency_summary(stream_result, analysis_ids)
+    except Exception as e:
+        logger.error(f"Failed to get dependency summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/dependencies/diff")
 async def diff_dependencies(
     analysis_id_before: str = Query(..., description="Analysis ID for before state"),

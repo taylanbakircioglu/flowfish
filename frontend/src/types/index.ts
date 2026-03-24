@@ -53,6 +53,7 @@ export interface Workload {
   workload_type: 'pod' | 'deployment' | 'statefulset' | 'service';
   name: string;
   labels: Record<string, string>;
+  annotations: Record<string, string>;
   ip_address?: string;
   ports: Array<{ port: number; protocol: string }>;
   status: string;

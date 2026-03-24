@@ -584,6 +584,29 @@ const WorkloadTab: React.FC<WorkloadTabProps> = ({ clusterId, analysisId }) => {
                     ),
                   },
                   {
+                    title: 'Metadata',
+                    key: 'metadata',
+                    width: 110,
+                    render: (_: any, record: Workload) => {
+                      const lc = Object.keys(record.labels || {}).length;
+                      const ac = Object.keys(record.annotations || {}).length;
+                      if (!lc && !ac) return <Text type="secondary" style={{ fontSize: 10 }}>-</Text>;
+                      return (
+                        <Tooltip title={
+                          <>
+                            {lc > 0 && <div>{lc} label{lc > 1 ? 's' : ''}</div>}
+                            {ac > 0 && <div>{ac} annotation{ac > 1 ? 's' : ''}</div>}
+                          </>
+                        }>
+                          <Space size={2}>
+                            {lc > 0 && <Tag style={{ fontSize: 9, margin: 0 }}>{lc}L</Tag>}
+                            {ac > 0 && <Tag color="blue" style={{ fontSize: 9, margin: 0 }}>{ac}A</Tag>}
+                          </Space>
+                        </Tooltip>
+                      );
+                    },
+                  },
+                  {
                     title: 'Last Seen',
                     dataIndex: 'last_seen',
                     key: 'last_seen',

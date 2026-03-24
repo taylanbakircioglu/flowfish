@@ -552,12 +552,26 @@ class GraphQueryEngine:
             w.analysis_id AS analysis_id,
             w.ip AS ip,
             w.status AS status,
+            w.labels AS labels,
+            w.annotations AS annotations,
             w.created_at AS created_at
         ORDER BY w.namespace, w.name
         LIMIT $limit
         """
         
-        return self.execute_query(query, params)
+        result = self.execute_query(query, params)
+        if result.get("success") and result.get("data"):
+            for record in result["data"]:
+                for field in ("labels", "annotations"):
+                    raw = record.get(field)
+                    if isinstance(raw, str):
+                        try:
+                            record[field] = json.loads(raw)
+                        except (json.JSONDecodeError, TypeError):
+                            record[field] = {}
+                    elif not raw:
+                        record[field] = {}
+        return result
     
     def get_dependency_graph(
         self,
@@ -1019,6 +1033,7 @@ class GraphQueryEngine:
     def find_pod_dependencies(
         self,
         analysis_id: Optional[str] = None,
+        analysis_ids: Optional[List[str]] = None,
         cluster_id: Optional[str] = None,
         pod_name: Optional[str] = None,
         namespace: Optional[str] = None,
@@ -1041,7 +1056,8 @@ class GraphQueryEngine:
         Any combination of search parameters can be used. At least one is required.
         
         Args:
-            analysis_id: Analysis ID for scope
+            analysis_id: Single analysis ID for scope (backward compat)
+            analysis_ids: Multiple analysis IDs for scope (takes precedence over analysis_id)
             cluster_id: Cluster ID for scope
             pod_name: Pod/workload name to search
             namespace: Namespace to narrow search
@@ -1058,11 +1074,12 @@ class GraphQueryEngine:
         match_conditions = []
         params = {}
         
-        if analysis_id:
-            analysis_id_str = str(analysis_id)
-            analysis_id_prefix = f"{analysis_id_str}-"
-            params["analysis_id"] = analysis_id_str
-            params["analysis_id_prefix"] = analysis_id_prefix
+        # Consolidate analysis_ids (plural takes precedence)
+        effective_ids = None
+        if analysis_ids:
+            effective_ids = [str(a) for a in analysis_ids]
+        elif analysis_id:
+            effective_ids = [str(analysis_id)]
         
         if cluster_id:
             params["cluster_id"] = str(cluster_id)
@@ -1110,10 +1127,13 @@ class GraphQueryEngine:
         if not match_conditions:
             return {"success": False, "error": "At least one search parameter required (pod_name, namespace, owner_name, ip, annotation_key, label_key)", "count": 0, "results": []}
         
-        # Add analysis_id filter if provided
-        if analysis_id:
+        # Add analysis scope filter
+        if effective_ids:
+            params["analysis_ids"] = effective_ids
+            params["analysis_id_prefixes"] = [f"{a}-" for a in effective_ids]
             match_conditions.append(
-                "(w.analysis_id = $analysis_id OR w.analysis_id STARTS WITH $analysis_id_prefix)"
+                "(w.analysis_id IN $analysis_ids OR "
+                "ANY(prefix IN $analysis_id_prefixes WHERE w.analysis_id STARTS WITH prefix))"
             )
         if cluster_id:
             match_conditions.append("w.cluster_id = $cluster_id")
@@ -1488,6 +1508,80 @@ class GraphQueryEngine:
             "service_count": len(services),
             "results": all_results,
             "shared_dependencies": sorted(shared),
+        }
+
+    def format_dependency_summary(
+        self,
+        stream_result: Dict[str, Any],
+        analysis_ids: List[str],
+    ) -> Dict[str, Any]:
+        """Transform find_pod_dependencies output into a compact, AI-agent-friendly
+        grouped format. Dependencies are grouped by service_category with only the
+        fields relevant for cross-project impact analysis."""
+        # Normalize IDs to integers for consistent JSON output
+        try:
+            int_ids = [int(a) for a in analysis_ids]
+        except (ValueError, TypeError):
+            int_ids = analysis_ids
+
+        if not stream_result.get("success") or not stream_result.get("results"):
+            return {
+                "success": False,
+                "analysis_ids": int_ids,
+                "error": stream_result.get("error", "No results"),
+            }
+
+        first = stream_result["results"][0]
+        upstream = first.get("upstream", {})
+
+        def _compact_service(entry: dict, direction: str = "downstream") -> dict:
+            comm = entry.get("communication") or {}
+            svc_type = comm.get("service_type", "unknown")
+            svc_cat = comm.get("service_category", "")
+            is_crit = comm.get("is_critical", False)
+            if not svc_cat:
+                svc_cat = self.classify_service_category(svc_type, entry.get("pod_name", ""))
+            if not is_crit:
+                is_crit = self.is_critical_service(svc_type, entry.get("pod_name", ""))
+            return {
+                "name": entry.get("owner_name") or entry.get("pod_name", ""),
+                "namespace": entry.get("namespace", ""),
+                "kind": entry.get("owner_kind", ""),
+                "annotations": entry.get("annotations", {}),
+                "labels": entry.get("labels", {}),
+                "is_critical": is_crit,
+                "service_type": svc_type,
+                "service_category": svc_cat,
+                "port": comm.get("port"),
+            }
+
+        def _group_by_category(entries: list, direction: str = "downstream") -> dict:
+            by_cat: Dict[str, list] = {}
+            crit_count = 0
+            for entry in entries:
+                compact = _compact_service(entry, direction)
+                cat = compact.pop("service_category", "") or "other"
+                by_cat.setdefault(cat, []).append(compact)
+                if compact.get("is_critical"):
+                    crit_count += 1
+            return {
+                "total": len(entries),
+                "critical_count": crit_count,
+                "by_category": by_cat,
+            }
+
+        return {
+            "success": True,
+            "analysis_ids": int_ids,
+            "service": {
+                "name": upstream.get("owner_name") or upstream.get("pod_name", ""),
+                "namespace": upstream.get("namespace", ""),
+                "kind": upstream.get("owner_kind", ""),
+                "annotations": upstream.get("annotations", {}),
+                "labels": upstream.get("labels", {}),
+            },
+            "downstream": _group_by_category(first.get("downstream", []), "downstream"),
+            "callers": _group_by_category(first.get("callers", []), "caller"),
         }
 
     def diff_pod_dependencies(

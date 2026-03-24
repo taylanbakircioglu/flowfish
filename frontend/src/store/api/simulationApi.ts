@@ -188,6 +188,8 @@ export interface AffectedService {
     recovery_time?: string;
     reversible?: boolean;
   };
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
 }
 
 export interface ImpactSummary {

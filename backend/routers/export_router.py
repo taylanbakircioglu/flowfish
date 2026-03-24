@@ -439,6 +439,7 @@ async def export_graph_json(
                     "namespace": node.get("namespace", ""),
                     "type": node.get("type", "workload"),
                     "labels": node.get("labels", {}),
+                    "annotations": node.get("annotations", {}),
                     "metadata": node.get("metadata", {})
                 }
                 for node in nodes

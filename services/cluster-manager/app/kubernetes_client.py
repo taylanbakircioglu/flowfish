@@ -410,6 +410,7 @@ class KubernetesClient:
                     "status": pod.status.phase,
                     "node_name": pod.spec.node_name,
                     "labels": pod.metadata.labels or {},
+                    "annotations": pod.metadata.annotations or {},
                     "ip": pod.status.pod_ip,
                     "created_at": pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else None
                 }

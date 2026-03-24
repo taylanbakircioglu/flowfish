@@ -1099,6 +1099,7 @@ class GraphBuilder:
                     'cluster_id': str(cluster_id),
                     'analysis_id': str(analysis_id),
                     'labels': json.dumps(workload.get('labels', {})),
+                    'annotations': json.dumps(workload.get('annotations', {})),
                     'created_at': int(datetime.utcnow().timestamp())
                 }
             }

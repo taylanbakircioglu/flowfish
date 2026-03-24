@@ -647,6 +647,8 @@ const NetworkExplorer: React.FC = () => {
             bindCount: 0,
             lastSeen: '',
             comm: '',
+            labels: node.labels || {},
+            annotations: node.annotations || {},
           });
         }
       });
@@ -953,8 +955,8 @@ const NetworkExplorer: React.FC = () => {
         data = filteredServicesData;
         filename = `services-${dayjs().format('YYYY-MM-DD-HHmmss')}.csv`;
         headers = isMultiClusterAnalysis
-          ? ['Cluster', 'Pod', 'Namespace', 'Process', 'Ports', 'Protocols', 'Bind Count', 'Last Seen']
-          : ['Pod', 'Namespace', 'Process', 'Ports', 'Protocols', 'Bind Count', 'Last Seen'];
+          ? ['Cluster', 'Pod', 'Namespace', 'Process', 'Ports', 'Protocols', 'Bind Count', 'Last Seen', 'Labels', 'Annotations']
+          : ['Pod', 'Namespace', 'Process', 'Ports', 'Protocols', 'Bind Count', 'Last Seen', 'Labels', 'Annotations'];
         break;
       case 'dns':
         data = filteredDnsQueries;
@@ -1013,6 +1015,8 @@ const NetworkExplorer: React.FC = () => {
             `"${(row.protocols || [row.protocol]).join('; ')}"`,
             String(row.bindCount || ''),
             row.lastSeen || '',
+            `"${Object.entries(row.labels || {}).map(([k, v]: [string, any]) => `${k}=${v}`).join('; ')}"`,
+            `"${Object.entries(row.annotations || {}).map(([k, v]: [string, any]) => `${k}=${v}`).join('; ')}"`,
           ];
           if (clusterName) values.unshift(clusterName);
           break;
@@ -1338,6 +1342,22 @@ const NetworkExplorer: React.FC = () => {
             {(Array.isArray(protocols) ? protocols : [protocols]).map((p: string) => (
               <Tag key={p} color={protocolColors[p] || '#8c8c8c'}>{p}</Tag>
             ))}
+          </Space>
+        );
+      },
+    },
+    {
+      title: 'Metadata',
+      key: 'metadata',
+      width: 120,
+      render: (_: any, record: any) => {
+        const labelCount = Object.keys(record.labels || {}).length;
+        const annotCount = Object.keys(record.annotations || {}).length;
+        if (labelCount === 0 && annotCount === 0) return <Text type="secondary" style={{ fontSize: 10 }}>-</Text>;
+        return (
+          <Space size={4}>
+            {labelCount > 0 && <Tag style={{ fontSize: 10 }}>{labelCount} labels</Tag>}
+            {annotCount > 0 && <Tag color="blue" style={{ fontSize: 10 }}>{annotCount} annotations</Tag>}
           </Space>
         );
       },
@@ -2188,6 +2208,43 @@ const NetworkExplorer: React.FC = () => {
                 size="middle"
                 loading={isBindLoading}
                 locale={{ emptyText: <Empty description="No listening services found" /> }}
+                expandable={{
+                  expandedRowRender: (record: any) => {
+                    const labels = record.labels || {};
+                    const annotations = record.annotations || {};
+                    const hasLabels = Object.keys(labels).length > 0;
+                    const hasAnnotations = Object.keys(annotations).length > 0;
+                    if (!hasLabels && !hasAnnotations) return <Text type="secondary">No metadata available</Text>;
+                    return (
+                      <div style={{ padding: '8px 0' }}>
+                        {hasLabels && (
+                          <div style={{ marginBottom: hasAnnotations ? 8 : 0 }}>
+                            <Text strong style={{ fontSize: 12 }}>Labels:</Text>{' '}
+                            <Space wrap size={4}>
+                              {Object.entries(labels).map(([k, v]) => (
+                                <Tag key={k} style={{ fontSize: 10 }}>{k}={String(v)}</Tag>
+                              ))}
+                            </Space>
+                          </div>
+                        )}
+                        {hasAnnotations && (
+                          <div>
+                            <Text strong style={{ fontSize: 12 }}>Annotations:</Text>{' '}
+                            <Space wrap size={4}>
+                              {Object.entries(annotations).map(([k, v]) => (
+                                <Tag key={k} color="blue" style={{ fontSize: 10 }}>
+                                  {k}={String(v).length > 80 ? String(v).slice(0, 80) + '…' : String(v)}
+                                </Tag>
+                              ))}
+                            </Space>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  },
+                  rowExpandable: (record: any) => 
+                    Object.keys(record.labels || {}).length > 0 || Object.keys(record.annotations || {}).length > 0,
+                }}
                 onRow={(record) => ({
                   onClick: () => {
                     setSelectedRecord(record);

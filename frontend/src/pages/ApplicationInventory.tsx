@@ -116,6 +116,14 @@ const ApplicationInventory: React.FC = () => {
       }
     }
     
+    // Annotations: smart match for keys, simple match for values
+    if (w.annotations) {
+      for (const [key, value] of Object.entries(w.annotations)) {
+        if (smartMatch(key, term)) return true;
+        if (simpleMatch(String(value), term)) return true;
+      }
+    }
+    
     // Ports: exact match for port numbers, simple for protocol
     if (w.ports) {
       for (const p of w.ports) {
@@ -209,18 +217,41 @@ const ApplicationInventory: React.FC = () => {
       key: 'labels',
       render: (labels: Record<string, string>) => (
         <Space wrap>
-          {Object.entries(labels).slice(0, 3).map(([key, value]) => (
+          {Object.entries(labels || {}).slice(0, 3).map(([key, value]) => (
             <Tag key={key} style={{ fontSize: '11px' }}>
               {key}={value}
             </Tag>
           ))}
-          {Object.keys(labels).length > 3 && (
+          {Object.keys(labels || {}).length > 3 && (
             <Tag style={{ fontSize: '11px' }}>
               +{Object.keys(labels).length - 3} more
             </Tag>
           )}
         </Space>
       ),
+    },
+    {
+      title: 'Annotations',
+      dataIndex: 'annotations',
+      key: 'annotations',
+      render: (annotations: Record<string, string>) => {
+        const entries = Object.entries(annotations || {});
+        if (entries.length === 0) return <Text type="secondary" style={{ fontSize: 11 }}>-</Text>;
+        return (
+          <Space wrap>
+            {entries.slice(0, 2).map(([key, value]) => (
+              <Tag key={key} color="blue" style={{ fontSize: '11px' }}>
+                {key.length > 25 ? key.slice(0, 25) + '…' : key}
+              </Tag>
+            ))}
+            {entries.length > 2 && (
+              <Tag color="blue" style={{ fontSize: '11px' }}>
+                +{entries.length - 2} more
+              </Tag>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: 'Last Seen',
@@ -429,12 +460,24 @@ const ApplicationInventory: React.FC = () => {
                 </Row>
                 
                 <Row gutter={[16, 8]} style={{ marginTop: 8 }}>
-                  <Col span={24}>
+                  <Col span={12}>
                     <Text strong>Labels:</Text><br />
                     <Space wrap>
-                      {Object.entries(record.labels).map(([key, value]) => (
+                      {Object.entries(record.labels || {}).map(([key, value]) => (
                         <Tag key={key}>{key}={value}</Tag>
                       ))}
+                      {Object.keys(record.labels || {}).length === 0 && <Text type="secondary">None</Text>}
+                    </Space>
+                  </Col>
+                  <Col span={12}>
+                    <Text strong>Annotations:</Text><br />
+                    <Space wrap>
+                      {Object.entries(record.annotations || {}).map(([key, value]) => (
+                        <Tag key={key} color="blue">
+                          {key}={String(value).length > 60 ? String(value).slice(0, 60) + '…' : value}
+                        </Tag>
+                      ))}
+                      {Object.keys(record.annotations || {}).length === 0 && <Text type="secondary">None</Text>}
                     </Space>
                   </Col>
                 </Row>
