@@ -43,7 +43,7 @@ spec:
       containers:
         - name: change-detection-worker
           image: taylanbakircioglu/flowfish:change-worker-latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8001
           env:

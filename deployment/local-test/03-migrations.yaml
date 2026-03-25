@@ -70,6 +70,13 @@ spec:
 
               run_pg() { psql -h postgresql -U flowfish -d flowfish -c "$1"; }
 
+              echo "Creating PostgreSQL extensions..."
+              psql -h postgresql -U flowfish -d flowfish << 'EOSQL'
+              CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+              CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+              CREATE EXTENSION IF NOT EXISTS "btree_gin";
+              EOSQL
+
               psql -h postgresql -U flowfish -d flowfish << 'EOSQL'
 
               -- Migration tracking
@@ -783,6 +790,57 @@ spec:
 
               EOSQL
 
+              echo "Adding scheduling columns to analyses table..."
+              psql -h postgresql -U flowfish -d flowfish <<'EOSQL'
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE;
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS schedule_expression VARCHAR(100);
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS schedule_duration_seconds INTEGER;
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMP WITH TIME ZONE;
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP WITH TIME ZONE;
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS schedule_run_count INTEGER DEFAULT 0;
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS max_scheduled_runs INTEGER;
+              CREATE INDEX IF NOT EXISTS idx_analyses_is_scheduled ON analyses(is_scheduled) WHERE is_scheduled = true;
+              CREATE INDEX IF NOT EXISTS idx_analyses_next_run_at ON analyses(next_run_at);
+              EOSQL
+              echo "Scheduling columns migration complete."
+
+              echo "Fixing FK constraints..."
+              psql -h postgresql -U flowfish -d flowfish <<'EOSQL'
+              DO $$
+              BEGIN
+                IF EXISTS (
+                  SELECT 1 FROM information_schema.table_constraints
+                  WHERE constraint_name = 'blast_radius_assessments_analysis_id_fkey'
+                  AND table_name = 'blast_radius_assessments'
+                ) THEN
+                  ALTER TABLE blast_radius_assessments
+                    DROP CONSTRAINT blast_radius_assessments_analysis_id_fkey;
+                  ALTER TABLE blast_radius_assessments
+                    ADD CONSTRAINT blast_radius_assessments_analysis_id_fkey
+                    FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE SET NULL;
+                END IF;
+              END
+              $$;
+
+              DO $$
+              BEGIN
+                IF NOT EXISTS (
+                  SELECT 1 FROM information_schema.table_constraints
+                  WHERE constraint_name = 'analysis_event_types_analysis_id_fkey'
+                  AND table_name = 'analysis_event_types'
+                ) THEN
+                  DELETE FROM analysis_event_types
+                  WHERE analysis_id NOT IN (SELECT id FROM analyses);
+
+                  ALTER TABLE analysis_event_types
+                    ADD CONSTRAINT analysis_event_types_analysis_id_fkey
+                    FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE;
+                END IF;
+              END
+              $$;
+              EOSQL
+              echo "FK constraints fixed."
+
               echo "PostgreSQL migrations completed!"
 
         # --- ClickHouse Migrations (separate container with clickhouse-client) ---
@@ -1051,13 +1109,16 @@ spec:
               CREATE CONSTRAINT workload_id IF NOT EXISTS FOR (w:Workload) REQUIRE w.id IS UNIQUE;
               CREATE CONSTRAINT namespace_name IF NOT EXISTS FOR (n:Namespace) REQUIRE n.name IS UNIQUE;
               CREATE CONSTRAINT cluster_name IF NOT EXISTS FOR (c:Cluster) REQUIRE c.name IS UNIQUE;
+              CREATE CONSTRAINT external_endpoint_id IF NOT EXISTS FOR (e:ExternalEndpoint) REQUIRE e.id IS UNIQUE;
               CREATE INDEX workload_name IF NOT EXISTS FOR (w:Workload) ON (w.name);
               CREATE INDEX workload_namespace IF NOT EXISTS FOR (w:Workload) ON (w.namespace);
               CREATE INDEX workload_kind IF NOT EXISTS FOR (w:Workload) ON (w.kind);
               CREATE INDEX workload_cluster_id IF NOT EXISTS FOR (w:Workload) ON (w.cluster_id);
               CREATE INDEX workload_analysis_id IF NOT EXISTS FOR (w:Workload) ON (w.analysis_id);
               CREATE INDEX workload_is_active IF NOT EXISTS FOR (w:Workload) ON (w.is_active);
+              CREATE INDEX workload_ip IF NOT EXISTS FOR (w:Workload) ON (w.ip);
               CREATE INDEX namespace_cluster IF NOT EXISTS FOR (n:Namespace) ON (n.cluster);
+              CREATE INDEX external_name IF NOT EXISTS FOR (e:ExternalEndpoint) ON (e.name);
               CYPHER
 
               echo "========================================="
@@ -1086,52 +1147,38 @@ spec:
               done
 
               echo "Creating exchanges..."
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.network_flows \
-                -H "content-type:application/json" \
-                -d '{"type":"topic","durable":true}'
+              EXCHANGES="flowfish.network_flows flowfish.dns_queries flowfish.tcp_connections flowfish.process_events flowfish.file_events flowfish.security_events flowfish.oom_events flowfish.bind_events flowfish.sni_events flowfish.mount_events flowfish.workload_metadata flowfish.change_events"
+              for EX in $EXCHANGES; do
+                curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                  http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/${EX} \
+                  -H "content-type:application/json" \
+                  -d '{"type":"topic","durable":true}' && echo "  exchange: ${EX}" || echo "  WARN: ${EX} failed"
+              done
 
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.dns_queries \
-                -H "content-type:application/json" \
-                -d '{"type":"topic","durable":true}'
+              echo "Creating queues (timeseries-writer + graph-writer)..."
+              QUEUE_ARGS='{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
+              TS_QUEUES="flowfish.queue.network_flows.timeseries flowfish.queue.dns_queries.timeseries flowfish.queue.tcp_connections.timeseries flowfish.queue.process_events.timeseries flowfish.queue.file_events.timeseries flowfish.queue.security_events.timeseries flowfish.queue.oom_events.timeseries flowfish.queue.bind_events.timeseries flowfish.queue.sni_events.timeseries flowfish.queue.mount_events.timeseries flowfish.queue.workload_metadata.timeseries flowfish.queue.change_events.timeseries"
+              GW_QUEUES="flowfish.queue.network_flows.graph flowfish.queue.dns_queries.graph flowfish.queue.tcp_connections.graph flowfish.queue.bind_events.graph flowfish.queue.sni_events.graph"
+              for Q in $TS_QUEUES $GW_QUEUES; do
+                curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                  http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/${Q} \
+                  -H "content-type:application/json" \
+                  -d "$QUEUE_ARGS" && echo "  queue: ${Q}" || echo "  WARN: ${Q} failed"
+              done
 
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.tcp_connections \
-                -H "content-type:application/json" \
-                -d '{"type":"topic","durable":true}'
-
-              echo "Creating queues..."
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/network_flows.clickhouse \
-                -H "content-type:application/json" \
-                -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
-
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/dns_queries.clickhouse \
-                -H "content-type:application/json" \
-                -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
-
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/tcp_connections.clickhouse \
-                -H "content-type:application/json" \
-                -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
-
-              echo "Creating bindings..."
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.network_flows/q/network_flows.clickhouse \
-                -H "content-type:application/json" \
-                -d '{"routing_key":"#"}'
-
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.dns_queries/q/dns_queries.clickhouse \
-                -H "content-type:application/json" \
-                -d '{"routing_key":"#"}'
-
-              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
-                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.tcp_connections/q/tcp_connections.clickhouse \
-                -H "content-type:application/json" \
-                -d '{"routing_key":"#"}'
+              echo "Creating bindings (exchange -> queues)..."
+              bind() {
+                curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+                  "http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/$1/q/$2" \
+                  -H "content-type:application/json" \
+                  -d '{"routing_key":"#"}' && echo "  bind: $1 -> $2" || echo "  WARN: $1 -> $2 failed"
+              }
+              for TYPE in network_flows dns_queries tcp_connections process_events file_events security_events oom_events bind_events sni_events mount_events workload_metadata change_events; do
+                bind "flowfish.${TYPE}" "flowfish.queue.${TYPE}.timeseries"
+              done
+              for TYPE in network_flows dns_queries tcp_connections bind_events sni_events; do
+                bind "flowfish.${TYPE}" "flowfish.queue.${TYPE}.graph"
+              done
 
               echo "========================================="
               echo "RabbitMQ Init Complete!"

@@ -44,7 +44,7 @@ spec:
       containers:
         - name: cluster-manager
           image: taylanbakircioglu/flowfish:cluster-manager-latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5001
               protocol: TCP

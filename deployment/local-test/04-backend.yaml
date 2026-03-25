@@ -42,7 +42,7 @@ spec:
       containers:
         - name: backend
           image: taylanbakircioglu/flowfish:backend-latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
           env:

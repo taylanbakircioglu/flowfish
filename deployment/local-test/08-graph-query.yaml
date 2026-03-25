@@ -2,66 +2,66 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: timeseries-query
+  name: graph-query
   namespace: flowfish-local
 spec:
   type: ClusterIP
   ports:
-    - port: 8002
-      targetPort: 8002
+    - port: 8001
+      targetPort: 8001
       name: http
   selector:
-    app: timeseries-query
+    app: graph-query
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: timeseries-query
+  name: graph-query
   namespace: flowfish-local
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: timeseries-query
+      app: graph-query
   template:
     metadata:
       labels:
-        app: timeseries-query
+        app: graph-query
     spec:
       containers:
-        - name: timeseries-query
-          image: taylanbakircioglu/flowfish:timeseries-query-latest
-          imagePullPolicy: Always
+        - name: graph-query
+          image: taylanbakircioglu/flowfish:graph-query-latest
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8002
+            - containerPort: 8001
           env:
             - name: SERVICE_NAME
-              value: timeseries-query
+              value: graph-query
             - name: HOST
               value: 0.0.0.0
             - name: PORT
-              value: "8002"
+              value: "8001"
             - name: LOG_LEVEL
               value: INFO
-            - name: CLICKHOUSE_HOST
-              value: clickhouse
-            - name: CLICKHOUSE_PORT
-              value: "9000"
-            - name: CLICKHOUSE_USER
-              value: flowfish
-            - name: CLICKHOUSE_PASSWORD
+            - name: NEO4J_BOLT_URI
+              value: bolt://neo4j:7687
+            - name: NEO4J_HTTP_URI
+              value: http://neo4j:7474
+            - name: NEO4J_USER
+              value: neo4j
+            - name: NEO4J_PASSWORD
               value: flowfish123
-            - name: CLICKHOUSE_DATABASE
-              value: flowfish
+            - name: NEO4J_DATABASE
+              value: neo4j
           readinessProbe:
             httpGet:
-              path: /ready
-              port: 8002
+              path: /health
+              port: 8001
             initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
-              port: 8002
+              port: 8001
             initialDelaySeconds: 15
             periodSeconds: 10

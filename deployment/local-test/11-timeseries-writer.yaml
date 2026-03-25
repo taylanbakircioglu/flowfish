@@ -17,7 +17,7 @@ spec:
       containers:
         - name: timeseries-writer
           image: taylanbakircioglu/flowfish:timeseries-writer-latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: SERVICE_NAME
               value: timeseries-writer

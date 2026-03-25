@@ -1349,10 +1349,10 @@ For local development and evaluation:
 git clone https://github.com/taylanbakircioglu/flowfish.git
 cd flowfish
 
-docker-compose up -d
+docker-compose -f deployment/docker-compose/docker-compose.yml up -d
 
 # Wait for health checks (1-2 minutes)
-docker-compose ps
+docker-compose -f deployment/docker-compose/docker-compose.yml ps
 
 # Access the UI
 open http://localhost:3000
@@ -1378,13 +1378,13 @@ Deploy all Flowfish services directly from Docker Hub images — no need to clon
 
 ```bash
 # One-line install
-curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s install
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/deploy.sh | bash -s install
 ```
 
 Or step by step:
 
 ```bash
-REPO="https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test"
+REPO="https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test"
 
 kubectl apply -f $REPO/00-namespace.yaml
 kubectl apply -f $REPO/01-rbac.yaml
@@ -1433,7 +1433,7 @@ kubectl apply -f $REPO/14-nginx-proxy.yaml
 **Uninstall:**
 
 ```bash
-curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s uninstall
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/deploy.sh | bash -s uninstall
 ```
 
 ---
@@ -1594,7 +1594,8 @@ flowfish/
 ├── schemas/                        # Database schemas (SQL)
 ├── deployment/
 │   ├── docker-compose/             # Docker Compose files
-│   └── kubernetes-manifests/       # K8s/OpenShift YAML manifests
+│   ├── local-test/                 # Local K8s/K3s quick-start manifests
+│   └── kubernetes-manifests/       # Production K8s/OpenShift manifests
 ├── pipelines/                      # CI/CD pipeline scripts
 ├── scripts/                        # Utility scripts
 ├── docs/                           # Documentation & screenshots

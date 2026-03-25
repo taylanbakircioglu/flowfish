@@ -8,17 +8,17 @@ Deploy the full Flowfish platform on any Kubernetes cluster (K3s, Docker Desktop
 
 ```bash
 # Standard install (Flowfish platform only)
-curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s install
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/deploy.sh | bash -s install
 
 # Full install with Inspektor Gadget (enables local eBPF analysis)
 # Requires: amd64 Linux, kernel 5.4+
-curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s install-with-gadget
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/deploy.sh | bash -s install-with-gadget
 ```
 
 ### Manual Install
 
 ```bash
-REPO="https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test"
+REPO="https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test"
 
 kubectl apply -f $REPO/00-namespace.yaml
 kubectl apply -f $REPO/01-rbac.yaml
@@ -49,6 +49,12 @@ kubectl apply -f $REPO/14-nginx-proxy.yaml
 # Only on amd64 Linux clusters with kernel 5.4+
 kubectl apply -f $REPO/15-inspektor-gadget.yaml
 ```
+
+> **Tip:** You can also clone the repo and apply manifests directly from `deployment/local-test/`:
+> ```bash
+> kubectl apply -f deployment/local-test/00-namespace.yaml
+> # ... etc.
+> ```
 
 ## Access
 
@@ -96,7 +102,7 @@ kubectl logs -l app=backend -n flowfish-local -f
 kubectl rollout restart deployment -n flowfish-local
 
 # Uninstall
-curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s uninstall
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/deploy.sh | bash -s uninstall
 ```
 
 ## Default Credentials
@@ -128,10 +134,10 @@ Inspektor Gadget directly alongside Flowfish:
 
 ```bash
 # If you used the deploy.sh script:
-curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash -s install-with-gadget
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/deploy.sh | bash -s install-with-gadget
 
 # Or apply the manifest manually:
-kubectl apply -f https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/15-inspektor-gadget.yaml
+kubectl apply -f https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/15-inspektor-gadget.yaml
 
 # Verify the DaemonSet is running:
 kubectl get pods -l app=inspektor-gadget -n flowfish-local

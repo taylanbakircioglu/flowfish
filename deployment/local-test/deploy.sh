@@ -2,7 +2,7 @@
 set -e
 
 NAMESPACE="flowfish-local"
-GITHUB_RAW="https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test"
+GITHUB_RAW="https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test"
 
 MANIFESTS=(
   "00-namespace.yaml"

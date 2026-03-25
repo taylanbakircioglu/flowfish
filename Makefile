@@ -12,7 +12,7 @@ help: ## Show this help message
 
 setup-local: ## Setup complete local environment (macOS)
 	@echo "🚀 Setting up Flowfish local environment..."
-	./setup-local-env.sh
+	./scripts/setup-local-env.sh
 
 deploy-k8s: ## Deploy to minikube (Kubernetes)
 	@echo "☸️  Deploying Flowfish to minikube..."
@@ -20,7 +20,7 @@ deploy-k8s: ## Deploy to minikube (Kubernetes)
 
 deploy-compose: ## Start with Docker Compose
 	@echo "🐳 Starting Flowfish with Docker Compose..."
-	docker-compose up -d
+	docker-compose -f deployment/docker-compose/docker-compose.yml up -d
 	@echo "⏳ Waiting for services to be ready..."
 	@sleep 30
 	@echo "✅ Flowfish is ready at http://localhost:3000"
@@ -31,13 +31,13 @@ status-k8s: ## Show Kubernetes deployment status
 
 status-compose: ## Show Docker Compose status
 	@echo "📊 Docker Compose services status:"
-	docker-compose ps
+	docker-compose -f deployment/docker-compose/docker-compose.yml ps
 
 logs-k8s: ## Show Kubernetes logs
 	cd deployment/kubernetes-manifests && ./deploy-local.sh logs
 
 logs-compose: ## Show Docker Compose logs
-	docker-compose logs -f
+	docker-compose -f deployment/docker-compose/docker-compose.yml logs -f
 
 ##@ 🧹 Cleanup
 
@@ -45,7 +45,7 @@ clean-k8s: ## Clean up Kubernetes deployment
 	cd deployment/kubernetes-manifests && ./deploy-local.sh destroy
 
 clean-compose: ## Stop and remove Docker Compose services
-	docker-compose down -v
+	docker-compose -f deployment/docker-compose/docker-compose.yml down -v
 
 clean-minikube: ## Delete minikube cluster completely
 	minikube delete
@@ -103,7 +103,6 @@ quick-start-compose: deploy-compose ## Quick Docker Compose start
 
 demo: deploy-compose ## Start demo environment
 	@echo "🎬 Starting Flowfish demo..."
-	@make deploy-compose
 	@echo "📖 Open browser and follow these steps:"
 	@echo "   1. Go to http://localhost:3000"
 	@echo "   2. Login with admin/admin123" 

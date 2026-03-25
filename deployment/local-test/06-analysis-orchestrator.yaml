@@ -31,7 +31,7 @@ spec:
       containers:
         - name: analysis-orchestrator
           image: taylanbakircioglu/flowfish:analysis-orchestrator-latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5002
           env:

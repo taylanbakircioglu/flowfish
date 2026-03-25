@@ -30,7 +30,7 @@ spec:
       containers:
         - name: frontend
           image: taylanbakircioglu/flowfish:frontend-latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
           volumeMounts:

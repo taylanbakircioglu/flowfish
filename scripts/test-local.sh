@@ -5,7 +5,7 @@
 #
 # ⚠️  macOS Note: Inspektor Gadget tests are SKIPPED (eBPF not supported)
 #
-# Usage: ./test-local.sh
+# Usage: ./scripts/test-local.sh
 #
 
 set -e

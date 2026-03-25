@@ -64,6 +64,57 @@ CREATE INDEX IF NOT EXISTS idx_clusters_status ON clusters(status);
 CREATE INDEX IF NOT EXISTS idx_clusters_name ON clusters(name);
 
 -- ============================================================================
+-- TABLE: analyses (before analysis_event_types due to FK dependency)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS analyses (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+    cluster_ids JSONB DEFAULT '[]',
+    is_multi_cluster BOOLEAN DEFAULT FALSE,
+    status VARCHAR(50) DEFAULT 'draft',
+    scope_type VARCHAR(50) NOT NULL DEFAULT 'cluster',
+    scope_config JSONB DEFAULT '{}',
+    gadget_config JSONB DEFAULT '{}',
+    gadget_modules JSONB DEFAULT '[]',
+    time_config JSONB DEFAULT '{}',
+    output_config JSONB DEFAULT '{}',
+    is_active BOOLEAN DEFAULT TRUE,
+    metadata JSONB DEFAULT '{}',
+    namespaces JSONB,
+    change_detection_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    change_detection_strategy VARCHAR(50) DEFAULT 'baseline',
+    change_detection_types JSONB DEFAULT '["all"]'::jsonb,
+    is_baseline BOOLEAN DEFAULT false,
+    baseline_marked_at TIMESTAMP WITH TIME ZONE,
+    baseline_marked_by VARCHAR(255),
+    started_at TIMESTAMP WITH TIME ZONE,
+    stopped_at TIMESTAMP WITH TIME ZONE,
+    is_scheduled BOOLEAN DEFAULT FALSE,
+    schedule_expression VARCHAR(100),
+    schedule_duration_seconds INTEGER,
+    next_run_at TIMESTAMP WITH TIME ZONE,
+    last_run_at TIMESTAMP WITH TIME ZONE,
+    schedule_run_count INTEGER DEFAULT 0,
+    max_scheduled_runs INTEGER,
+    created_by INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_analyses_cluster ON analyses(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_analyses_status ON analyses(status);
+CREATE INDEX IF NOT EXISTS idx_analyses_is_active ON analyses(is_active);
+CREATE INDEX IF NOT EXISTS idx_analyses_is_multi_cluster ON analyses(is_multi_cluster);
+CREATE INDEX IF NOT EXISTS idx_analyses_cluster_ids ON analyses USING GIN(cluster_ids);
+CREATE INDEX IF NOT EXISTS idx_analyses_namespaces ON analyses USING GIN(namespaces);
+CREATE INDEX IF NOT EXISTS idx_analyses_is_baseline ON analyses(is_baseline) WHERE is_baseline = true;
+CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at);
+CREATE INDEX IF NOT EXISTS idx_analyses_is_scheduled ON analyses(is_scheduled) WHERE is_scheduled = true;
+CREATE INDEX IF NOT EXISTS idx_analyses_next_run_at ON analyses(next_run_at);
+
+-- ============================================================================
 -- TABLE: analysis_event_types
 -- ============================================================================
 
@@ -183,57 +234,6 @@ CREATE INDEX IF NOT EXISTS idx_communications_dest_ip ON communications(destinat
 CREATE INDEX IF NOT EXISTS idx_communications_protocol ON communications(protocol);
 CREATE INDEX IF NOT EXISTS idx_communications_risk_level ON communications(risk_level);
 CREATE INDEX IF NOT EXISTS idx_communications_is_active ON communications(is_active);
-
--- ============================================================================
--- TABLE: analyses
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS analyses (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
-    cluster_ids JSONB DEFAULT '[]',
-    is_multi_cluster BOOLEAN DEFAULT FALSE,
-    status VARCHAR(50) DEFAULT 'draft',
-    scope_type VARCHAR(50) NOT NULL DEFAULT 'cluster',
-    scope_config JSONB DEFAULT '{}',
-    gadget_config JSONB DEFAULT '{}',
-    gadget_modules JSONB DEFAULT '[]',
-    time_config JSONB DEFAULT '{}',
-    output_config JSONB DEFAULT '{}',
-    is_active BOOLEAN DEFAULT TRUE,
-    metadata JSONB DEFAULT '{}',
-    namespaces JSONB,
-    change_detection_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    change_detection_strategy VARCHAR(50) DEFAULT 'baseline',
-    change_detection_types JSONB DEFAULT '["all"]'::jsonb,
-    is_baseline BOOLEAN DEFAULT false,
-    baseline_marked_at TIMESTAMP WITH TIME ZONE,
-    baseline_marked_by VARCHAR(255),
-    started_at TIMESTAMP WITH TIME ZONE,
-    stopped_at TIMESTAMP WITH TIME ZONE,
-    is_scheduled BOOLEAN DEFAULT FALSE,
-    schedule_expression VARCHAR(100),
-    schedule_duration_seconds INTEGER,
-    next_run_at TIMESTAMP WITH TIME ZONE,
-    last_run_at TIMESTAMP WITH TIME ZONE,
-    schedule_run_count INTEGER DEFAULT 0,
-    max_scheduled_runs INTEGER,
-    created_by INTEGER,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_analyses_cluster ON analyses(cluster_id);
-CREATE INDEX IF NOT EXISTS idx_analyses_status ON analyses(status);
-CREATE INDEX IF NOT EXISTS idx_analyses_is_active ON analyses(is_active);
-CREATE INDEX IF NOT EXISTS idx_analyses_is_multi_cluster ON analyses(is_multi_cluster);
-CREATE INDEX IF NOT EXISTS idx_analyses_cluster_ids ON analyses USING GIN(cluster_ids);
-CREATE INDEX IF NOT EXISTS idx_analyses_namespaces ON analyses USING GIN(namespaces);
-CREATE INDEX IF NOT EXISTS idx_analyses_is_baseline ON analyses(is_baseline) WHERE is_baseline = true;
-CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at);
-CREATE INDEX IF NOT EXISTS idx_analyses_is_scheduled ON analyses(is_scheduled) WHERE is_scheduled = true;
-CREATE INDEX IF NOT EXISTS idx_analyses_next_run_at ON analyses(next_run_at);
 
 -- ============================================================================
 -- TABLE: analysis_runs

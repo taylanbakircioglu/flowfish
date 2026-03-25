@@ -79,18 +79,18 @@ This document describes the deployment topology and component relationships.
 
 ### 1. Kubernetes / K3s (Recommended)
 
-Pre-built manifests in `local-test/` directory. All images are pulled from Docker Hub.
+Pre-built manifests in `deployment/local-test/` directory. All images are pulled from Docker Hub.
 
 ```bash
 # One-line install
-curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/local-test/deploy.sh | bash
+curl -sL https://raw.githubusercontent.com/taylanbakircioglu/flowfish/main/deployment/local-test/deploy.sh | bash
 ```
 
 ### 2. Docker Compose
 
 ```bash
-docker compose up -d                    # Standard setup
-docker compose -f docker-compose.local-test.yml up -d  # Full local test
+docker compose -f deployment/docker-compose/docker-compose.yml up -d                    # Standard setup
+docker compose -f deployment/docker-compose/docker-compose.local-test.yml up -d          # Full local test (with RabbitMQ)
 ```
 
 ### 3. Production Kubernetes / OpenShift

@@ -32,7 +32,7 @@ spec:
       containers:
         - name: ingestion-service
           image: taylanbakircioglu/flowfish:ingestion-service-latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000
           env:
