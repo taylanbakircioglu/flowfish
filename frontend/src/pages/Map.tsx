@@ -693,6 +693,14 @@ const isPrivateIP = (ip: string): boolean => {
   return false;
 };
 
+const isNoiseNode = (name: string): boolean => {
+  if (!name) return false;
+  const trimmed = name.trim();
+  if (trimmed === '0.0.0.0' || trimmed.startsWith('0.0.0.0:')) return true;
+  if (trimmed.endsWith('.in-addr.arpa') || trimmed.endsWith('.in-addr.arpa.')) return true;
+  return false;
+};
+
 // Check if node is a DATACENTER node (private, outside Kubernetes cluster)
 // This is for the "DataCenter" filter - shows internal datacenter dependencies
 // Includes: databases, legacy systems, internal APIs, private servers
@@ -3263,7 +3271,8 @@ const MapInner: React.FC = () => {
         return true;
       })
       .map((node: DependencyNode) => node.name)
-      .filter(Boolean)
+      .filter((name): name is string => Boolean(name) && !isNoiseNode(name))
+      .filter((name, idx, arr) => arr.indexOf(name) === idx)
       .sort();
   }, [effectiveGraphData, selectedNamespaces, selectedClusterFilter]);
 
@@ -3560,6 +3569,12 @@ const MapInner: React.FC = () => {
         debugLog(`[SYSTEM_FILTER] Hidden ${beforeCount - afterCount} system namespace nodes (${afterCount} remaining)`);
       }
     }
+    
+    // Filter noise nodes: 0.0.0.0 bind endpoints, reverse DNS (.in-addr.arpa)
+    // These are listener metadata / PTR records, not real dependencies
+    filteredNodes = filteredNodes.filter((node: DependencyNode) => 
+      !isNoiseNode(node.name || '')
+    );
     
     // DEBUG: Log node classification
     debugLog('[CLASSIFY_DEBUG]', {
