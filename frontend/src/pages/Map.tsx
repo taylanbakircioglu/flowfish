@@ -1727,6 +1727,117 @@ const applyLayout = (
   });
 };
 
+// Extracted to module scope so React sees a stable component identity across parent re-renders,
+// preventing unmount/remount that would reset the expanded state.
+const AnnotationRow = React.memo(({ annKey, annValue, isDark, token }: {
+  annKey: string; annValue: unknown; isDark: boolean; token: any;
+}) => {
+  const strVal = String(annValue);
+  const isLong = strVal.length > 120;
+
+  const { isJson, formattedJson } = React.useMemo(() => {
+    const trimmed = strVal.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        return { isJson: true, formattedJson: JSON.stringify(JSON.parse(trimmed), null, 2) };
+      } catch { /* not valid json */ }
+    }
+    return { isJson: false, formattedJson: '' };
+  }, [strVal]);
+
+  const [expanded, setExpanded] = React.useState(false);
+  const preRef = React.useRef<HTMLPreElement>(null);
+  const overflowRef = React.useRef(false);
+  const [, forceUpdate] = React.useState(0);
+
+  // useLayoutEffect fires before browser paint, preventing "Show more" button flash
+  React.useLayoutEffect(() => {
+    if (isJson && preRef.current && !expanded) {
+      const overflows = preRef.current.scrollHeight > preRef.current.clientHeight;
+      if (overflows !== overflowRef.current) {
+        overflowRef.current = overflows;
+        forceUpdate(c => c + 1);
+      }
+    }
+  }, [isJson, formattedJson, expanded]);
+
+  const handleCopy = React.useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(strVal);
+      message.success('Copied');
+    } catch {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = strVal;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (ok) {
+          message.success('Copied');
+        } else {
+          message.error('Copy failed');
+        }
+      } catch {
+        message.error('Copy failed');
+      }
+    }
+  }, [strVal]);
+
+  const jsonLineCount = isJson ? formattedJson.split('\n').length : 0;
+  const needsShowMore = isJson ? (jsonLineCount > 4 || overflowRef.current) : isLong;
+
+  return (
+    <div style={{
+      background: isDark ? token.colorBgContainer : '#fef9f0',
+      borderRadius: 6,
+      padding: '8px 12px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 4
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text strong style={{ fontSize: 11, color: isDark ? '#ffc069' : '#d48806' }}>{annKey}</Text>
+        <Tooltip title="Copy value">
+          <Button
+            type="text"
+            size="small"
+            icon={<CopyOutlined style={{ fontSize: 11 }} />}
+            style={{ opacity: 0.5 }}
+            onClick={handleCopy}
+          />
+        </Tooltip>
+      </div>
+      {isJson ? (
+        <div>
+          <pre ref={preRef} style={{
+            fontSize: 10, margin: 0, padding: '4px 6px',
+            background: isDark ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.03)',
+            borderRadius: 4, maxHeight: expanded ? 'none' : 60, overflow: 'hidden',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: isDark ? '#d9d9d9' : '#595959'
+          }}>{formattedJson}</pre>
+          {needsShowMore && (
+            <Button type="link" size="small" style={{ padding: 0, fontSize: 10, height: 'auto' }}
+              onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</Button>
+          )}
+        </div>
+      ) : isLong ? (
+        <div>
+          <Text type="secondary" style={{ fontSize: 11, wordBreak: 'break-all' }}>
+            {expanded ? strVal : strVal.slice(0, 120) + '...'}
+          </Text>
+          <Button type="link" size="small" style={{ padding: 0, fontSize: 10, height: 'auto', marginLeft: 4 }}
+            onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</Button>
+        </div>
+      ) : (
+        <Text type="secondary" style={{ fontSize: 11, wordBreak: 'break-all' }}>{strVal}</Text>
+      )}
+    </div>
+  );
+});
+
 // Inner component
 const MapInner: React.FC = () => {
   const { token } = theme.useToken();
@@ -7526,69 +7637,9 @@ const MapInner: React.FC = () => {
                   const userAnns = allAnnotations.filter(([k]) => !INFRA_PREFIXES.some(p => k.startsWith(p)));
                   const infraAnns = allAnnotations.filter(([k]) => INFRA_PREFIXES.some(p => k.startsWith(p)));
 
-                  const AnnotationRow = ({ annKey, annValue }: { annKey: string; annValue: unknown }) => {
-                    const strVal = String(annValue);
-                    const isLong = strVal.length > 120;
-                    let isJson = false;
-                    let formattedJson = '';
-                    const trimmed = strVal.trim();
-                    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-                      try { formattedJson = JSON.stringify(JSON.parse(trimmed), null, 2); isJson = true; } catch { /* not valid json */ }
-                    }
-                    const [expanded, setExpanded] = React.useState(false);
-
-                    return (
-                      <div style={{
-                        background: isDark ? token.colorBgContainer : '#fef9f0',
-                        borderRadius: 6,
-                        padding: '8px 12px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 4
-                      }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <Text strong style={{ fontSize: 11, color: isDark ? '#ffc069' : '#d48806' }}>{annKey}</Text>
-                          <Tooltip title="Copy value">
-                            <Button
-                              type="text"
-                              size="small"
-                              icon={<CopyOutlined style={{ fontSize: 11 }} />}
-                              style={{ opacity: 0.5 }}
-                              onClick={() => { navigator.clipboard.writeText(strVal); message.success('Copied'); }}
-                            />
-                          </Tooltip>
-                        </div>
-                        {isJson ? (
-                          <div>
-                            <pre style={{
-                              fontSize: 10, margin: 0, padding: '4px 6px',
-                              background: isDark ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.03)',
-                              borderRadius: 4, maxHeight: expanded ? 'none' : 60, overflow: 'hidden',
-                              whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: isDark ? '#d9d9d9' : '#595959'
-                            }}>{formattedJson}</pre>
-                            {formattedJson.split('\n').length > 4 && (
-                              <Button type="link" size="small" style={{ padding: 0, fontSize: 10, height: 'auto' }}
-                                onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</Button>
-                            )}
-                          </div>
-                        ) : isLong ? (
-                          <div>
-                            <Text type="secondary" style={{ fontSize: 11, wordBreak: 'break-all' }}>
-                              {expanded ? strVal : strVal.slice(0, 120) + '...'}
-                            </Text>
-                            <Button type="link" size="small" style={{ padding: 0, fontSize: 10, height: 'auto', marginLeft: 4 }}
-                              onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : 'Show more'}</Button>
-                          </div>
-                        ) : (
-                          <Text type="secondary" style={{ fontSize: 11, wordBreak: 'break-all' }}>{strVal}</Text>
-                        )}
-                      </div>
-                    );
-                  };
-
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {userAnns.map(([k, v]) => <AnnotationRow key={k} annKey={k} annValue={v} />)}
+                      {userAnns.map(([k, v]) => <AnnotationRow key={k} annKey={k} annValue={v} isDark={isDark} token={token} />)}
                       {infraAnns.length > 0 && (
                         <details style={{ marginTop: userAnns.length > 0 ? 4 : 0 }}>
                           <summary style={{
@@ -7598,7 +7649,7 @@ const MapInner: React.FC = () => {
                             Infrastructure ({infraAnns.length})
                           </summary>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
-                            {infraAnns.map(([k, v]) => <AnnotationRow key={k} annKey={k} annValue={v} />)}
+                            {infraAnns.map(([k, v]) => <AnnotationRow key={k} annKey={k} annValue={v} isDark={isDark} token={token} />)}
                           </div>
                         </details>
                       )}
