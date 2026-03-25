@@ -317,22 +317,25 @@ const AIIntegrationHub: React.FC = () => {
   const buildCurlSnippet = useCallback(() => {
     const qsStr = buildQueryString();
     if (!qsStr) return '';
-    return `# Get your API key from Settings > API Keys\ncurl -s -H "X-API-Key: $FLOWFISH_API_KEY" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
+    return `# Get your API key from Settings > API Keys\ncurl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
   }, [buildQueryString]);
 
   const buildPipelineSnippet = useCallback(() => {
     const qsStr = buildQueryString();
     if (!qsStr) return '';
 
+    const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://your-flowfish-instance';
+
     if (platform === 'azure_devops') {
       return `# Azure DevOps Pipeline - Flowfish Integration
 # Get your API key from Flowfish Settings > API Keys
 variables:
+  FLOWFISH_URL: '${baseUrl}'
   FLOWFISH_QUERY: '${qsStr}'
 
 steps:
   - script: |
-      DEPS=$(curl -s -H "X-API-Key: $(FLOWFISH_API_KEY)" \\
+      DEPS=$(curl -sf -H "X-API-Key: $(FLOWFISH_API_KEY)" \\
         "$(FLOWFISH_URL)/api/v1/communications/dependencies/summary?$(FLOWFISH_QUERY)")
       echo "$DEPS" > flowfish-deps.json
       
@@ -359,6 +362,7 @@ print(c)
     if (platform === 'github_actions') {
       return `# GitHub Actions - Flowfish Integration
 # Store your API key in repository secrets as FLOWFISH_API_KEY
+# Set FLOWFISH_URL in repository variables (Settings > Secrets and variables > Actions)
 env:
   FLOWFISH_QUERY: '${qsStr}'
 
@@ -368,7 +372,7 @@ jobs:
       - name: Get Flowfish Dependencies
         id: flowfish
         run: |
-          curl -s -H "X-API-Key: \${{ secrets.FLOWFISH_API_KEY }}" \\
+          curl -sf -H "X-API-Key: \${{ secrets.FLOWFISH_API_KEY }}" \\
             "\${{ vars.FLOWFISH_URL }}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}" \\
             > flowfish-deps.json
           
@@ -388,15 +392,16 @@ print(d.get('downstream',{}).get('critical_count',0))
 
     if (platform === 'gitlab_ci') {
       return `# GitLab CI - Flowfish Integration
-# Store your API key as CI/CD variable FLOWFISH_API_KEY
+# Store FLOWFISH_API_KEY and FLOWFISH_URL as CI/CD variables
 variables:
+  FLOWFISH_URL: '${baseUrl}'
   FLOWFISH_QUERY: '${qsStr}'
 
 flowfish_dependencies:
   stage: test
   script:
     - |
-      curl -s -H "X-API-Key: $FLOWFISH_API_KEY" \\
+      curl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\
         "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
         > flowfish-deps.json
     - python ai-agent/analyze.py --deps flowfish-deps.json
@@ -407,14 +412,15 @@ flowfish_dependencies:
 
     if (platform === 'jenkins') {
       return `// Jenkins Pipeline - Flowfish Integration
-// Store your API key in Jenkins credentials as FLOWFISH_API_KEY
+// Store FLOWFISH_API_KEY and FLOWFISH_URL in Jenkins credentials
+def FLOWFISH_URL = '${baseUrl}'
 def FLOWFISH_QUERY = '${qsStr}'
 
 stage('Flowfish Dependencies') {
     steps {
         script {
             def deps = sh(returnStdout: true, script: """
-                curl -s -H "X-API-Key: \${FLOWFISH_API_KEY}" \\
+                curl -sf -H "X-API-Key: \${FLOWFISH_API_KEY}" \\
                   "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}"
             """).trim()
             writeFile file: 'flowfish-deps.json', text: deps
@@ -425,9 +431,10 @@ stage('Flowfish Dependencies') {
 
     return `# Generic CI/CD - Flowfish Integration
 # Get your API key from Flowfish Settings > API Keys
+FLOWFISH_URL='${baseUrl}'
 FLOWFISH_QUERY='${qsStr}'
 
-curl -s -H "X-API-Key: $FLOWFISH_API_KEY" \\
+curl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\
   "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
   > flowfish-deps.json`;
   }, [buildQueryString, platform]);
