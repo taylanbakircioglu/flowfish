@@ -174,6 +174,8 @@ class AutoStopMonitor:
                 if should_stop:
                     logger.info(f"Auto-stopping analysis {analysis['id']}: {reason}")
                     await self._stop_analysis(analysis['id'], reason)
+                else:
+                    await self._enforce_rolling_window(analysis)
                     
             except Exception as e:
                 logger.error(f"Error checking analysis {analysis['id']}: {e}")
@@ -401,24 +403,127 @@ class AutoStopMonitor:
     # Data Size Queries
     # ============================================
     
+    ANALYSIS_EVENT_TABLES = [
+        'network_flows', 'dns_queries', 'tcp_lifecycle', 'process_events',
+        'file_operations', 'capability_checks', 'oom_kills', 'bind_events',
+        'sni_events', 'mount_events', 'workload_metadata'
+    ]
+    
     async def _get_analysis_data_size(self, analysis_id: int) -> float:
         """
         Query ClickHouse to get the current data size for an analysis.
         
-        Uses count(*) as a proxy for data size since actual byte size calculation
-        is complex in ClickHouse. Estimates ~1KB per event.
-        
-        Returns size in MB.
+        Queries all event tables with UNION ALL and uses count(*) as a proxy
+        for data size (~1KB per event estimate). Returns size in MB.
         """
         try:
-            # Query ClickHouse for event count
-            # Events are stored with analysis_id in format '{analysis_id}-{cluster_id}'
-            # Use count as proxy: ~1KB per event average
-            query = f"""
-                SELECT count(*) as event_count
-                FROM flowfish.events
-                WHERE analysis_id LIKE '{analysis_id}-%'
-            """
+            subqueries = " UNION ALL ".join([
+                f"SELECT count(*) as cnt FROM flowfish.{table} "
+                f"WHERE analysis_id = '{analysis_id}' OR analysis_id LIKE '{analysis_id}-%'"
+                for table in self.ANALYSIS_EVENT_TABLES
+            ])
+            query = f"SELECT sum(cnt) / 1024 as size_mb FROM ({subqueries})"
+            
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{self.clickhouse_url}/",
+                    params={
+                        "query": query,
+                        "default_format": "JSON",
+                        "user": settings.clickhouse_user,
+                        "password": settings.clickhouse_password
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('data') and len(result['data']) > 0:
+                        size_mb = float(result['data'][0].get('size_mb', 0) or 0)
+                        return size_mb
+            
+            return 0.0
+            
+        except Exception as e:
+            logger.warning(f"Failed to get analysis data size from ClickHouse: {e}")
+            return 0.0
+    
+    # ============================================
+    # Rolling Window Data Retention
+    # ============================================
+    
+    async def _enforce_rolling_window(self, analysis: Dict[str, Any]):
+        """
+        Enforce rolling window retention: prune oldest ClickHouse data when
+        the analysis exceeds its max_data_size_mb limit.
+        
+        Only triggered when data_retention_policy == 'rolling_window'.
+        Deletes the oldest ~20% of data to create headroom so the analysis
+        can keep running without stopping.
+        """
+        time_config = analysis.get('time_config', {})
+        policy = time_config.get('data_retention_policy', 'unlimited')
+        max_data_size_mb = time_config.get('max_data_size_mb', 0) or 0
+        analysis_id = analysis['id']
+        
+        if policy != 'rolling_window' or max_data_size_mb <= 0:
+            return
+        
+        current_size_mb = await self._get_analysis_data_size(analysis_id)
+        if current_size_mb <= max_data_size_mb:
+            return
+        
+        logger.info(
+            f"Rolling window cleanup for analysis {analysis_id}: "
+            f"{current_size_mb:.1f}MB > {max_data_size_mb}MB limit"
+        )
+        
+        try:
+            cutoff = await self._find_rolling_window_cutoff(analysis_id)
+            if not cutoff:
+                logger.warning(f"Could not determine cutoff timestamp for analysis {analysis_id}")
+                return
+            
+            deleted_count = 0
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for table in self.ANALYSIS_EVENT_TABLES:
+                    delete_query = (
+                        f"ALTER TABLE flowfish.{table} DELETE "
+                        f"WHERE (analysis_id = '{analysis_id}' OR analysis_id LIKE '{analysis_id}-%') "
+                        f"AND timestamp < '{cutoff}'"
+                    )
+                    try:
+                        resp = await client.post(
+                            f"{self.clickhouse_url}/",
+                            params={
+                                "query": delete_query,
+                                "user": settings.clickhouse_user,
+                                "password": settings.clickhouse_password
+                            }
+                        )
+                        if resp.status_code == 200:
+                            deleted_count += 1
+                    except Exception as e:
+                        logger.warning(f"Rolling window DELETE failed on {table}: {e}")
+            
+            logger.info(
+                f"Rolling window cleanup complete for analysis {analysis_id}: "
+                f"issued DELETE on {deleted_count} tables, cutoff={cutoff}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Rolling window enforcement failed for analysis {analysis_id}: {e}")
+    
+    async def _find_rolling_window_cutoff(self, analysis_id: int) -> Optional[str]:
+        """
+        Find the timestamp cutoff that removes ~20% of oldest data for an analysis.
+        Returns ISO-format timestamp string or None.
+        """
+        try:
+            query = (
+                f"SELECT min(timestamp) as oldest, max(timestamp) as newest "
+                f"FROM flowfish.network_flows "
+                f"WHERE analysis_id = '{analysis_id}' OR analysis_id LIKE '{analysis_id}-%'"
+            )
             
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -434,16 +539,21 @@ class AutoStopMonitor:
                 if response.status_code == 200:
                     result = response.json()
                     if result.get('data') and len(result['data']) > 0:
-                        event_count = result['data'][0].get('event_count', 0)
-                        # Estimate: 1KB per event average
-                        size_mb = float(event_count) / 1024 if event_count else 0.0
-                        return size_mb
+                        row = result['data'][0]
+                        oldest = row.get('oldest')
+                        newest = row.get('newest')
+                        if oldest and newest and oldest != newest:
+                            from datetime import datetime as dt
+                            oldest_dt = dt.fromisoformat(str(oldest).replace('Z', '+00:00'))
+                            newest_dt = dt.fromisoformat(str(newest).replace('Z', '+00:00'))
+                            span = newest_dt - oldest_dt
+                            cutoff_dt = oldest_dt + (span * 0.2)
+                            return cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
             
-            return 0.0
-            
+            return None
         except Exception as e:
-            logger.warning(f"Failed to get analysis data size from ClickHouse: {e}")
-            return 0.0
+            logger.warning(f"Failed to find rolling window cutoff: {e}")
+            return None
     
     # ============================================
     # Stop Analysis

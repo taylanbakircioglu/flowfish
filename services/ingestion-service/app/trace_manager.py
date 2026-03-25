@@ -392,9 +392,9 @@ class TraceManager:
             try:
                 # Use the same kubeconfig as the gadget client (important for remote clusters!)
                 pod_discovery = PodDiscovery(
-                    kubeconfig=kubeconfig_path,  # Use session kubeconfig, not settings
-                    context=kubectl_context,      # Use session context, not settings
-                    refresh_interval_seconds=30,
+                    kubeconfig=kubeconfig_path,
+                    context=kubectl_context,
+                    refresh_interval_seconds=settings.pod_discovery_refresh_interval,
                     cluster_manager_url=settings.cluster_manager_url
                 )
                 # Discover ALL pods in cluster for IP -> name resolution
@@ -652,12 +652,35 @@ class TraceManager:
                        session_id=session.session_id,
                        trace_id=trace_id)
             
+            # Token bucket rate limiter (if configured)
+            import time as _time
+            max_eps = settings.max_events_per_second
+            bucket_tokens = float(max_eps) if max_eps > 0 else 0.0
+            bucket_last_refill = _time.monotonic()
+            dropped_count = 0
+            
             # Pass PodIPCache for namespace-scoped analyses to include INCOMING traffic
-            # This allows filtering to check both source AND destination namespaces
             pod_ip_cache = session.pod_discovery.cache if session.pod_discovery else None
             
             async for event in session.client.stream_events(trace_id, pod_ip_cache=pod_ip_cache):
                 try:
+                    # Rate limiting: token bucket algorithm
+                    if max_eps > 0:
+                        now = _time.monotonic()
+                        elapsed = now - bucket_last_refill
+                        bucket_tokens = min(float(max_eps), bucket_tokens + elapsed * max_eps)
+                        bucket_last_refill = now
+                        
+                        if bucket_tokens < 1.0:
+                            dropped_count += 1
+                            if dropped_count % 1000 == 1:
+                                logger.warning("Rate limit: dropping events",
+                                             session_id=session.session_id,
+                                             dropped_total=dropped_count,
+                                             max_eps=max_eps)
+                            continue
+                        bucket_tokens -= 1.0
+                    
                     # Update session statistics
                     session.events_collected += 1
                     session.last_event_at = datetime.utcnow()

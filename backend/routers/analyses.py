@@ -155,12 +155,16 @@ class GadgetConfig(BaseModel):
 
 class TimeConfig(BaseModel):
     """Analysis time and profiling configuration with data sizing support"""
-    mode: str = Field(..., description="continuous, time_range, periodic, baseline")
+    mode: str = Field(..., description="continuous, timed, time_range, periodic, baseline, recurring")
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     duration_seconds: Optional[int] = Field(None, ge=60, le=604800, description="Fixed duration in seconds (min 60s, max 7 days)")
     periodic_interval: Optional[int] = Field(None, ge=60, le=86400, description="Interval in seconds for periodic mode (min 60s, max 24h)")
     baseline_name: Optional[str] = Field(None, description="Baseline profile name")
+    
+    # Recurring schedule fields (stored here for reference; authoritative values are in analyses columns)
+    schedule_expression: Optional[str] = Field(None, max_length=100, description="Cron expression for recurring mode")
+    schedule_duration_seconds: Optional[int] = Field(None, ge=60, le=86400, description="Per-run duration for recurring mode")
     
     # Data sizing configuration
     data_retention_policy: Optional[str] = Field(
@@ -247,14 +251,21 @@ class AnalysisResponse(BaseModel):
     gadget_config: dict = {}
     time_config: dict = {}
     output_config: dict = {}
-    change_detection_enabled: bool = True  # Change detection feature toggle
-    change_detection_strategy: str = "baseline"  # Detection strategy
-    change_detection_types: List[str] = ["all"]  # Change types to track
+    change_detection_enabled: bool = True
+    change_detection_strategy: str = "baseline"
+    change_detection_types: List[str] = ["all"]
     created_at: datetime
     updated_at: Optional[datetime]
-    started_at: Optional[datetime] = None  # When analysis started running
-    stopped_at: Optional[datetime] = None  # When analysis stopped
+    started_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
     created_by: int
+    is_scheduled: bool = False
+    schedule_expression: Optional[str] = None
+    schedule_duration_seconds: Optional[int] = None
+    next_run_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    schedule_run_count: int = 0
+    max_scheduled_runs: Optional[int] = None
 
 class AnalysisRunResponse(BaseModel):
     """Analysis run response"""
@@ -917,7 +928,7 @@ async def delete_analysis(
     start_time = time.time()
     
     # Get analysis with cluster_id for comprehensive deletion
-    analysis_query = "SELECT status, name, cluster_id FROM analyses WHERE id = :id"
+    analysis_query = "SELECT status, name, cluster_id, is_scheduled FROM analyses WHERE id = :id"
     analysis = await database.fetch_one(analysis_query, {"id": analysis_id})
     
     if not analysis:
@@ -931,6 +942,14 @@ async def delete_analysis(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete a running analysis. Stop it first."
         )
+    
+    # Remove schedule from orchestrator before deleting (best-effort)
+    if analysis.get("is_scheduled"):
+        try:
+            await analysis_orchestrator_client.unschedule_analysis(analysis_id)
+        except Exception as e:
+            logger.warning("Failed to unschedule before delete (scheduler will self-heal)",
+                          analysis_id=analysis_id, error=str(e))
     
     analysis_name = analysis["name"]
     cluster_id = analysis["cluster_id"]
@@ -1082,13 +1101,65 @@ async def delete_analysis(
     # NOTE: change_workflow table removed from PostgreSQL
     # Change events are now stored only in ClickHouse (deleted above)
     
-    # Delete from PostgreSQL (analysis records - cascade deletes runs)
-    delete_query = "DELETE FROM analyses WHERE id = :id"
-    await database.execute(delete_query, {"id": analysis_id})
+    # Clean up dependent tables before deleting the analysis record.
+    # blast_radius_assessments has a FK without ON DELETE CASCADE (fixed in migration,
+    # but explicit cleanup ensures safety even before migration runs).
+    # analysis_event_types has no FK at all, so orphan rows would accumulate.
+    blast_radius_deleted = 0
+    event_types_deleted = 0
+    
+    try:
+        br_count_query = "SELECT COUNT(*) as cnt FROM blast_radius_assessments WHERE analysis_id = :id"
+        br_count = await database.fetch_one(br_count_query, {"id": analysis_id})
+        blast_radius_deleted = br_count["cnt"] if br_count else 0
+        if blast_radius_deleted > 0:
+            await database.execute(
+                "DELETE FROM blast_radius_assessments WHERE analysis_id = :id",
+                {"id": analysis_id}
+            )
+            logger.info("Deleted blast_radius_assessments",
+                       analysis_id=analysis_id, count=blast_radius_deleted)
+    except Exception as e:
+        logger.warning("Failed to clean blast_radius_assessments",
+                      analysis_id=analysis_id, error=str(e))
+    
+    try:
+        aet_count_query = "SELECT COUNT(*) as cnt FROM analysis_event_types WHERE analysis_id = :id"
+        aet_count = await database.fetch_one(aet_count_query, {"id": analysis_id})
+        event_types_deleted = aet_count["cnt"] if aet_count else 0
+        if event_types_deleted > 0:
+            await database.execute(
+                "DELETE FROM analysis_event_types WHERE analysis_id = :id",
+                {"id": analysis_id}
+            )
+    except Exception as e:
+        logger.warning("Failed to clean analysis_event_types",
+                      analysis_id=analysis_id, error=str(e))
+    
+    # Delete from PostgreSQL (analysis record - cascade deletes analysis_runs)
+    try:
+        delete_query = "DELETE FROM analyses WHERE id = :id"
+        await database.execute(delete_query, {"id": analysis_id})
+    except Exception as e:
+        error_msg = str(e)
+        if "ForeignKeyViolationError" in error_msg or "IntegrityError" in error_msg:
+            logger.error("FK violation deleting analysis - dependent rows remain",
+                        analysis_id=analysis_id, error=error_msg)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot delete analysis {analysis_id}: dependent records still exist in the database. "
+                    "This may happen if a migration has not been applied. "
+                    "Please contact your administrator."
+                )
+            )
+        raise
     
     postgresql_result = {
         "deleted_analyses": 1,
-        "deleted_runs": runs_deleted
+        "deleted_runs": runs_deleted,
+        "deleted_blast_radius_assessments": blast_radius_deleted,
+        "deleted_event_types": event_types_deleted
     }
     
     duration_ms = int((time.time() - start_time) * 1000)
@@ -1527,3 +1598,179 @@ async def cleanup_orphaned_data(
         duration_ms=duration_ms,
         message=f"Cleaned up {len(orphaned_ids)} orphaned analyses. Deleted {total_deleted:,} records in {duration_ms}ms."
     )
+
+
+# ============================================
+# Scheduled Analysis Endpoints
+# ============================================
+
+class ScheduleAnalysisRequest(BaseModel):
+    """Request to schedule recurring analysis execution"""
+    cron_expression: str = Field(..., max_length=100, description="Cron expression (e.g. '0 2 * * *' for daily at 02:00)")
+    duration_seconds: int = Field(..., ge=60, le=86400, description="Per-run duration in seconds (1 min - 24 hours)")
+    max_runs: Optional[int] = Field(None, ge=0, description="Maximum scheduled runs (0 or null = unlimited)")
+
+class ScheduleAnalysisResponse(BaseModel):
+    """Response for schedule operation"""
+    analysis_id: int
+    is_scheduled: bool
+    schedule_expression: str
+    schedule_duration_seconds: int
+    next_run_at: Optional[str] = None
+    message: str
+
+
+@router.post("/{analysis_id}/schedule", response_model=ScheduleAnalysisResponse)
+async def schedule_analysis(
+    analysis_id: int,
+    schedule_req: ScheduleAnalysisRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Schedule an analysis for recurring execution.
+    
+    Sets up a cron-based schedule that will automatically start the analysis
+    at the specified intervals. Each run uses the same configuration as the
+    original analysis and auto-stops after duration_seconds.
+    
+    **Permissions Required:** analysis.start
+    """
+    if not check_analysis_permission(current_user, "start"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied. Required role: Admin, Operator, or Analyst."
+        )
+    
+    analysis_query = "SELECT * FROM analyses WHERE id = :id"
+    analysis = await database.fetch_one(analysis_query, {"id": analysis_id})
+    
+    if not analysis:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis with id {analysis_id} not found"
+        )
+    
+    max_runs = schedule_req.max_runs or 0
+    
+    try:
+        orc_result = await analysis_orchestrator_client.schedule_analysis(
+            analysis_id=analysis_id,
+            cron_expression=schedule_req.cron_expression,
+            duration_seconds=schedule_req.duration_seconds,
+            max_runs=max_runs
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to register schedule with orchestrator: {str(e)}"
+        )
+    
+    if not orc_result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=orc_result.get("message", "Orchestrator rejected the schedule")
+        )
+    
+    update_query = """
+        UPDATE analyses SET 
+            is_scheduled = true,
+            schedule_expression = :cron,
+            schedule_duration_seconds = :duration,
+            max_scheduled_runs = :max_runs,
+            next_run_at = :next_run_at,
+            updated_at = NOW()
+        WHERE id = :id
+    """
+    await database.execute(update_query, {
+        "id": analysis_id,
+        "cron": schedule_req.cron_expression,
+        "duration": schedule_req.duration_seconds,
+        "max_runs": max_runs if max_runs > 0 else None,
+        "next_run_at": orc_result.get("next_run_at")
+    })
+    
+    await activity_service.log_activity(
+        user_id=current_user.get('user_id'),
+        username=current_user.get('username', 'system'),
+        action="schedule",
+        resource_type=ActivityService.RESOURCE_ANALYSIS,
+        resource_id=str(analysis_id),
+        resource_name=analysis.get("name", f"Analysis {analysis_id}"),
+        ip_address=get_client_ip(request),
+        details={
+            "cron_expression": schedule_req.cron_expression,
+            "duration_seconds": schedule_req.duration_seconds,
+            "max_runs": max_runs
+        }
+    )
+    
+    return ScheduleAnalysisResponse(
+        analysis_id=analysis_id,
+        is_scheduled=True,
+        schedule_expression=schedule_req.cron_expression,
+        schedule_duration_seconds=schedule_req.duration_seconds,
+        next_run_at=orc_result.get("next_run_at"),
+        message="Analysis scheduled successfully"
+    )
+
+
+@router.delete("/{analysis_id}/schedule")
+async def unschedule_analysis(
+    analysis_id: int,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Remove the schedule from an analysis.
+    
+    Stops recurring execution. Does not affect a currently running analysis.
+    
+    **Permissions Required:** analysis.stop
+    """
+    if not check_analysis_permission(current_user, "stop"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied. Required role: Admin, Operator, or Analyst."
+        )
+    
+    analysis_query = "SELECT * FROM analyses WHERE id = :id"
+    analysis = await database.fetch_one(analysis_query, {"id": analysis_id})
+    
+    if not analysis:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis with id {analysis_id} not found"
+        )
+    
+    try:
+        await analysis_orchestrator_client.unschedule_analysis(analysis_id)
+    except Exception as e:
+        logger.warning("Failed to unschedule via orchestrator (clearing DB anyway)",
+                      analysis_id=analysis_id, error=str(e))
+    
+    update_query = """
+        UPDATE analyses SET 
+            is_scheduled = false,
+            schedule_expression = NULL,
+            schedule_duration_seconds = NULL,
+            next_run_at = NULL,
+            max_scheduled_runs = NULL,
+            schedule_run_count = 0,
+            updated_at = NOW()
+        WHERE id = :id
+    """
+    await database.execute(update_query, {"id": analysis_id})
+    
+    await activity_service.log_activity(
+        user_id=current_user.get('user_id'),
+        username=current_user.get('username', 'system'),
+        action="unschedule",
+        resource_type=ActivityService.RESOURCE_ANALYSIS,
+        resource_id=str(analysis_id),
+        resource_name=analysis.get("name", f"Analysis {analysis_id}"),
+        ip_address=get_client_ip(request),
+        details={}
+    )
+    
+    return {"message": "Schedule removed", "analysis_id": analysis_id}

@@ -17,6 +17,7 @@ from proto import common_pb2
 from app.config import settings
 from app.database import db_manager, AnalysisType, AnalysisStatus
 from app.scheduler import scheduler
+import app.scheduler as scheduler_module
 from app.analysis_executor import AnalysisExecutor
 from app.ingestion_client import ingestion_client
 from app.auto_stop_monitor import auto_stop_monitor
@@ -268,6 +269,17 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             
             time_data = analysis.time_config or {}
             duration_seconds = time_data.get('duration_seconds', 0) or 0
+            
+            # For recurring analyses only: fall back to schedule_duration_seconds
+            # so manual starts also have a bounded per-run duration.
+            # Scoped to 'recurring' mode to avoid altering continuous/timed/time_range behavior.
+            analysis_mode = time_data.get('mode', '')
+            if duration_seconds == 0 and analysis_mode == 'recurring' and getattr(analysis, 'schedule_duration_seconds', None):
+                duration_seconds = analysis.schedule_duration_seconds
+                # Persist to time_config so the auto-stop monitor can enforce this duration
+                time_data['duration_seconds'] = duration_seconds
+                db_manager.update_analysis_sync(request.analysis_id, {"time_config": time_data})
+                logger.info(f"Analysis {request.analysis_id}: recurring mode, injected schedule_duration_seconds={duration_seconds}s into time_config")
             
             logger.info(f"Analysis {request.analysis_id} config: scope_type={scope_type_str}, "
                        f"global_namespaces={global_namespaces}, global_pods={global_pods}, "
@@ -605,6 +617,56 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             context.set_details(str(e))
             return analysis_orchestrator_pb2.AnalysisStatus()
     
+    def ScheduleAnalysis(self, request, context):
+        """Schedule an analysis for recurring cron-based execution"""
+        try:
+            analysis_id = request.analysis_id
+            cron_expression = request.cron_expression
+            duration_seconds = request.duration_seconds
+            max_runs = request.max_runs
+            
+            analysis = db_manager.get_analysis_sync(analysis_id)
+            if not analysis:
+                return analysis_orchestrator_pb2.ScheduleAnalysisResponse(
+                    success=False,
+                    message=f"Analysis {analysis_id} not found"
+                )
+            
+            next_run_at = scheduler.schedule_analysis_sync(
+                analysis_id, cron_expression, duration_seconds, max_runs
+            )
+            
+            return analysis_orchestrator_pb2.ScheduleAnalysisResponse(
+                success=True,
+                message=f"Analysis {analysis_id} scheduled with cron: {cron_expression}",
+                next_run_at=next_run_at or ""
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to schedule analysis {request.analysis_id}: {e}", exc_info=True)
+            return analysis_orchestrator_pb2.ScheduleAnalysisResponse(
+                success=False,
+                message=f"Failed to schedule: {str(e)}"
+            )
+    
+    def UnscheduleAnalysis(self, request, context):
+        """Remove schedule from an analysis"""
+        try:
+            scheduler.unschedule_analysis_sync(request.analysis_id)
+            
+            return common_pb2.StatusResponse(
+                success=True,
+                message=f"Analysis {request.analysis_id} unscheduled",
+                code=0
+            )
+        except Exception as e:
+            logger.error(f"Failed to unschedule analysis {request.analysis_id}: {e}")
+            return common_pb2.StatusResponse(
+                success=False,
+                message=str(e),
+                code=500
+            )
+    
     def _analysis_to_proto(self, analysis) -> analysis_orchestrator_pb2.Analysis:
         """Convert database analysis to proto"""
         return analysis_orchestrator_pb2.Analysis(
@@ -613,9 +675,6 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             description=analysis.description or "",
             cluster_ids=[analysis.cluster_id] if hasattr(analysis, 'cluster_id') and analysis.cluster_id else []
         )
-    
-    # Note: analysis_type enum removed from schema - all analyses use dependency_mapping
-    # Note: status is now a string field in proto, not an enum
 
 
 def serve():
@@ -648,10 +707,16 @@ def serve():
         server
     )
     
+    # Set gRPC service reference so scheduler can call StartAnalysis
+    scheduler_module._grpc_service_instance = service
+    
+    # Restore scheduled jobs from database (persistence across pod restarts)
+    scheduler.restore_jobs_from_db()
+    
     server.add_insecure_port(f'[::]:{settings.grpc_port}')
     server.start()
     
-    logger.info(f"🐟 Analysis Orchestrator Service started on port {settings.grpc_port}")
+    logger.info(f"Analysis Orchestrator Service started on port {settings.grpc_port}")
     
     return server
 

@@ -43,7 +43,8 @@ import {
   SettingOutlined,
   ThunderboltOutlined,
   HddOutlined,
-  DashboardOutlined
+  DashboardOutlined,
+  CalendarOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
@@ -52,6 +53,7 @@ import {
   useStartAnalysisMutation,
   useStopAnalysisMutation,
   useDeleteAnalysisMutation,
+  useUnscheduleAnalysisMutation,
   useGetAnalysisRunsQuery,
   DeleteAnalysisResponse,
   StopAnalysisResponse,
@@ -389,6 +391,7 @@ const AnalysisList: React.FC = () => {
   const [startAnalysis] = useStartAnalysisMutation();
   const [stopAnalysis] = useStopAnalysisMutation();
   const [deleteAnalysis] = useDeleteAnalysisMutation();
+  const [unscheduleAnalysis] = useUnscheduleAnalysisMutation();
   
   // Helper to get cluster name by ID
   const getClusterName = (clusterId: number): string => {
@@ -661,6 +664,7 @@ const AnalysisList: React.FC = () => {
           'scheduled': { label: 'Scheduled', color: 'purple' },
           'periodic': { label: 'Periodic', color: 'orange' },
           'baseline': { label: 'Baseline', color: 'cyan' },
+          'recurring': { label: 'Recurring', color: 'gold' },
         };
         const modeInfo = modeLabels[mode] || { label: mode, color: 'default' };
         return (
@@ -1193,6 +1197,54 @@ const AnalysisList: React.FC = () => {
                 )}
               </Descriptions>
             </Card>
+            
+            {/* Schedule Info */}
+            {selectedAnalysis.is_scheduled && (
+              <Card size="small" title={<><CalendarOutlined /> Schedule</>} extra={
+                <Popconfirm
+                  title="Remove this schedule?"
+                  description="The analysis will no longer run automatically. Any currently running execution will continue."
+                  onConfirm={async () => {
+                    try {
+                      await unscheduleAnalysis(selectedAnalysis.id).unwrap();
+                      message.success('Schedule removed');
+                    } catch {
+                      message.error('Failed to remove schedule');
+                    }
+                  }}
+                  okText="Remove"
+                  cancelText="Cancel"
+                  okType="danger"
+                >
+                  <Button type="link" danger size="small">Unschedule</Button>
+                </Popconfirm>
+              }>
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="Cron Expression">
+                    <Tag color="gold">{selectedAnalysis.schedule_expression}</Tag>
+                  </Descriptions.Item>
+                  {selectedAnalysis.schedule_duration_seconds && (
+                    <Descriptions.Item label="Per-Run Duration">
+                      {Math.round(selectedAnalysis.schedule_duration_seconds / 60)} minutes
+                    </Descriptions.Item>
+                  )}
+                  {selectedAnalysis.next_run_at && (
+                    <Descriptions.Item label="Next Run">
+                      {new Date(selectedAnalysis.next_run_at).toLocaleString()}
+                    </Descriptions.Item>
+                  )}
+                  {selectedAnalysis.last_run_at && (
+                    <Descriptions.Item label="Last Run">
+                      {new Date(selectedAnalysis.last_run_at).toLocaleString()}
+                    </Descriptions.Item>
+                  )}
+                  <Descriptions.Item label="Runs Completed">
+                    {selectedAnalysis.schedule_run_count || 0}
+                    {selectedAnalysis.max_scheduled_runs ? ` / ${selectedAnalysis.max_scheduled_runs}` : ' (unlimited)'}
+                  </Descriptions.Item>
+                </Descriptions>
+              </Card>
+            )}
             
             {/* Auto-Stop Info */}
             {selectedAnalysis.output_config?.auto_stopped && (

@@ -59,6 +59,9 @@ else:
 # Scheduled simulation worker (always enabled by default)
 from workers.scheduled_simulation_worker import scheduled_simulation_worker
 
+# Auto-cleanup worker for data retention enforcement
+from workers.auto_cleanup_worker import auto_cleanup_worker
+
 
 # Configure structured logging
 structlog.configure(
@@ -136,6 +139,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("⚠️ Scheduled simulation worker failed to start", error=str(e))
     
+    # Start auto-cleanup worker
+    try:
+        await auto_cleanup_worker.start()
+        if auto_cleanup_worker.ENABLED:
+            logger.info("Auto-cleanup worker started")
+        else:
+            logger.info("Auto-cleanup worker disabled (set AUTO_CLEANUP_ENABLED=true to enable)")
+    except Exception as e:
+        logger.warning("Auto-cleanup worker failed to start", error=str(e))
+    
     logger.info("🚀 Flowfish Backend started successfully!")
     
     yield
@@ -167,6 +180,12 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Scheduled simulation worker stopped")
     except Exception as e:
         logger.warning("⚠️ Scheduled simulation worker stop failed", error=str(e))
+    
+    # Stop auto-cleanup worker
+    try:
+        await auto_cleanup_worker.stop()
+    except Exception as e:
+        logger.warning("Auto-cleanup worker stop failed", error=str(e))
     
     # Close connections
     await redis_client.close()

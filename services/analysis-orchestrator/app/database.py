@@ -82,6 +82,15 @@ class Analysis(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     stopped_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     
+    # Scheduling support
+    is_scheduled: Mapped[bool] = mapped_column(Boolean, default=False)
+    schedule_expression: Mapped[Optional[str]] = mapped_column(String(100))
+    schedule_duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    schedule_run_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_scheduled_runs: Mapped[Optional[int]] = mapped_column(Integer)
+    
     # Metadata (from backend) - 'metadata' is reserved in SQLAlchemy, use different name
     analysis_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSON, default={})
 
@@ -508,6 +517,29 @@ class DatabaseManager:
             )
             result = await session.execute(query)
             return result.scalars().first()
+    
+    def get_scheduled_analyses_sync(self) -> List[Dict[str, Any]]:
+        """Get all analyses with is_scheduled=true (for startup job restoration)"""
+        try:
+            with self.sync_session() as session:
+                result = session.execute(
+                    select(Analysis).where(Analysis.is_scheduled == True)
+                )
+                analyses = result.scalars().all()
+                return [
+                    {
+                        "id": a.id,
+                        "name": a.name,
+                        "schedule_expression": a.schedule_expression,
+                        "schedule_duration_seconds": a.schedule_duration_seconds,
+                        "max_scheduled_runs": a.max_scheduled_runs,
+                        "schedule_run_count": a.schedule_run_count,
+                    }
+                    for a in analyses
+                ]
+        except Exception as e:
+            logger.error(f"Failed to get scheduled analyses: {e}")
+            return []
     
     async def close(self):
         """Close database connection"""

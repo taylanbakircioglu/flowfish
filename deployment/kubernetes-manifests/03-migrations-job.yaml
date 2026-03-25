@@ -3,7 +3,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: flowfish-migrations
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: flowfish-migrations
 spec:
@@ -1673,6 +1673,70 @@ spec:
               'blast_radius_assessments', COUNT(*) FROM blast_radius_assessments;
           EOSQL
           
+          # =========================================
+          # Migration: Add scheduling columns to analyses table
+          # =========================================
+          echo "Adding scheduling columns to analyses table..."
+          psql -h $POSTGRES_HOST -U $POSTGRES_USER -d $POSTGRES_DB <<'EOSQL'
+          ALTER TABLE analyses ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN DEFAULT FALSE;
+          ALTER TABLE analyses ADD COLUMN IF NOT EXISTS schedule_expression VARCHAR(100);
+          ALTER TABLE analyses ADD COLUMN IF NOT EXISTS schedule_duration_seconds INTEGER;
+          ALTER TABLE analyses ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMP WITH TIME ZONE;
+          ALTER TABLE analyses ADD COLUMN IF NOT EXISTS last_run_at TIMESTAMP WITH TIME ZONE;
+          ALTER TABLE analyses ADD COLUMN IF NOT EXISTS schedule_run_count INTEGER DEFAULT 0;
+          ALTER TABLE analyses ADD COLUMN IF NOT EXISTS max_scheduled_runs INTEGER;
+          CREATE INDEX IF NOT EXISTS idx_analyses_is_scheduled ON analyses(is_scheduled) WHERE is_scheduled = true;
+          CREATE INDEX IF NOT EXISTS idx_analyses_next_run_at ON analyses(next_run_at);
+          EOSQL
+          echo "Scheduling columns migration complete."
+
+          echo ""
+          echo "--- Fix blast_radius_assessments FK constraint (add ON DELETE SET NULL) ---"
+          psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'EOSQL'
+          DO $$
+          BEGIN
+            IF EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE constraint_name = 'blast_radius_assessments_analysis_id_fkey'
+              AND table_name = 'blast_radius_assessments'
+            ) THEN
+              ALTER TABLE blast_radius_assessments
+                DROP CONSTRAINT blast_radius_assessments_analysis_id_fkey;
+              ALTER TABLE blast_radius_assessments
+                ADD CONSTRAINT blast_radius_assessments_analysis_id_fkey
+                FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE SET NULL;
+              RAISE NOTICE 'Fixed blast_radius_assessments FK to ON DELETE SET NULL';
+            END IF;
+          END
+          $$;
+          EOSQL
+          echo "blast_radius_assessments FK fix complete."
+
+          echo ""
+          echo "--- Fix analysis_event_types FK constraint (add ON DELETE CASCADE) ---"
+          psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'EOSQL'
+          DO $$
+          BEGIN
+            -- Add FK if it doesn't exist yet (table was created without one)
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE constraint_name = 'analysis_event_types_analysis_id_fkey'
+              AND table_name = 'analysis_event_types'
+            ) THEN
+              -- Clean orphaned rows first (analysis_id references deleted analyses)
+              DELETE FROM analysis_event_types
+              WHERE analysis_id NOT IN (SELECT id FROM analyses);
+
+              ALTER TABLE analysis_event_types
+                ADD CONSTRAINT analysis_event_types_analysis_id_fkey
+                FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE;
+              RAISE NOTICE 'Added analysis_event_types FK with ON DELETE CASCADE';
+            END IF;
+          END
+          $$;
+          EOSQL
+          echo "analysis_event_types FK fix complete."
+
           echo ""
           echo "========================================="
           echo "PostgreSQL Migrations Complete!"

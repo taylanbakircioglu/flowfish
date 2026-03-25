@@ -24,16 +24,32 @@ interface GadgetConfig {
 }
 
 interface TimeConfig {
-  mode: 'continuous' | 'timed' | 'time_range' | 'periodic' | 'baseline';
+  mode: 'continuous' | 'timed' | 'time_range' | 'periodic' | 'baseline' | 'recurring';
   start_time?: string;
   end_time?: string;
   duration_seconds?: number;
-  duration_minutes?: number; // For display/compatibility
+  duration_minutes?: number;
   periodic_interval?: number;
   baseline_name?: string;
-  // Data sizing configuration
   data_retention_policy?: 'unlimited' | 'stop_on_limit' | 'rolling_window';
   max_data_size_mb?: number;
+  schedule_expression?: string;
+  schedule_duration_seconds?: number;
+}
+
+export interface ScheduleAnalysisRequest {
+  cron_expression: string;
+  duration_seconds: number;
+  max_runs?: number;
+}
+
+export interface ScheduleAnalysisResponse {
+  analysis_id: number;
+  is_scheduled: boolean;
+  schedule_expression: string;
+  schedule_duration_seconds: number;
+  next_run_at?: string;
+  message: string;
 }
 
 interface OutputConfig {
@@ -244,6 +260,25 @@ export const analysisApi = createApi({
         { type: 'AnalysisRun', id: `analysis-${analysisId}` }
       ],
     }),
+    
+    // Schedule analysis for recurring execution
+    scheduleAnalysis: builder.mutation<ScheduleAnalysisResponse, { id: number; body: ScheduleAnalysisRequest }>({
+      query: ({ id, body }) => ({
+        url: `/analyses/${id}/schedule`,
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: (result, error, { id }) => [{ type: 'Analysis', id }],
+    }),
+    
+    // Remove schedule from analysis
+    unscheduleAnalysis: builder.mutation<{ message: string; analysis_id: number }, number>({
+      query: (id) => ({
+        url: `/analyses/${id}/schedule`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: (result, error, id) => [{ type: 'Analysis', id }],
+    }),
   }),
 });
 
@@ -255,5 +290,7 @@ export const {
   useStopAnalysisMutation,
   useDeleteAnalysisMutation,
   useGetAnalysisRunsQuery,
+  useScheduleAnalysisMutation,
+  useUnscheduleAnalysisMutation,
 } = analysisApi;
 

@@ -134,6 +134,14 @@ export interface Analysis {
   started_at?: string;
   stopped_at?: string;
   created_by: number;
+  // Scheduling
+  is_scheduled?: boolean;
+  schedule_expression?: string;
+  schedule_duration_seconds?: number;
+  next_run_at?: string;
+  last_run_at?: string;
+  schedule_run_count?: number;
+  max_scheduled_runs?: number;
 }
 
 export interface ApiResponse<T> {

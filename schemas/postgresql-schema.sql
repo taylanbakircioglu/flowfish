@@ -69,7 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_clusters_name ON clusters(name);
 
 CREATE TABLE IF NOT EXISTS analysis_event_types (
     id SERIAL PRIMARY KEY,
-    analysis_id INTEGER NOT NULL,
+    analysis_id INTEGER NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
     event_type_id VARCHAR(50) NOT NULL,
     enabled BOOLEAN DEFAULT TRUE,
     sampling_rate INTEGER DEFAULT 100,
@@ -213,6 +213,13 @@ CREATE TABLE IF NOT EXISTS analyses (
     baseline_marked_by VARCHAR(255),
     started_at TIMESTAMP WITH TIME ZONE,
     stopped_at TIMESTAMP WITH TIME ZONE,
+    is_scheduled BOOLEAN DEFAULT FALSE,
+    schedule_expression VARCHAR(100),
+    schedule_duration_seconds INTEGER,
+    next_run_at TIMESTAMP WITH TIME ZONE,
+    last_run_at TIMESTAMP WITH TIME ZONE,
+    schedule_run_count INTEGER DEFAULT 0,
+    max_scheduled_runs INTEGER,
     created_by INTEGER,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -225,6 +232,8 @@ CREATE INDEX IF NOT EXISTS idx_analyses_cluster_ids ON analyses USING GIN(cluste
 CREATE INDEX IF NOT EXISTS idx_analyses_namespaces ON analyses USING GIN(namespaces);
 CREATE INDEX IF NOT EXISTS idx_analyses_is_baseline ON analyses(is_baseline) WHERE is_baseline = true;
 CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at);
+CREATE INDEX IF NOT EXISTS idx_analyses_is_scheduled ON analyses(is_scheduled) WHERE is_scheduled = true;
+CREATE INDEX IF NOT EXISTS idx_analyses_next_run_at ON analyses(next_run_at);
 
 -- ============================================================================
 -- TABLE: analysis_runs
@@ -601,7 +610,7 @@ CREATE TABLE IF NOT EXISTS blast_radius_assessments (
     id SERIAL PRIMARY KEY,
     assessment_id VARCHAR(50) UNIQUE NOT NULL,
     cluster_id INTEGER NOT NULL REFERENCES clusters(id),
-    analysis_id INTEGER REFERENCES analyses(id),
+    analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL,
     target VARCHAR(255) NOT NULL,
     namespace VARCHAR(255) NOT NULL DEFAULT 'default',
     change_type VARCHAR(50) NOT NULL,

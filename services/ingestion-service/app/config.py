@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     # Performance
     batch_size: int = 100
     batch_timeout: float = 1.0  # seconds
+    max_events_per_second: int = 0  # 0 = unlimited; when set, excess events are dropped
+    
+    # Pod Discovery
+    pod_discovery_refresh_interval: int = 30  # seconds between pod list refreshes
+    pod_discovery_error_backoff_max: int = 300  # max backoff on K8s API errors (seconds)
     
     # Monitoring
     metrics_port: int = 9090

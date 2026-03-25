@@ -390,15 +390,26 @@ class PodDiscovery:
         logger.info("Pod discovery stopped", stats=self.cache.stats())
     
     async def _background_refresh(self):
-        """Background task to refresh pod cache periodically"""
+        """Background task to refresh pod cache periodically with exponential backoff on errors"""
+        from app.config import settings as _settings
+        backoff_max = _settings.pod_discovery_error_backoff_max
+        current_backoff = 0
+        
         while self._running:
             try:
-                await asyncio.sleep(self.refresh_interval)
+                sleep_time = max(self.refresh_interval, current_backoff)
+                await asyncio.sleep(sleep_time)
                 await self._refresh_cache()
+                current_backoff = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning("Pod cache refresh failed", error=str(e))
+                if current_backoff == 0:
+                    current_backoff = self.refresh_interval
+                else:
+                    current_backoff = min(current_backoff * 2, backoff_max)
+                logger.warning("Pod cache refresh failed, backing off",
+                             error=str(e), next_retry_seconds=current_backoff)
     
     async def _refresh_cache(self):
         """Refresh the pod, service, and node cache from Kubernetes"""

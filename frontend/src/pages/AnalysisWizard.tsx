@@ -41,7 +41,8 @@ import {
   HddOutlined,
   SyncOutlined,
   StopOutlined,
-  FieldTimeOutlined
+  FieldTimeOutlined,
+  CalendarOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
@@ -54,7 +55,7 @@ import {
   Pod
 } from '../store/api/workloadApi';
 import { useGetEventTypesQuery } from '../store/api/eventTypeApi';
-import { useCreateAnalysisMutation, AnalysisCreateRequest } from '../store/api/analysisApi';
+import { useCreateAnalysisMutation, useScheduleAnalysisMutation, AnalysisCreateRequest } from '../store/api/analysisApi';
 import { Namespace } from '../types';
 
 // Multi-cluster color palette for visual distinction
@@ -406,6 +407,7 @@ const AnalysisWizard: React.FC = () => {
   const { data: eventTypes = [], isLoading: isEventTypesLoading } = useGetEventTypesQuery();
   
   const [createAnalysis, { isLoading: isCreating }] = useCreateAnalysisMutation();
+  const [scheduleAnalysis] = useScheduleAnalysisMutation();
   
   // Default gadgets: all available event types
   const defaultGadgets = useMemo(() => 
@@ -823,6 +825,24 @@ const AnalysisWizard: React.FC = () => {
         durationSeconds = finalValues.duration_value * (multipliers[unit] || 3600);
       }
       
+      // Build schedule fields for recurring mode
+      let scheduleExpression: string | undefined;
+      let scheduleDurationSeconds: number | undefined;
+      if (finalValues.time_mode === 'recurring') {
+        const hour = finalValues.schedule_hour ?? 2;
+        const minute = finalValues.schedule_minute ?? 0;
+        if (finalValues.schedule_type === 'custom' && finalValues.custom_cron) {
+          scheduleExpression = finalValues.custom_cron;
+        } else if (finalValues.schedule_type === 'weekly') {
+          scheduleExpression = `${minute} ${hour} * * 1-5`;
+        } else {
+          scheduleExpression = `${minute} ${hour} * * *`;
+        }
+        const rUnit = finalValues.recurring_duration_unit || 'hours';
+        const rValue = finalValues.recurring_duration_value || 2;
+        scheduleDurationSeconds = rValue * (rUnit === 'hours' ? 3600 : 60);
+      }
+      
       // Validate data retention configuration
       const retentionPolicy = finalValues.data_retention_policy || 'unlimited';
       let maxDataSizeMb: number | undefined = undefined;
@@ -853,14 +873,15 @@ const AnalysisWizard: React.FC = () => {
           enabled_gadgets: finalValues.enabled_gadgets || [],
         },
         time_config: {
-          mode: finalValues.time_mode === 'duration' ? 'timed' : finalValues.time_mode, // 'timed' for duration-based, 'continuous' for unlimited
+          mode: finalValues.time_mode === 'duration' ? 'timed' : finalValues.time_mode,
           start_time: finalValues.start_time?.toISOString(),
           end_time: finalValues.end_time?.toISOString(),
           duration_seconds: durationSeconds,
-          duration_minutes: durationSeconds ? Math.round(durationSeconds / 60) : undefined, // For display/compatibility
-          // Data sizing configuration
+          duration_minutes: durationSeconds ? Math.round(durationSeconds / 60) : undefined,
           data_retention_policy: retentionPolicy,
           max_data_size_mb: maxDataSizeMb,
+          schedule_expression: scheduleExpression,
+          schedule_duration_seconds: scheduleDurationSeconds,
         },
         output: {
           // Default output configuration - dashboard always enabled
@@ -877,12 +898,31 @@ const AnalysisWizard: React.FC = () => {
         change_detection_types: ['all'],
       };
 
-      await createAnalysis(analysisRequest).unwrap();
+      const createdAnalysis = await createAnalysis(analysisRequest).unwrap();
       
-      const successMessage = isMultiCluster 
-        ? `Multi-cluster analysis created with ${clusterIds.length} clusters!` 
-        : 'Analysis created successfully!';
-      message.success(successMessage);
+      // For recurring mode, register the schedule with the orchestrator
+      if (finalValues.time_mode === 'recurring' && scheduleExpression && scheduleDurationSeconds) {
+        try {
+          const maxRuns = finalValues.max_scheduled_runs || 0;
+          await scheduleAnalysis({
+            id: createdAnalysis.id,
+            body: {
+              cron_expression: scheduleExpression,
+              duration_seconds: scheduleDurationSeconds,
+              max_runs: maxRuns > 0 ? maxRuns : undefined,
+            }
+          }).unwrap();
+          message.success('Recurring analysis created and scheduled!');
+        } catch (schedErr) {
+          console.error('Schedule registration failed:', schedErr);
+          message.warning('Analysis created but scheduling failed. You can schedule it from the analysis list.');
+        }
+      } else {
+        const successMessage = isMultiCluster 
+          ? `Multi-cluster analysis created with ${clusterIds.length} clusters!` 
+          : 'Analysis created successfully!';
+        message.success(successMessage);
+      }
       navigate('/analyses');
     } catch (error) {
       message.error('Failed to create analysis');
@@ -2005,7 +2045,7 @@ const AnalysisWizard: React.FC = () => {
               >
                 <Radio.Group style={{ width: '100%' }}>
                   <Row gutter={[16, 16]}>
-                    <Col xs={24} sm={8}>
+                    <Col xs={24} sm={6}>
                       <Card 
                         size="small" 
                         hoverable
@@ -2028,7 +2068,7 @@ const AnalysisWizard: React.FC = () => {
                         </Radio>
                       </Card>
                     </Col>
-                    <Col xs={24} sm={8}>
+                    <Col xs={24} sm={6}>
                       <Card 
                         size="small" 
                         hoverable
@@ -2051,7 +2091,7 @@ const AnalysisWizard: React.FC = () => {
                         </Radio>
                       </Card>
                     </Col>
-                    <Col xs={24} sm={8}>
+                    <Col xs={24} sm={6}>
                       <Card 
                         size="small" 
                         hoverable
@@ -2069,6 +2109,29 @@ const AnalysisWizard: React.FC = () => {
                             </Space>
                             <Text type="secondary" style={{ fontSize: 12 }}>
                               Run between specific dates
+                            </Text>
+                          </Space>
+                        </Radio>
+                      </Card>
+                    </Col>
+                    <Col xs={24} sm={6}>
+                      <Card 
+                        size="small" 
+                        hoverable
+                        style={{ 
+                          borderColor: form.getFieldValue('time_mode') === 'recurring' ? '#d48806' : undefined,
+                          backgroundColor: form.getFieldValue('time_mode') === 'recurring' ? '#fffbe6' : undefined
+                        }}
+                        onClick={() => form.setFieldValue('time_mode', 'recurring')}
+                      >
+                        <Radio value="recurring">
+                          <Space direction="vertical" size={0}>
+                            <Space>
+                              <CalendarOutlined style={{ color: '#d48806' }} />
+                              <strong>Recurring</strong>
+                            </Space>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              Cron-based schedule
                             </Text>
                           </Space>
                         </Radio>
@@ -2194,6 +2257,110 @@ const AnalysisWizard: React.FC = () => {
                         showIcon
                         icon={<ClockCircleOutlined />}
                       />
+                    );
+                  }
+                  
+                  if (timeMode === 'recurring') {
+                    return (
+                      <>
+                        <Row gutter={16}>
+                          <Col xs={24} sm={8}>
+                            <Form.Item
+                              name="schedule_type"
+                              label="Schedule"
+                              initialValue="daily"
+                              rules={[{ required: true }]}
+                            >
+                              <Select>
+                                <Option value="daily">Daily</Option>
+                                <Option value="weekly">Weekly (Mon-Fri)</Option>
+                                <Option value="custom">Custom Cron</Option>
+                              </Select>
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} sm={8}>
+                            <Form.Item
+                              name="schedule_hour"
+                              label="Run At (Hour)"
+                              initialValue={2}
+                              rules={[{ required: true }]}
+                            >
+                              <InputNumber min={0} max={23} style={{ width: '100%' }} placeholder="e.g., 2 (02:00)" />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} sm={8}>
+                            <Form.Item
+                              name="schedule_minute"
+                              label="Minute"
+                              initialValue={0}
+                            >
+                              <InputNumber min={0} max={59} style={{ width: '100%' }} placeholder="0" />
+                            </Form.Item>
+                          </Col>
+                        </Row>
+                        <Form.Item
+                          noStyle
+                          shouldUpdate={(prev, curr) => prev.schedule_type !== curr.schedule_type}
+                        >
+                          {({ getFieldValue: getVal }) => 
+                            getVal('schedule_type') === 'custom' ? (
+                              <Form.Item
+                                name="custom_cron"
+                                label="Cron Expression"
+                                rules={[{ required: true, message: 'Enter a valid cron expression' }]}
+                                extra="Format: minute hour day-of-month month day-of-week (e.g., 0 3 * * 1-5)"
+                              >
+                                <Input placeholder="0 3 * * 1-5" />
+                              </Form.Item>
+                            ) : null
+                          }
+                        </Form.Item>
+                        <Row gutter={16}>
+                          <Col xs={24} sm={12}>
+                            <Form.Item
+                              name="recurring_duration_value"
+                              label="Per-Run Duration"
+                              initialValue={2}
+                              rules={[{ required: true, message: 'Set how long each run should last' }]}
+                            >
+                              <InputNumber min={1} max={1440} style={{ width: '100%' }} placeholder="e.g., 2" />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} sm={12}>
+                            <Form.Item
+                              name="recurring_duration_unit"
+                              label="Unit"
+                              initialValue="hours"
+                            >
+                              <Select>
+                                <Option value="minutes">Minutes</Option>
+                                <Option value="hours">Hours</Option>
+                              </Select>
+                            </Form.Item>
+                          </Col>
+                        </Row>
+                        <Form.Item
+                          name="max_scheduled_runs"
+                          label="Max Runs (0 = unlimited)"
+                          initialValue={0}
+                        >
+                          <InputNumber min={0} max={10000} style={{ width: '100%' }} />
+                        </Form.Item>
+                        <Alert
+                          message="Recurring Analysis"
+                          description={
+                            <span>
+                              Analysis will run automatically on the configured schedule. Each run collects data for the specified duration, then auto-stops.
+                              <br /><br />
+                              <strong>Recommended:</strong> Use <em>Rolling Window</em> retention below to keep disk usage bounded.
+                            </span>
+                          }
+                          type="warning"
+                          showIcon
+                          icon={<CalendarOutlined />}
+                          style={{ marginTop: 8 }}
+                        />
+                      </>
                     );
                   }
                   

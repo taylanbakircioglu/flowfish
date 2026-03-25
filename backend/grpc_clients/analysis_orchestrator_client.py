@@ -216,6 +216,82 @@ class AnalysisOrchestratorClient:
                         analysis_id=analysis_id,
                         error=str(e))
             return None
+    
+    async def schedule_analysis(
+        self,
+        analysis_id: int,
+        cron_expression: str,
+        duration_seconds: int,
+        max_runs: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Schedule an analysis for recurring execution via Orchestrator.
+        
+        Returns:
+            Dict with schedule confirmation and next_run_at
+        """
+        try:
+            if not self.stub:
+                self.connect()
+            
+            logger.info("Requesting analysis schedule",
+                       analysis_id=analysis_id,
+                       cron_expression=cron_expression)
+            
+            request = analysis_orchestrator_pb2.ScheduleAnalysisRequest(
+                analysis_id=analysis_id,
+                cron_expression=cron_expression,
+                duration_seconds=duration_seconds,
+                max_runs=max_runs
+            )
+            
+            response = self.stub.ScheduleAnalysis(request, timeout=30)
+            
+            return {
+                "success": response.success,
+                "message": response.message,
+                "next_run_at": response.next_run_at
+            }
+            
+        except grpc.RpcError as e:
+            logger.error("gRPC error scheduling analysis",
+                        analysis_id=analysis_id,
+                        code=e.code(),
+                        details=e.details())
+            raise
+        except Exception as e:
+            logger.error("Failed to schedule analysis",
+                        analysis_id=analysis_id,
+                        error=str(e))
+            raise
+    
+    async def unschedule_analysis(self, analysis_id: int) -> bool:
+        """Remove schedule from an analysis via Orchestrator."""
+        try:
+            if not self.stub:
+                self.connect()
+            
+            logger.info("Requesting analysis unschedule",
+                       analysis_id=analysis_id)
+            
+            request = analysis_orchestrator_pb2.UnscheduleAnalysisRequest(
+                analysis_id=analysis_id
+            )
+            
+            response = self.stub.UnscheduleAnalysis(request, timeout=30)
+            return response.success
+            
+        except grpc.RpcError as e:
+            logger.error("gRPC error unscheduling analysis",
+                        analysis_id=analysis_id,
+                        code=e.code(),
+                        details=e.details())
+            return False
+        except Exception as e:
+            logger.error("Failed to unschedule analysis",
+                        analysis_id=analysis_id,
+                        error=str(e))
+            return False
 
 
 # Global singleton instance

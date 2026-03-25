@@ -75,8 +75,17 @@ class Analysis(BaseModel):
     change_detection_types = Column(JSONB, default=['all'], nullable=False)
     
     # Execution timing - for auto-stop monitoring
-    started_at = Column(DateTime, nullable=True)  # When analysis started running
-    stopped_at = Column(DateTime, nullable=True)  # When analysis stopped
+    started_at = Column(DateTime, nullable=True)
+    stopped_at = Column(DateTime, nullable=True)
+    
+    # Scheduling support
+    is_scheduled = Column(Boolean, default=False)
+    schedule_expression = Column(String(100), nullable=True)
+    schedule_duration_seconds = Column(Integer, nullable=True)
+    next_run_at = Column(DateTime(timezone=True), nullable=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    schedule_run_count = Column(Integer, default=0)
+    max_scheduled_runs = Column(Integer, nullable=True)
     
     # Relationships
     cluster = relationship("Cluster", back_populates="analyses")

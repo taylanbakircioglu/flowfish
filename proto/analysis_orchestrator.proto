@@ -26,6 +26,10 @@ service AnalysisOrchestrator {
   // Worker coordination
   rpc AssignCollectorTask(AssignTaskRequest) returns (TaskAssignment);
   rpc ReportCollectorStatus(CollectorStatusReport) returns (common.Empty);
+  
+  // Scheduling
+  rpc ScheduleAnalysis(ScheduleAnalysisRequest) returns (ScheduleAnalysisResponse);
+  rpc UnscheduleAnalysis(UnscheduleAnalysisRequest) returns (common.StatusResponse);
 }
 
 // Messages
@@ -217,5 +221,23 @@ message CollectorStatusReport {
   int64 bytes_written = 4;
   string error_message = 5;
   common.Timestamp reported_at = 6;
+}
+
+// Scheduling messages
+message ScheduleAnalysisRequest {
+  int32 analysis_id = 1;
+  string cron_expression = 2;
+  int32 duration_seconds = 3;
+  int32 max_runs = 4;  // 0 = unlimited
+}
+
+message ScheduleAnalysisResponse {
+  bool success = 1;
+  string message = 2;
+  string next_run_at = 3;
+}
+
+message UnscheduleAnalysisRequest {
+  int32 analysis_id = 1;
 }
 
