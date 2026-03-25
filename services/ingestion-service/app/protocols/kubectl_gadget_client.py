@@ -4,6 +4,7 @@ Uses subprocess to run kubectl gadget commands
 """
 
 import asyncio
+import fnmatch
 import json
 import subprocess
 import shutil
@@ -528,6 +529,10 @@ class KubectlGadgetClient(AbstractGadgetClient):
                                 if not source_in_target and not dst_in_target:
                                     continue  # Skip this item
                             
+                            # Conservative exclusion filter (both src & dst must be excluded)
+                            if self._should_exclude_event(item, config, pod_ip_cache):
+                                continue
+
                             event_type = self._determine_event_type(item, gadget_name)
                             normalized_data = self._normalize_event(item, gadget_name)
                             
@@ -635,6 +640,21 @@ class KubectlGadgetClient(AbstractGadgetClient):
                                        no_dst_ns=self._filter_stats['no_dst_ns'],
                                        cache_size=len(pod_ip_cache._cache) if pod_ip_cache else 0)
                     
+                    # Conservative exclusion filter (both src & dst must be excluded)
+                    if self._should_exclude_event(event_data, config, pod_ip_cache):
+                        if not hasattr(self, '_exclusion_stats'):
+                            self._exclusion_stats = {'dropped': 0}
+                        self._exclusion_stats['dropped'] += 1
+                        if self._exclusion_stats['dropped'] <= 5:
+                            logger.debug("Event excluded by system pod filter",
+                                        trace_id=trace_id,
+                                        exclude_ns=config.exclude_namespaces,
+                                        exclude_pods=config.exclude_pod_patterns)
+                        if self._exclusion_stats['dropped'] % 1000 == 0:
+                            logger.info("Exclusion filter stats",
+                                       total_dropped=self._exclusion_stats['dropped'])
+                        continue
+
                     # Extract event type from gadget output
                     gadget_name = trace_info["gadget_name"]
                     event_type = self._determine_event_type(event_data, gadget_name)
@@ -720,6 +740,62 @@ class KubectlGadgetClient(AbstractGadgetClient):
             logger.error("Event stream error", trace_id=trace_id, error=str(e))
             raise
     
+    def _matches_exclusion(self, namespace: Optional[str], pod: Optional[str],
+                            exclude_namespaces: List[str], exclude_pod_patterns: List[str]) -> bool:
+        """
+        Check if a namespace/pod matches any exclusion pattern.
+        Returns True if the endpoint should be considered "excluded".
+        A match on EITHER namespace OR pod pattern is sufficient.
+        """
+        if namespace and exclude_namespaces:
+            for pattern in exclude_namespaces:
+                if fnmatch.fnmatch(namespace, pattern):
+                    return True
+        if pod and exclude_pod_patterns:
+            for pattern in exclude_pod_patterns:
+                if fnmatch.fnmatch(pod, pattern):
+                    return True
+        return False
+
+    def _should_exclude_event(self, event_data: dict, config: TraceConfig,
+                               pod_ip_cache: Optional["PodIPCache"] = None) -> bool:
+        """
+        Conservative exclusion: drop event only if BOTH source AND destination
+        match an exclusion pattern. This preserves all app-to-system and
+        system-to-app relationships in the dependency graph.
+        
+        Returns True if the event should be dropped.
+        """
+        exc_ns = config.exclude_namespaces
+        exc_pods = config.exclude_pod_patterns
+        if not exc_ns and not exc_pods:
+            return False
+
+        # --- Source info (always in k8s context) ---
+        if "k8s" in event_data and isinstance(event_data["k8s"], dict):
+            src_ns = event_data["k8s"].get("namespace", "")
+            src_pod = event_data["k8s"].get("podName", event_data["k8s"].get("name", ""))
+        else:
+            src_ns = event_data.get("k8s.namespace", event_data.get("namespace", ""))
+            src_pod = event_data.get("k8s.podName", event_data.get("pod", ""))
+
+        src_excluded = self._matches_exclusion(src_ns, src_pod, exc_ns or [], exc_pods or [])
+        if not src_excluded:
+            return False  # source is NOT excluded → keep event regardless of dst
+
+        # --- Destination info (resolve from IP via pod_ip_cache) ---
+        dst_ip = self._extract_dst_ip(event_data)
+        dst_ns = None
+        dst_pod = None
+        if dst_ip and pod_ip_cache:
+            dst_info = pod_ip_cache.lookup(dst_ip)
+            if dst_info:
+                dst_ns = dst_info.namespace
+                dst_pod = dst_info.name
+
+        dst_excluded = self._matches_exclusion(dst_ns, dst_pod, exc_ns or [], exc_pods or [])
+        return dst_excluded  # drop only if BOTH are excluded
+
     def _extract_dst_ip(self, event_data: dict) -> Optional[str]:
         """
         Extract destination IP from event data.

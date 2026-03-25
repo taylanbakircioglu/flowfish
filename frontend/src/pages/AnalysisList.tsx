@@ -1146,6 +1146,24 @@ const AnalysisList: React.FC = () => {
                     </Space>
                   </Descriptions.Item>
                 )}
+                {selectedAnalysis.scope_config?.exclude_namespaces && (selectedAnalysis.scope_config.exclude_namespaces as string[]).length > 0 && (
+                  <Descriptions.Item label="Excluded Namespaces">
+                    <Space wrap>
+                      {(selectedAnalysis.scope_config.exclude_namespaces as string[]).map((ns: string) => (
+                        <Tag key={ns} color="red">{ns}</Tag>
+                      ))}
+                    </Space>
+                  </Descriptions.Item>
+                )}
+                {selectedAnalysis.scope_config?.exclude_pod_patterns && (selectedAnalysis.scope_config.exclude_pod_patterns as string[]).length > 0 && (
+                  <Descriptions.Item label="Excluded Pods">
+                    <Space wrap>
+                      {(selectedAnalysis.scope_config.exclude_pod_patterns as string[]).map((p: string) => (
+                        <Tag key={p} color="red">{p}</Tag>
+                      ))}
+                    </Space>
+                  </Descriptions.Item>
+                )}
               </Descriptions>
             </Card>
             

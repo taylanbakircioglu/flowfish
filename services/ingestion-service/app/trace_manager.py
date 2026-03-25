@@ -509,7 +509,9 @@ class TraceManager:
                     namespace=scope_namespaces[0] if len(scope_namespaces) == 1 else None,
                     namespaces=scope_namespaces if len(scope_namespaces) > 1 else None,
                     pod_name=request.scope.pods[0] if request.scope.pods else None,
-                    labels=dict(request.scope.labels) if request.scope.labels else None
+                    labels=dict(request.scope.labels) if request.scope.labels else None,
+                    exclude_namespaces=list(request.scope.exclude_namespaces) if request.scope.exclude_namespaces else None,
+                    exclude_pod_patterns=list(request.scope.exclude_pod_patterns) if request.scope.exclude_pod_patterns else None
                 )
                 
                 trace_id = await client.start_trace(trace_config)
@@ -952,11 +954,16 @@ class TraceManager:
     
     def _scope_to_dict(self, scope) -> dict:
         """Convert proto scope to dict"""
-        return {
+        result = {
             "scope_type": scope.scope_type,
             "namespaces": list(scope.namespaces),
             "deployments": list(scope.deployments),
             "pods": list(scope.pods),
             "labels": dict(scope.labels) if scope.labels else {}
         }
+        if scope.exclude_namespaces:
+            result["exclude_namespaces"] = list(scope.exclude_namespaces)
+        if scope.exclude_pod_patterns:
+            result["exclude_pod_patterns"] = list(scope.exclude_pod_patterns)
+        return result
 

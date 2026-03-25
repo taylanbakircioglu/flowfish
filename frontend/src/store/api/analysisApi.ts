@@ -11,6 +11,8 @@ interface ScopeConfig {
   pods?: string[];
   labels?: Record<string, string>;
   per_cluster_scope?: Record<string, any>;  // Per-cluster scope configuration
+  exclude_namespaces?: string[];
+  exclude_pod_patterns?: string[];
 }
 
 interface GadgetConfig {

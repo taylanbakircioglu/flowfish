@@ -41,6 +41,8 @@ class TraceConfig:
     pod_name: Optional[str] = None
     labels: Optional[Dict[str, str]] = None
     filters: Optional[Dict[str, Any]] = None
+    exclude_namespaces: Optional[List[str]] = None
+    exclude_pod_patterns: Optional[List[str]] = None
 
 
 @dataclass

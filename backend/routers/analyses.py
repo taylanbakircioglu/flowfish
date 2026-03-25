@@ -103,6 +103,11 @@ class ScopeConfig(BaseModel):
     # Format: { "cluster_id": { "namespaces": [...], "deployments": [...] } }
     per_cluster_scope: Optional[dict] = Field(None, description="Per-cluster scope configuration")
     
+    # Exclusion filters (opt-in, empty = no exclusion)
+    # Uses fnmatch glob patterns: openshift-* matches openshift-monitoring, openshift-ingress, etc.
+    exclude_namespaces: Optional[List[str]] = Field(None, description="Namespace patterns to exclude (e.g. 'openshift-*', 'kube-system')")
+    exclude_pod_patterns: Optional[List[str]] = Field(None, description="Pod name patterns to exclude (e.g. 'calico-node-*')")
+    
     @staticmethod
     def _strip_cluster_suffix(values: Optional[List[str]]) -> Optional[List[str]]:
         """Strip @clusterId suffix from values (e.g., 'namespace@4' -> 'namespace')"""

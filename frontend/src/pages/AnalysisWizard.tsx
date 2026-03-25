@@ -131,6 +131,43 @@ interface ClusterWithResources {
   isLoading: boolean;
 }
 
+// Default system noise exclusion patterns (OpenShift + Kubernetes infra)
+const DEFAULT_EXCLUDE_NAMESPACES = [
+  'openshift-*',
+  'kube-system',
+  'kube-public',
+  'kube-node-lease',
+];
+const DEFAULT_EXCLUDE_POD_PATTERNS = [
+  'calico-node-*',
+  'kube-proxy-*',
+  'node-exporter-*',
+];
+
+// Preset groups for quick selection
+const EXCLUSION_PRESETS: { label: string; namespaces: string[]; pods: string[] }[] = [
+  {
+    label: 'OpenShift System',
+    namespaces: ['openshift-*'],
+    pods: [],
+  },
+  {
+    label: 'Kubernetes Infra',
+    namespaces: ['kube-system', 'kube-public', 'kube-node-lease'],
+    pods: ['kube-proxy-*'],
+  },
+  {
+    label: 'Network Plugins',
+    namespaces: ['calico-system', 'tigera-operator'],
+    pods: ['calico-node-*'],
+  },
+  {
+    label: 'Monitoring',
+    namespaces: ['monitoring', 'openshift-monitoring'],
+    pods: ['node-exporter-*', 'prometheus-*'],
+  },
+];
+
 const AnalysisWizard: React.FC = () => {
   const navigate = useNavigate();
   const [form] = Form.useForm();
@@ -139,6 +176,11 @@ const AnalysisWizard: React.FC = () => {
   const [isMultiCluster, setIsMultiCluster] = useState(false);
   const [perClusterScope, setPerClusterScope] = useState<Record<number, PerClusterScope>>({});
   const [scopeMode, setScopeMode] = useState<'unified' | 'per-cluster'>('unified');
+  
+  // System noise exclusion (default ON)
+  const [excludeEnabled, setExcludeEnabled] = useState(true);
+  const [excludeNamespaces, setExcludeNamespaces] = useState<string[]>([...DEFAULT_EXCLUDE_NAMESPACES]);
+  const [excludePodPatterns, setExcludePodPatterns] = useState<string[]>([...DEFAULT_EXCLUDE_POD_PATTERNS]);
   
   // ============================================
   // Global Settings for Continuous Mode Auto-Stop
@@ -868,6 +910,8 @@ const AnalysisWizard: React.FC = () => {
           pods: finalValues.scope_type === 'pod' ? finalPods : undefined,
           labels: finalValues.scope_type === 'label' ? finalValues.labels : undefined,
           per_cluster_scope: perClusterScopeConfig,
+          exclude_namespaces: excludeEnabled && excludeNamespaces.length > 0 ? excludeNamespaces : undefined,
+          exclude_pod_patterns: excludeEnabled && excludePodPatterns.length > 0 ? excludePodPatterns : undefined,
         },
         gadgets: {
           enabled_gadgets: finalValues.enabled_gadgets || [],
@@ -1946,6 +1990,129 @@ const AnalysisWizard: React.FC = () => {
                   return null;
                 }}
               </Form.Item>
+            </div>
+
+            {/* System Noise Exclusion Filter */}
+            <div>
+              <Title level={4}>
+                <Space>
+                  <StopOutlined />
+                  System Noise Filter
+                </Space>
+              </Title>
+              <Alert
+                message="Reduces noise from system/infrastructure pods"
+                description="Only events where BOTH source and destination match exclusion patterns are filtered. Traffic between your application and system components (ingress, DNS, monitoring) is always preserved."
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+              <div style={{ marginBottom: 16 }}>
+                <Space align="center">
+                  <Switch
+                    checked={excludeEnabled}
+                    onChange={(checked) => setExcludeEnabled(checked)}
+                    checkedChildren="Enabled"
+                    unCheckedChildren="Disabled"
+                  />
+                  <Text strong>Filter system noise</Text>
+                  {excludeEnabled && (
+                    <Text type="secondary">
+                      ({excludeNamespaces.length} namespace patterns, {excludePodPatterns.length} pod patterns)
+                    </Text>
+                  )}
+                </Space>
+              </div>
+
+              {excludeEnabled && (
+                <>
+                  <div style={{ marginBottom: 12 }}>
+                    <Text strong style={{ display: 'block', marginBottom: 8 }}>Quick Presets:</Text>
+                    <Space wrap>
+                      {EXCLUSION_PRESETS.map((preset) => {
+                        const allNsIncluded = preset.namespaces.every(ns => excludeNamespaces.includes(ns));
+                        const allPodsIncluded = preset.pods.every(p => excludePodPatterns.includes(p));
+                        const isActive = allNsIncluded && allPodsIncluded && (preset.namespaces.length > 0 || preset.pods.length > 0);
+                        return (
+                          <Tag
+                            key={preset.label}
+                            color={isActive ? 'blue' : undefined}
+                            style={{ cursor: 'pointer', userSelect: 'none' }}
+                            onClick={() => {
+                              if (isActive) {
+                                setExcludeNamespaces(prev => prev.filter(ns => !preset.namespaces.includes(ns)));
+                                setExcludePodPatterns(prev => prev.filter(p => !preset.pods.includes(p)));
+                              } else {
+                                setExcludeNamespaces(prev => Array.from(new Set([...prev, ...preset.namespaces])));
+                                setExcludePodPatterns(prev => Array.from(new Set([...prev, ...preset.pods])));
+                              }
+                            }}
+                          >
+                            {isActive ? <CheckCircleOutlined /> : null} {preset.label}
+                          </Tag>
+                        );
+                      })}
+                    </Space>
+                  </div>
+
+                  <Row gutter={16}>
+                    <Col span={12}>
+                      <Text strong style={{ display: 'block', marginBottom: 8 }}>Excluded Namespace Patterns</Text>
+                      <Select
+                        mode="tags"
+                        style={{ width: '100%' }}
+                        placeholder="e.g. openshift-*, kube-system"
+                        value={excludeNamespaces}
+                        onChange={(values) => setExcludeNamespaces(values)}
+                        tokenSeparators={[',']}
+                        maxTagCount={10}
+                      />
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        Supports glob patterns: openshift-* matches openshift-monitoring, openshift-ingress, etc.
+                      </Text>
+                    </Col>
+                    <Col span={12}>
+                      <Text strong style={{ display: 'block', marginBottom: 8 }}>Excluded Pod Patterns</Text>
+                      <Select
+                        mode="tags"
+                        style={{ width: '100%' }}
+                        placeholder="e.g. calico-node-*, kube-proxy-*"
+                        value={excludePodPatterns}
+                        onChange={(values) => setExcludePodPatterns(values)}
+                        tokenSeparators={[',']}
+                        maxTagCount={10}
+                      />
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        Supports glob patterns: calico-node-* matches calico-node-abc123, etc.
+                      </Text>
+                    </Col>
+                  </Row>
+
+                  <div style={{ marginTop: 12 }}>
+                    <Space>
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          setExcludeNamespaces([...DEFAULT_EXCLUDE_NAMESPACES]);
+                          setExcludePodPatterns([...DEFAULT_EXCLUDE_POD_PATTERNS]);
+                        }}
+                      >
+                        Reset to Defaults
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        onClick={() => {
+                          setExcludeNamespaces([]);
+                          setExcludePodPatterns([]);
+                        }}
+                      >
+                        Clear All
+                      </Button>
+                    </Space>
+                  </div>
+                </>
+              )}
             </div>
           </Space>
         );

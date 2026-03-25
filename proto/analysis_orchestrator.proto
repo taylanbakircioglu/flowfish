@@ -67,6 +67,8 @@ message ScopeConfig {
   repeated string statefulsets = 4;
   repeated string pods = 5;
   map<string, string> labels = 6;
+  repeated string exclude_namespaces = 7;
+  repeated string exclude_pod_patterns = 8;
 }
 
 message TimeConfig {
