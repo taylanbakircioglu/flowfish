@@ -1,39 +1,39 @@
-# Flowfish - Detaylı Özellik Listesi
+# Flowfish - Detailed Feature List
 
-Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı olarak açıklar.
+This document describes all Flowfish platform features in detail, organized by phase.
 
-## 📋 İçindekiler
+## 📋 Table of Contents
 
-- [Faz 1: MVP (Minimum Viable Product)](#faz-1-mvp-minimum-viable-product)
-- [Faz 2: Advanced Features](#faz-2-advanced-features)
-- [Faz 3: Enterprise Features](#faz-3-enterprise-features)
+- [Phase 1: MVP (Minimum Viable Product)](#phase-1-mvp-minimum-viable-product)
+- [Phase 2: Advanced Features](#phase-2-advanced-features)
+- [Phase 3: Enterprise Features](#phase-3-enterprise-features)
 
 ---
 
-## Faz 1: MVP (Minimum Viable Product)
+## Phase 1: MVP (Minimum Viable Product)
 
-**Hedef Süre**: 0-3 ay  
-**Durum**: Tasarım Aşaması  
-**Amaç**: Temel platform altyapısı ve core özelliklerin tamamlanması
+**Target Timeline**: 0-3 months  
+**Status**: Design Phase  
+**Goal**: Complete core platform infrastructure and core features
 
-### 1.1. Inspektor Gadget Entegrasyonu ve Veri Toplama
+### 1.1. Inspektor Gadget Integration and Data Collection
 
-#### 1.1.1. Inspektor Gadget Kurulumu
-- ✅ DaemonSet olarak Kubernetes/OpenShift cluster'a deployment
-- ✅ Her node'da eBPF programlarının otomatik yüklenmesi
-- ✅ Kernel compatibility kontrolü ve version yönetimi
-- ✅ Resource limits ve requests tanımlaması
-- ✅ Health check ve liveness probe'ları
+#### 1.1.1. Inspektor Gadget Installation
+- ✅ Deployed to Kubernetes/OpenShift cluster as a DaemonSet
+- ✅ Automatic loading of eBPF programs on each node
+- ✅ Kernel compatibility checks and version management
+- ✅ Resource limits and requests definition
+- ✅ Health checks and liveness probes
 
-#### 1.1.2. Gadget Modülleri
+#### 1.1.2. Gadget Modules
 **Network Traffic Gadget:**
 - TCP/UDP connection tracking
-- Source/destination IP ve port bilgileri
-- Packet count ve byte transfer metrikleri
+- Source/destination IP and port information
+- Packet count and byte transfer metrics
 - Connection duration tracking
 
 **DNS Gadget:**
-- DNS query ve response logging
+- DNS query and response logging
 - Query type (A, AAAA, CNAME, etc.)
 - Response code tracking
 - Latency measurement
@@ -45,51 +45,51 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Window size monitoring
 
 **Process Events Gadget:**
-- Process creation ve termination
+- Process creation and termination
 - Process tree (parent-child relationship)
-- Binary path ve arguments
-- User ve group bilgileri
+- Binary path and arguments
+- User and group information
 
 **Syscall Tracking Gadget:**
-- Network-related syscall'lar (socket, connect, bind, listen)
-- File-related syscall'lar (open, read, write)
-- Syscall frequency ve latency
+- Network-related syscalls (socket, connect, bind, listen)
+- File-related syscalls (open, read, write)
+- Syscall frequency and latency
 - Error rate tracking
 
 **File Access Gadget:**
 - File open/read/write events
-- File path ve permissions
+- File path and permissions
 - Access patterns
 - Security-sensitive file monitoring
 
-#### 1.1.3. Veri Toplama Kontrolü
-- ✅ Varsayılan durumda hiçbir veri toplama (privacy-first)
-- ✅ Sadece kullanıcı analiz başlattığında aktif olma
-- ✅ Scope-based collection (cluster, namespace, workload seçimi)
-- ✅ Start/stop analiz kontrolü
-- ✅ Resource usage monitoring ve throttling
+#### 1.1.3. Data Collection Control
+- ✅ No data collection by default (privacy-first)
+- ✅ Active only when the user starts an analysis
+- ✅ Scope-based collection (cluster, namespace, workload selection)
+- ✅ Start/stop analysis control
+- ✅ Resource usage monitoring and throttling
 
-### 1.2. Kubernetes Kaynak Keşfi ve İletişim Tespiti
+### 1.2. Kubernetes Resource Discovery and Communication Detection
 
 #### 1.2.1. Workload Discovery
 **Pod Discovery:**
 - Pod name, namespace, labels, annotations
-- Container list ve image bilgileri
-- Node placement bilgisi
+- Container list and image information
+- Node placement information
 - Owner reference (Deployment, StatefulSet, etc.)
-- Pod IP ve port bindings
-- Resource requests ve limits
+- Pod IP and port bindings
+- Resource requests and limits
 
 **Deployment Discovery:**
 - Deployment name, namespace, labels
 - Replica count (desired vs actual)
 - Selector labels
 - Strategy (RollingUpdate, Recreate)
-- Deployment conditions ve status
+- Deployment conditions and status
 
 **StatefulSet Discovery:**
 - StatefulSet name, namespace, labels
-- Replica count ve pod naming pattern
+- Replica count and pod naming pattern
 - Persistent Volume Claims
 - Service name association
 - Update strategy
@@ -97,7 +97,7 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 **Service Discovery:**
 - Service name, namespace, labels
 - Service type (ClusterIP, NodePort, LoadBalancer)
-- Cluster IP ve external IP
+- Cluster IP and external IP
 - Port mappings (port, targetPort, protocol)
 - Selector labels
 - Endpoint addresses
@@ -110,21 +110,21 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Protocol (TCP, UDP, HTTP, HTTPS, gRPC, etc.)
 - First seen timestamp
 - Last seen timestamp
-- Request count ve frequency (requests/second)
+- Request count and frequency (requests/second)
 - Average payload size (bytes)
 - Average latency (milliseconds) - optional
 - Namespace crossing detection
 - Cluster crossing detection (multi-cluster)
 
 **Metadata Enrichment:**
-- Kubernetes labels ve annotations
+- Kubernetes labels and annotations
 - Service mesh labels (Istio, Linkerd)
 - Custom tags
 - Application tier (frontend, backend, database)
 - Environment (production, staging, development)
 
 #### 1.2.3. Risk & Importance Scoring
-**Risk Faktörleri:**
+**Risk Factors:**
 - Cross-namespace communication (medium risk)
 - External egress traffic (high risk)
 - Unknown destination IP (high risk)
@@ -132,19 +132,23 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Unexpected protocol usage
 - High request frequency
 
-**Risk Seviyeleri:**
+**Risk Levels:**
 - 🟢 Low (0-30): Normal internal communication
 - 🟡 Medium (31-60): Cross-namespace, elevated ports
 - 🔴 High (61-100): External, unknown, privileged
 
-**Importance Faktörleri:**
+**Importance Factors:**
 - Request frequency
 - Number of dependent services
 - Critical service labels
 - Production environment
 - SLA tier
 
-### 1.3. Gerçek Zamanlı Bağımlılık Haritası
+#### 1.2.4. Pod & Deployment Annotations
+- Full annotation support, including automatic merge of Deployment/StatefulSet annotations into pods
+- Annotation filtering for internal Kubernetes prefixes
+
+### 1.3. Real-Time Dependency Map
 
 #### 1.3.1. Graph Data Model
 **Vertex (Node) Types:**
@@ -176,9 +180,9 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Error rate
 - Risk score
 
-#### 1.3.2. Graph Görselleştirme
-**Cytoscape.js Entegrasyonu:**
-- Node rendering (farklı şekiller: pod=circle, deployment=square, service=diamond)
+#### 1.3.2. Graph Visualization
+**Cytoscape.js Integration:**
+- Node rendering (different shapes: pod=circle, deployment=square, service=diamond)
 - Node coloring (namespace-based, status-based, risk-based)
 - Edge rendering (thickness by request count, color by protocol)
 - Edge animation (live traffic flow)
@@ -189,14 +193,14 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
   - Grid
   - Manual positioning
 
-**Interaktivity:**
+**Interactivity:**
 - Node click → Detail panel
 - Node hover → Quick info tooltip
 - Edge click → Communication details
 - Multi-select (Ctrl+Click)
-- Zoom ve pan
+- Zoom and pan
 - Minimap navigator
-- Search ve filtering
+- Search and filtering
 
 **Export:**
 - PNG/JPG image export
@@ -204,13 +208,13 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - JSON export
 - PDF export
 
-### 1.4. Cluster ve Namespace Yönetimi
+### 1.4. Cluster and Namespace Management
 
 #### 1.4.1. Multi-Cluster Support
 **Cluster Management:**
-- Cluster ekleme (Kubernetes, OpenShift)
+- Add cluster (Kubernetes, OpenShift)
 - Connection types:
-  - In-cluster (platform kendisi cluster içinde)
+  - In-cluster (platform runs inside the cluster itself)
   - Kubeconfig file
   - Service Account token
   - API server URL + credentials
@@ -225,30 +229,30 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 **Cluster Selector:**
 - Top navigation bar dropdown
 - Quick cluster switching
-- Default cluster ayarlama
+- Default cluster configuration
 - Cluster-specific dashboards
 
 #### 1.4.2. Namespace Management
-- Namespace list ve filtering
-- Namespace metadata görüntüleme
+- Namespace list and filtering
+- Namespace metadata display
 - Namespace-based access control
 - Namespace label management
 - Cross-namespace communication tracking
 
-### 1.5. Analiz Wizard'ı
+### 1.5. Analysis Wizard
 
-#### Adım 1: Scope (Kapsam) Seçimi
-**Seçilebilir Seviyeler:**
+#### Step 1: Scope Selection
+**Selectable Levels:**
 
 **Cluster-level:**
-- Tüm namespace'leri kapsama
+- Cover all namespaces
 - Cluster-wide visibility
-- Use case: Tüm platform analizi
+- Use case: Full platform analysis
 
 **Namespace-level:**
-- Belirli namespace(ler) seçimi
+- Select specific namespace(s)
 - Multiple namespace selection
-- Use case: Application-specific analiz
+- Use case: Application-specific analysis
 
 **Workload-level:**
 - Specific Deployment(s)
@@ -262,12 +266,12 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Exclude labels
 - Use case: Complex filtering
 
-**Hiyerarşik Seçim:**
-- Namespace seçildiğinde → altındaki tüm workload'lar otomatik dahil
-- Deployment seçildiğinde → replica pod'ları otomatik dahil
+**Hierarchical Selection:**
+- When a namespace is selected → all workloads under it are included automatically
+- When a Deployment is selected → replica pods are included automatically
 
-#### Adım 2: Gadget Modülleri Seçimi
-**Modül Listesi:**
+#### Step 2: Gadget Module Selection
+**Module List:**
 - ☑️ Network Traffic (TCP/UDP connections)
 - ☑️ DNS Queries
 - ☑️ TCP Connection State
@@ -275,59 +279,59 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - ☑️ Syscall Tracking
 - ☑️ File Access
 
-**Her Modül için:**
+**Per Module:**
 - Enable/Disable toggle
 - Configuration options:
   - Sampling rate (1/1, 1/10, 1/100)
   - Filter rules (port ranges, protocols)
   - Data retention period
-- Estimated resource usage gösterimi
+- Estimated resource usage display
 - Recommended presets (Light, Medium, Heavy)
 
-#### Adım 3: Zaman & Profil Ayarları
-**Analiz Modları:**
+#### Step 3: Time & Profile Settings
+**Analysis Modes:**
 
-**Continuous Analysis (Sürekli):**
-- Başlatıldıktan sonra sürekli çalışır
+**Continuous Analysis:**
+- Runs continuously after start
 - Real-time data collection
-- Stop butonu ile durdurulur
+- Stopped with Stop button
 - Use case: Production monitoring
 
-**Time-bound Analysis (Zaman Sınırlı):**
-- Start time, end time seçimi
+**Time-bound Analysis:**
+- Start time, end time selection
 - Duration: 5 min, 15 min, 1 hour, 4 hours, 24 hours
 - Automatic stop
 - Use case: Troubleshooting, incident analysis
 
-**Scheduled Analysis (Periyodik):**
-- Cron expression ile zamanlama
+**Scheduled Analysis (Periodic):**
+- Scheduling via cron expression
 - Daily, weekly, monthly presets
 - Timezone selection
 - Use case: Regular audits, compliance
 
-**Baseline Creation Mode (Profil Oluşturma):**
-- Belirli süre boyunca "normal" trafik profilini öğrenme
+**Baseline Creation Mode (Profile Creation):**
+- Learn “normal” traffic profile over a defined period
 - Minimum duration: 24 hours
 - Recommended: 7 days
 - Use case: Anomaly detection baseline
 
-**Profil Ayarları:**
-- Existing baseline seçimi
-- Baseline oluşturma
-- Baseline update etme
+**Profile Settings:**
+- Select existing baseline
+- Create baseline
+- Update baseline
 - Compare with baseline
 
-#### Adım 4: Çıktı & Entegrasyon
-**Dashboard Seçimi:**
-- ☑️ Ana Dashboard
+#### Step 4: Output & Integration
+**Dashboard Selection:**
+- ☑️ Main Dashboard
 - ☑️ Application Dependency Dashboard
 - ☑️ Traffic & Behavior Dashboard
 - ☑️ Security & Risk Dashboard
 - ☑️ Change Timeline Dashboard
 
-**LLM Analizi:**
+**LLM Analysis:**
 - ☑️ Enable LLM anomaly detection
-- LLM provider seçimi:
+- LLM provider selection:
   - OpenAI GPT-4
   - Azure OpenAI
   - Anthropic Claude
@@ -347,23 +351,23 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
   - Traffic spike (% increase)
 - Alert format (JSON, Slack, Teams, PagerDuty)
 
-**Rapor Ayarları:**
+**Report Settings:**
 - ☑️ Auto-generate reports
 - Report format (PDF, HTML, JSON)
 - Report frequency (daily, weekly, monthly)
 - Email recipients
 - Storage location (S3, Azure Blob, local)
 
-### 1.6. Temel Dashboard'lar
+### 1.6. Core Dashboards
 
-#### 1.6.1. Ana Dashboard (Home/Overview)
-**Metriler:**
-- Toplam uygulama sayısı (pods, deployments, services)
-- Toplam bağlantı sayısı (aktif vs geçmiş)
-- Aktif anomali sayısı
-- Aktif change event sayısı
-- En çok haberleşen servisler (top 10)
-- Risk skoru en yüksek uygulamalar (top 10)
+#### 1.6.1. Main Dashboard (Home/Overview)
+**Metrics:**
+- Total application count (pods, deployments, services)
+- Total connection count (active vs historical)
+- Active anomaly count
+- Active change event count
+- Most communicating services (top 10)
+- Highest risk score applications (top 10)
 - Cluster health overview
 - Namespace distribution pie chart
 
@@ -376,15 +380,15 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Recent alerts timeline
 
 #### 1.6.2. Live Map Dashboard
-**Ana Görünüm:**
+**Main View:**
 - Interactive graph visualization
 - Real-time updates (5-second refresh)
 - Smooth animations
 - Node clustering by namespace
 - Edge bundling for clarity
 
-**Kontroller:**
-- Layout seçimi (dropdown)
+**Controls:**
+- Layout selection (dropdown)
 - Filter panel (slide-out)
 - Search box
 - Zoom controls (+/-)
@@ -407,14 +411,14 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Incoming connections list
 - Outgoing connections list
 - Resource usage charts
-- Labels ve annotations
+- Labels and annotations
 - Logs link (integration with logging system)
 - Metrics link (integration with Prometheus/Grafana)
 
-### 1.7. Kullanıcı Yönetimi ve RBAC
+### 1.7. User Management and RBAC
 
 #### 1.7.1. User Management
-**Kullanıcı CRUD:**
+**User CRUD:**
 - Create user (username, email, password)
 - Update user profile
 - Delete user (soft delete)
@@ -470,7 +474,7 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 **Custom Roles:**
 - Create custom roles
 - Permission matrix selection
-- Role naming ve description
+- Role naming and description
 - Role assignment
 
 #### 1.7.3. Permissions
@@ -486,10 +490,10 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - `settings.view`, `settings.edit`
 - `audit.view`
 
-### 1.8. Kimlik Doğrulama
+### 1.8. Authentication
 
 #### 1.8.1. OAuth 2.0 / SSO
-**Desteklenen Provider'lar:**
+**Supported Providers:**
 - Google OAuth
 - Microsoft Azure AD / Entra ID
 - Okta
@@ -499,7 +503,7 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - GitLab
 
 **Configuration:**
-- Client ID ve Client Secret
+- Client ID and Client Secret
 - Authorization endpoint
 - Token endpoint
 - User info endpoint
@@ -537,7 +541,10 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Token blacklist (Redis)
 - Session management
 
-### 1.9. Temel API Endpoints
+#### 1.8.4. API Key Management
+- API key creation, expiration, and revocation for programmatic access alongside JWT authentication
+
+### 1.9. Core API Endpoints
 
 **Authentication:**
 - `POST /api/v1/auth/login`
@@ -581,14 +588,13 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - `GET /api/v1/dependencies/map`
 
 ---
+## Phase 2: Advanced Features
 
-## Faz 2: Advanced Features
+**Target Timeline**: 4-6 months  
+**Status**: Planning Phase  
+**Goal**: Advanced analysis and integration features
 
-**Hedef Süre**: 4-6 ay  
-**Durum**: Planlama Aşaması  
-**Amaç**: Gelişmiş analiz ve entegrasyon özellikleri
-
-### 2.1. Geçmişe Dönük Bağımlılık Haritası ve Zaman Çizgisi
+### 2.1. Historical Dependency Map and Timeline
 
 #### 2.1.1. Historical Map
 **Time Travel Capability:**
@@ -684,7 +690,7 @@ Bu dokümant, Flowfish platformunun tüm özelliklerini fazlara göre detaylı o
 - Mark as reviewed
 - Add comments
 
-### 2.3. Anomaly Detection (LLM Entegrasyonu)
+### 2.3. Anomaly Detection (LLM Integration)
 
 #### 2.3.1. LLM Configuration
 **Supported LLM Providers:**
@@ -784,7 +790,7 @@ security concerns, or unexpected behaviors. For each anomaly, provide:
 - Link to incident ticket
 
 **Anomaly Details:**
-- Anomaly score ve severity
+- Anomaly score and severity
 - AI-generated description
 - Affected workloads (graph visualization)
 - Related connections
@@ -858,8 +864,8 @@ cluster-prod,frontend,web-app,deployment,cluster-prod,backend,api-service,servic
 
 **Properties:**
 - Neo4j-compatible format
-- Nodes ve edges tam bilgilerle
-- Metadata ve metrikler
+- Full node and edge details
+- Metadata and metrics
 - Versioned format
 - Re-importable
 
@@ -907,7 +913,7 @@ cluster-prod,frontend,web-app,deployment,cluster-prod,backend,api-service,servic
   - Overwrite (replace existing)
   - Create new snapshot
 - Progress indicator
-- Error handling ve rollback
+- Error handling and rollback
 
 **Batch Import:**
 - Upload multiple files
@@ -936,7 +942,7 @@ cluster-prod,frontend,web-app,deployment,cluster-prod,backend,api-service,servic
   - Weekly snapshots (keep 12 weeks)
   - Monthly snapshots (keep 12 months)
 - Manual snapshot creation
-- Snapshot naming ve tagging
+- Snapshot naming and tagging
 - Snapshot metadata:
   - Creation time
   - Cluster state
@@ -952,7 +958,7 @@ cluster-prod,frontend,web-app,deployment,cluster-prod,backend,api-service,servic
 - Version diff tool
 - Version rollback
 
-### 2.5. Risk Skorları
+### 2.5. Risk Scores
 
 #### 2.5.1. Risk Scoring Model
 **Risk Factors (Weighted):**
@@ -1018,7 +1024,7 @@ Range: 0-100
 - TLS enforcement recommendations
 - Firewall rules
 
-### 2.6. Baseline Oluşturma
+### 2.6. Baseline Creation
 
 #### 2.6.1. Baseline Creation
 **Learning Period:**
@@ -1081,7 +1087,7 @@ Range: 0-100
 - Deviation timeline
 - Drill-down to specific deviations
 
-### 2.7. Advanced Filtreleme ve Katmanlı Görünüm
+### 2.7. Advanced Filtering and Layered View
 
 #### 2.7.1. Advanced Filters
 **Multi-dimensional Filtering:**
@@ -1148,13 +1154,13 @@ Range: 0-100
 - Show cross-zone/region traffic
 - Show latency by distance
 
-### 2.8. Multi-Cluster / Multi-Domain Destek
+### 2.8. Multi-Cluster / Multi-Domain Support
 
 #### 2.8.1. Domain Management
 **Domain Definition:**
 - Domain name (e.g., "Production US-East", "Staging EU")
 - Cluster list (multiple clusters per domain)
-- Description ve metadata
+- Description and metadata
 - Domain tags
 
 **Domain Types:**
@@ -1188,7 +1194,7 @@ Range: 0-100
 - Cross-cluster traffic summary
 - Domain-level risk scores
 
-### 2.9. Webhook ve SIEM Entegrasyonu
+### 2.9. Webhook and SIEM Integration
 
 #### 2.9.1. Webhook Configuration
 **Webhook Events:**
@@ -1249,15 +1255,19 @@ Range: 0-100
 - Security events
 - Audit events
 
+### 2.10. AI Integration Hub
+- Guided wizard page for setting up AI agent and CI/CD pipeline integrations with dependency data
+- Support for Azure DevOps, GitHub Actions, Jenkins, and GitLab CI
+- Python and JavaScript snippet generation
+
 ---
+## Phase 3: Enterprise Features
 
-## Faz 3: Enterprise Features
+**Target Timeline**: 7-9 months  
+**Status**: Conceptual Phase  
+**Goal**: Enterprise-ready features and advanced AI/ML capabilities
 
-**Hedef Süre**: 7-9 ay  
-**Durum**: Kavramsal Aşama  
-**Amaç**: Enterprise-ready özellikler ve AI/ML gelişmiş yetenekler
-
-### 3.1. Politika Simülasyonu (What-If Analysis)
+### 3.1. Policy Simulation (What-If Analysis)
 
 #### 3.1.1. Network Policy Simulation
 **Simulation Wizard:**
@@ -1297,12 +1307,12 @@ Range: 0-100
 - Cascading failures prediction
 - Alternative routing suggestions
 
-### 3.2. Change Simulation (CAP Entegrasyonu)
+### 3.2. Change Simulation (CAP Integration)
 
 #### 3.2.1. Change Impact Assessment
-**Change Simulation için kurumsal süreç entegrasyonu**
+**Enterprise process integration for change simulation**
 
-**Desteklenen Değişiklik Türleri:**
+**Supported Change Types:**
 - **Application Changes:**
   - Container image update (version change)
   - Environment variable changes
@@ -1375,7 +1385,7 @@ Range: 0-100
 
 #### 3.2.2. Change Advisory Process (CAP) Workflow
 
-**CAP Entegrasyonu:**
+**CAP Integration:**
 
 **Change Request Creation:**
 ```yaml
@@ -1535,10 +1545,10 @@ Change Request:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.2.4. Integration ile CAP Tools
+#### 3.2.4. Integration with CAP Tools
 
 **ServiceNow Integration:**
-- Otomatik Change Request oluşturma
+- Automatic Change Request creation
 - Impact assessment attachment
 - Approval workflow synchronization
 - Status updates (approved/rejected/completed)
@@ -1620,9 +1630,9 @@ Change Request:
 
 #### 3.2.1. Multi-Source Data Ingestion
 
-**Genişletilmiş Veri Kaynakları:**
+**Extended Data Sources:**
 
-Flowfish, eBPF'nin ötesinde birçok kaynaktan veri toplayarak tam görünürlük sağlar:
+Beyond eBPF, Flowfish collects data from many sources for full visibility:
 
 **Infrastructure Data Sources:**
 - ✅ **eBPF (Inspektor Gadget)**: Network, process, syscall events (primary)
@@ -1646,9 +1656,9 @@ Flowfish, eBPF'nin ötesinde birçok kaynaktan veri toplayarak tam görünürlü
 
 #### 3.2.2. Dependency Graph with Provenance
 
-**Provenance Tracking** (veri kökeni izleme):
+**Provenance Tracking:**
 
-Her bağımlılık bilgisi için tam köken bilgisi:
+Full provenance for each dependency edge:
 
 ```json
 {
@@ -1681,10 +1691,10 @@ Her bağımlılık bilgisi için tam köken bilgisi:
 ```
 
 **Provenance Features:**
-- **Multi-Source Verification**: Aynı bağımlılığı farklı kaynaklardan doğrulama
-- **Confidence Scoring**: Her bağımlılık için güven skoru (0.0-1.0)
-- **Historical Tracking**: İlk tespit, değişiklikler, doğrulamalar
-- **Manual Validation**: Kullanıcıların bağımlılıkları onaylama/reddetme
+- **Multi-Source Verification**: Validate the same dependency from different sources
+- **Confidence Scoring**: Confidence score per dependency (0.0-1.0)
+- **Historical Tracking**: First detection, changes, validations
+- **Manual Validation**: Users can approve/reject dependencies
 
 ### 3.3. Disaster Recovery Posture Assessment
 
@@ -1692,22 +1702,22 @@ Her bağımlılık bilgisi için tam köken bilgisi:
 
 **Automatic DR Posture Discovery:**
 
-Flowfish, stateful uygulamaları otomatik tespit eder ve DR durumunu değerlendirir.
+Flowfish automatically detects stateful applications and evaluates DR posture.
 
 **DR Metrics:**
 
 **RPO (Recovery Point Objective):**
-- Backup frequency tespit edilir
-- Son backup zamanı kontrol edilir
-- Calculated RPO: Son backup'tan bu yana geçen süre
+- Backup frequency is detected
+- Last backup time is checked
+- Calculated RPO: Time elapsed since last backup
 
 **RTO (Recovery Time Objective):**
-- Restore süre tahminleri
+- Restore time estimates
 - Automated failover capability
-- Calculated RTO: Tahmini restore süresi
+- Calculated RTO: Estimated restore duration
 
 **Parity Check:**
-- Primary vs Replica data consistency
+- Primary vs replica data consistency
 - Replication lag monitoring
 - Split-brain detection
 
@@ -1737,18 +1747,18 @@ Critical Issues:
 
 **Pre-Deployment Checks:**
 
-Flowfish, CI/CD pipeline'a entegre olarak deployment öncesi otomatik kontroller yapar:
+Flowfish runs automated pre-deployment checks integrated with CI/CD:
 
 **Policy Checks:**
-- ✅ **Network Policy Coverage**: Yeni servis için network policy var mı?
-- ✅ **Security Context**: Pod security standards uyumlu mu?
-- ✅ **Resource Limits**: CPU/Memory limitleri tanımlı mı?
-- ✅ **Breaking Changes**: API breaking change var mı?
-- ✅ **Dependency Health**: Bağımlı servisler sağlıklı mı?
+- ✅ **Network Policy Coverage**: Is there a network policy for the new service?
+- ✅ **Security Context**: Compliant with pod security standards?
+- ✅ **Resource Limits**: Are CPU/memory limits defined?
+- ✅ **Breaking Changes**: Any API breaking changes?
+- ✅ **Dependency Health**: Are dependent services healthy?
 
 **Admission Controller (Webhook):**
 
-Kubernetes admission webhook ile deployment-time validation:
+Deployment-time validation via Kubernetes admission webhook:
 
 ```yaml
 apiVersion: admissionregistration.k8s.io/v1
@@ -1765,7 +1775,7 @@ webhooks:
 
 **GitOps Integration:**
 
-ArgoCD, FluxCD ile pre-sync policy checks:
+Pre-sync policy checks with ArgoCD, FluxCD:
 
 ```yaml
 # ArgoCD Pre-Sync Hook
@@ -1809,9 +1819,9 @@ spec:
 ```
 
 **Policy Enforcement:**
-- **Blocking**: Critical policy ihlallerinde deployment engellenir
-- **Warning**: High/Medium ihlaller uyarı verir
-- **Audit**: Tüm ihlaller loglanır
+- **Blocking**: Deployment blocked on critical policy violations
+- **Warning**: High/Medium violations produce warnings
+- **Audit**: All violations are logged
 
 ### 3.5. Explainable AI & Natural Language Queries
 
@@ -1819,7 +1829,7 @@ spec:
 
 **Conversational Interface:**
 
-Kullanıcılar doğal dilde soru sorabilir:
+Users can ask questions in natural language:
 
 **Example Queries:**
 
@@ -1847,7 +1857,7 @@ Kullanıcılar doğal dilde soru sorabilir:
 
 **Explainable AI with Evidence:**
 
-Her AI cevabı **kanıtlarla desteklenir**:
+Every AI answer is **supported by evidence**:
 
 ```
 User: "Is payment-service secure?"
@@ -1870,10 +1880,10 @@ Data Sources: eBPF, Kubernetes API, Istio
 ```
 
 **Key Features:**
-- ✅ **Evidence-Based**: Her claim için kaynak gösterilir
-- ✅ **Source Attribution**: Hangi veri kaynağından geldiği
-- ✅ **Confidence Scores**: AI güven seviyesi
-- ✅ **Actionable**: Somut öneriler
+- ✅ **Evidence-Based**: Source shown for every claim
+- ✅ **Source Attribution**: Which data source it came from
+- ✅ **Confidence Scores**: AI confidence level
+- ✅ **Actionable**: Concrete recommendations
 
 #### 3.5.3. AI-Assisted Troubleshooting
 
@@ -1904,7 +1914,7 @@ Would you like me to create rollback CR?
 [ Yes ] [ No ]
 ```
 
-### 3.6. Gelişmiş AI/ML Tabanlı Analiz
+### 3.6. Advanced AI/ML-Based Analysis
 
 #### 3.6.1. Predictive Analytics
 **Traffic Forecasting:**
@@ -1932,7 +1942,7 @@ Would you like me to create rollback CR?
 - Classification (normal vs anomalous)
 - Reinforcement learning (optimal policy suggestions)
 
-### 3.3. Otomatik Düzeltme Önerileri
+### 3.3. Automated Remediation Suggestions
 
 #### 3.3.1. Auto-Remediation
 **Remediatable Issues:**
@@ -1957,7 +1967,7 @@ Would you like me to create rollback CR?
 - Human-in-the-loop approval gates
 - Audit log of all actions
 
-### 3.4. Compliance ve Audit Raporları
+### 3.4. Compliance and Audit Reports
 
 #### 3.4.1. Compliance Frameworks
 **Supported Standards:**
@@ -1985,7 +1995,7 @@ Would you like me to create rollback CR?
 
 **Report Contents:**
 - Executive summary
-- Key metrics ve trends
+- Key metrics and trends
 - Anomalies and incidents
 - Changes and deployments
 - Compliance status
@@ -2078,22 +2088,25 @@ Would you like me to create rollback CR?
 
 ---
 
-## 📊 Özellik Karşılaştırma Matrisi
+## 📊 Feature Comparison Matrix
 
-| Özellik | Faz 1 (MVP) | Faz 2 (Advanced) | Faz 3 (Enterprise) |
+| Feature | Phase 1 (MVP) | Phase 2 (Advanced) | Phase 3 (Enterprise) |
 |---------|-------------|------------------|-------------------|
-| **Veri Toplama** | ✅ eBPF/Inspektor Gadget | ✅ | ✅ |
-| **Otomatik Keşif** | ✅ Real-time | ✅ Real-time + Historical | ✅ |
-| **Graph Görselleştirme** | ✅ Temel (2D) | ✅ Gelişmiş (filtreleme) | ✅ 3D + Layers |
-| **Analiz Wizard** | ✅ 4-adım | ✅ | ✅ |
-| **Dashboard'lar** | ✅ Ana + Live Map | ✅ + 5 advanced | ✅ + Custom builder |
-| **RBAC** | ✅ 4 rol | ✅ + Custom roles | ✅ |
-| **Kimlik Doğrulama** | ✅ OAuth/SSO, K8s SA | ✅ | ✅ |
+| **Data Collection** | ✅ eBPF/Inspektor Gadget | ✅ | ✅ |
+| **Automatic Discovery** | ✅ Real-time | ✅ Real-time + Historical | ✅ |
+| **Graph Visualization** | ✅ Basic (2D) | ✅ Advanced (filtering) | ✅ 3D + Layers |
+| **Analysis Wizard** | ✅ 4-step | ✅ | ✅ |
+| **Dashboards** | ✅ Main + Live Map | ✅ + 5 advanced | ✅ + Custom builder |
+| **RBAC** | ✅ 4 roles | ✅ + Custom roles | ✅ |
+| **Authentication** | ✅ OAuth/SSO, K8s SA | ✅ | ✅ |
+| **API Key Management** | ✅ | ✅ | ✅ |
+| **Pod & Deployment Annotations** | ✅ | ✅ | ✅ |
+| **AI Integration Hub** | ❌ | ✅ | ✅ |
 | **Multi-Cluster** | ❌ | ✅ | ✅ |
 | **Change Detection** | ❌ | ✅ | ✅ |
 | **Anomaly Detection** | ❌ | ✅ LLM | ✅ LLM + ML models |
 | **Import/Export** | ❌ | ✅ CSV + JSON | ✅ |
-| **Risk Skorları** | ❌ | ✅ | ✅ |
+| **Risk Scores** | ❌ | ✅ | ✅ |
 | **Baseline** | ❌ | ✅ | ✅ |
 | **What-If Analysis** | ❌ | ❌ | ✅ |
 | **Change Simulation (CAP)** | ❌ | ❌ | ✅ |
@@ -2108,44 +2121,44 @@ Would you like me to create rollback CR?
 | **Predictive Analytics** | ❌ | ❌ | ✅ |
 | **SIEM Integration** | ❌ | ✅ | ✅ |
 | **CAP Tool Integration** | ❌ | ❌ | ✅ ServiceNow, Jira |
-| **API** | ✅ Temel | ✅ Gelişmiş | ✅ Full |
+| **API** | ✅ Core | ✅ Advanced | ✅ Full |
 
 ---
 
-## 🎯 Başarı Kriterleri
+## 🎯 Success Criteria
 
-### Faz 1 (MVP) Başarı Kriterleri
-- [ ] Inspektor Gadget başarıyla deploy ve çalışıyor
-- [ ] En az 1000 pod'luk cluster'da veri toplanabiliyor
-- [ ] Graph görselleştirme 500 node + 1000 edge'i render edebiliyor
-- [ ] Real-time updates <5 saniye gecikme ile çalışıyor
-- [ ] 4 kullanıcı rolü implement edilmiş ve çalışıyor
-- [ ] OAuth SSO entegrasyonu en az 1 provider ile çalışıyor
-- [ ] Analiz wizard 4 adım ile analiz oluşturabiliyor
+### Phase 1 (MVP) Success Criteria
+- [ ] Inspektor Gadget deployed and running successfully
+- [ ] Data collection works on clusters with at least 1000 pods
+- [ ] Graph visualization can render 500 nodes + 1000 edges
+- [ ] Real-time updates run with <5 second latency
+- [ ] Four user roles implemented and working
+- [ ] OAuth SSO integration works with at least one provider
+- [ ] Analysis wizard can create analyses in 4 steps
 
-### Faz 2 Başarı Kriterleri
-- [ ] Geçmiş data 30 gün boyunca saklanıyor ve sorgulanabiliyor
-- [ ] Change detection %95 doğrulukla çalışıyor
-- [ ] LLM anomaly detection 10 saniyede response veriyor
-- [ ] Import/export 10MB+ dosyaları işleyebiliyor
-- [ ] Multi-cluster 5+ cluster'ı yönetebiliyor
-- [ ] Webhook 1000+ event/saat gönderebiliyor
+### Phase 2 Success Criteria
+- [ ] Historical data stored and queryable for 30 days
+- [ ] Change detection operates at 95% accuracy
+- [ ] LLM anomaly detection responds within 10 seconds
+- [ ] Import/export can handle 10MB+ files
+- [ ] Multi-cluster can manage 5+ clusters
+- [ ] Webhook can send 1000+ events/hour
 
-### Faz 3 Başarı Kriterleri
-- [ ] What-if simulation <30 saniyede sonuç veriyor
-- [ ] Change simulation (CAP) %95+ accuracy
-- [ ] Predictive analytics %80+ doğruluk
-- [ ] DR posture assessment 100+ stateful workloads
-- [ ] Policy as Code 50+ custom policies
-- [ ] Natural language queries %90+ intent recognition
-- [ ] Grounded AI responses %95+ evidence-backed
-- [ ] CI/CD integration 5+ platforms (GitHub, GitLab, Jenkins, ArgoCD, FluxCD)
-- [ ] Compliance raporu 10 farklı framework için üretilebiliyor
-- [ ] Custom dashboard 50+ widget destekliyor
+### Phase 3 Success Criteria
+- [ ] What-if simulation returns results in <30 seconds
+- [ ] Change simulation (CAP) 95%+ accuracy
+- [ ] Predictive analytics 80%+ accuracy
+- [ ] DR posture assessment for 100+ stateful workloads
+- [ ] Policy as Code with 50+ custom policies
+- [ ] Natural language queries 90%+ intent recognition
+- [ ] Grounded AI responses 95%+ evidence-backed
+- [ ] CI/CD integration with 5+ platforms (GitHub, GitLab, Jenkins, ArgoCD, FluxCD)
+- [ ] Compliance reports can be generated for 10 different frameworks
+- [ ] Custom dashboard supports 50+ widgets
 
 ---
 
-**Son Güncelleme**: Ocak 2025  
-**Versiyon**: 1.0.0  
-**Durum**: Tasarım Dokümantasyonu
+**Last Updated**: January 2025  
+**Version**: 1.0.0  
+**Status**: Design Documentation
 

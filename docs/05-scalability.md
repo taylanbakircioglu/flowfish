@@ -1,18 +1,18 @@
-# Flowfish - Ölçeklenebilirlik Yaklaşımı
+# Flowfish - Scalability Approach
 
-## 🎯 Genel Bakış
+## 🎯 Overview
 
-Flowfish platformu, küçük test ortamlarından büyük enterprise production ortamlarına kadar ölçeklenebilir mimari ile tasarlanmıştır.
+The Flowfish platform is designed with a scalable architecture from small test environments to large enterprise production environments.
 
 ---
 
-## 📏 Ölçeklenebilirlik Hedefleri
+## 📏 Scalability Targets
 
-### Desteklenen Boyutlar
+### Supported Sizes
 
-| Metrik | Minimum (Test) | Orta (Production) | Maksimum (Enterprise) |
-|--------|----------------|-------------------|----------------------|
-| **Clusters** | 1 | 5-10 | 50+ |
+| Metric | Minimum (Test) | Medium (Production) | Maximum (Enterprise) |
+|--------|----------------|---------------------|----------------------|
+| **Clusters** | 1 | 5–10 | 50+ |
 | **Namespaces/Cluster** | 10 | 100 | 500+ |
 | **Pods/Cluster** | 100 | 10,000 | 50,000+ |
 | **Communications/Day** | 100K | 10M | 1B+ |
@@ -22,7 +22,7 @@ Flowfish platformu, küçük test ortamlarından büyük enterprise production o
 
 ---
 
-## 🏗️ Horizontal Scaling Stratejisi
+## 🏗️ Horizontal Scaling Strategy
 
 ### 1. Application Layer Scaling
 
@@ -128,7 +128,7 @@ spec:
 
 ### 2. Data Layer Scaling
 
-#### PostgreSQL (İlişkisel Veri)
+#### PostgreSQL (Relational Data)
 
 **Master-Replica Architecture**:
 ```
@@ -183,7 +183,7 @@ CREATE TABLE audit_logs_2024_01 PARTITION OF audit_logs
     FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
 ```
 
-#### ClickHouse (Time-Series Veri)
+#### ClickHouse (Time-Series Data)
 
 **Distributed Architecture**:
 
@@ -206,9 +206,9 @@ CREATE TABLE audit_logs_2024_01 PARTITION OF audit_logs
 ```
 
 **Sharding Strategy**:
-- **Sharding Key**: `cluster_id` (cluster bazlı dağıtım)
-- **Shard Count**: 3-6 shards (production)
-- **Replication Factor**: 2 (her shard için 2 replica)
+- **Sharding Key**: `cluster_id` (distribution per cluster)
+- **Shard Count**: 3–6 shards (production)
+- **Replication Factor**: 2 (2 replicas per shard)
 
 **Example Configuration**:
 ```xml
@@ -250,7 +250,7 @@ ENGINE = SummingMergeTree()
 AS SELECT ...
 ```
 
-#### Neo4j (Graph Veritabanı)
+#### Neo4j (Graph Database)
 
 **Multi-Node Architecture**:
 
@@ -287,7 +287,7 @@ AS SELECT ...
 **Graphd (Query Layer)**:
 - Stateless → Horizontal scaling
 - Load balancer distributes queries
-- 2-5 instances (production)
+- 2–5 instances (production)
 
 **Metad (Metadata Service)**:
 - Raft consensus (3 or 5 nodes)
@@ -348,7 +348,7 @@ AS SELECT ...
 
 **Layer 2: Redis Cache** (Backend)
 - Hot data (frequently accessed)
-- TTL: 5-15 minutes
+- TTL: 5–15 minutes
 
 **Layer 3: Database** (Persistent)
 - Source of truth
@@ -434,7 +434,7 @@ eBPF Events → Collector → Enricher → Database
 ### Response Time SLAs
 
 | Endpoint | Target (p95) | Max (p99) |
-|----------|--------------|-----------|
+|----------|----------------|-----------|
 | `/auth/login` | 200ms | 500ms |
 | `/clusters` (list) | 100ms | 300ms |
 | `/workloads` (list) | 200ms | 500ms |
@@ -512,8 +512,8 @@ spec:
 
 **ClickHouse**:
 - CODEC(DoubleDelta, LZ4) for timestamps
-- Compression ratio: 10-20x
-- 1 TB raw → 50-100 GB compressed
+- Compression ratio: 10–20x
+- 1 TB raw → 50–100 GB compressed
 
 **PostgreSQL**:
 - TOAST for large JSONB
@@ -560,6 +560,6 @@ spec:
 
 ---
 
-**Versiyon**: 1.0.0  
-**Son Güncelleme**: Ocak 2025
+**Version**: 1.0.0  
+**Last Updated**: January 2025
 

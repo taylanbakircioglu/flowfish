@@ -1,6 +1,6 @@
-# 🐟 Flowfish - Güncel Mimari (Ocak 2026)
+# 🐟 Flowfish - Current Architecture (January 2026)
 
-## Sistem Genel Bakış
+## System Overview
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────┐
@@ -40,9 +40,9 @@
 └─────────────────────┘  └─────────────────────┘  └─────────────────────┘
 ```
 
-## Veri Akış Mimarisi
+## Data Flow Architecture
 
-### 1. OKUMA AKIŞI (Frontend → Database)
+### 1. READ PATH (Frontend → Database)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -89,7 +89,7 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. YAZMA AKIŞI (Inspector Gadget → Database)
+### 2. WRITE PATH (Inspector Gadget → Database)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -116,7 +116,7 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3. ANALİZ AKIŞI (Analysis Orchestrator)
+### 3. ANALYSIS PATH (Analysis Orchestrator)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -152,10 +152,10 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Microservice Listesi
+## Microservice List
 
-| # | Servis | Port | Protokol | Sorumluluk |
-|---|--------|------|----------|------------|
+| # | Service | Port | Protocol | Responsibility |
+|---|--------|------|----------|----------------|
 | 1 | **frontend** | 3000 | HTTP | React UI (Dashboard, LiveMap, Wizard) |
 | 2 | **backend** | 8000 | HTTP | FastAPI REST API, Auth, WebSocket |
 | 3 | **api-gateway** | 8000 | HTTP | FastAPI Gateway (microservices proxy) |
@@ -168,20 +168,20 @@
 | 10 | **graph-query** | 8001 | HTTP | Neo4j query service |
 | 11 | **change-detection-worker** | 8001 | HTTP | Periodic change detection (ClickHouse) |
 
-## Veritabanları
+## Databases
 
-| Veritabanı | Tip | Port | Kullanım |
-|------------|-----|------|----------|
+| Database | Type | Port | Usage |
+|----------|--------|------|--------|
 | **PostgreSQL** | RDBMS | 5432 | Metadata, configurations, workloads |
-| **ClickHouse** | Columnar | 9000 | Time-series events (11 tablo), change_events |
+| **ClickHouse** | Columnar | 9000 | Time-series events (11 tables), change_events |
 | **Neo4j** | Graph | 7687 | Dependency graph (nodes + edges) |
 | **Redis** | Cache | 6379 | Session, cache, leader election |
 | **RabbitMQ** | Queue | 5672 | Event streaming, change_events exchange |
 
-## ClickHouse Event Tabloları
+## ClickHouse Event Tables
 
-| # | Tablo | Kaynak | Açıklama |
-|---|-------|--------|----------|
+| # | Table | Source | Description |
+|---|-------|--------|-------------|
 | 1 | `network_flows` | trace_tcp | TCP/UDP network connections |
 | 2 | `dns_queries` | trace_dns | DNS lookups |
 | 3 | `tcp_lifecycle` | trace_tcp | TCP state transitions |
@@ -196,7 +196,7 @@
 
 ## Frontend-Backend API Mapping
 
-| Frontend Sayfa | eventsApi Hook | Backend Endpoint | Query Service |
+| Frontend Page | eventsApi Hook | Backend Endpoint | Query Service |
 |----------------|----------------|------------------|---------------|
 | EventsTimeline | `useGetEventsQuery` | `/events` | timeseries-query |
 | SecurityCenter | `useGetSecurityEventsQuery` | `/events/security` | timeseries-query |
@@ -212,7 +212,7 @@
 | ChangeDetection | `useGetAnalysisRunsQuery` | `/analyses/{id}/runs` | PostgreSQL 🆕 |
 | ChangeDetection | (WebSocket) | `/ws/changes` | Real-time updates 🆕 |
 
-## Yeni Eklenen Dosyalar (Ocak 2026)
+## Newly Added Files (January 2026)
 
 ### Change Detection Worker (Hybrid Architecture) 🆕
 ```
@@ -252,7 +252,7 @@ schemas/
 
 ---
 
-## Yeni Eklenen Dosyalar (Kasım 2024)
+## Newly Added Files (November 2024)
 
 ### timeseries-query Microservice
 ```
@@ -331,14 +331,14 @@ Unified entry point for all cluster operations. Abstracts away connection type d
 
 ---
 
-## Mimari Prensipler
+## Architecture Principles
 
-1. **Separation of Concerns**: Read (query) ve Write (writer) servisleri ayrı
-2. **Database Abstraction**: Backend doğrudan DB'ye erişmez, query service'ler üstünden
-3. **Consistent Pattern**: Neo4j için graph-query, ClickHouse için timeseries-query
-4. **Horizontal Scaling**: Query service'ler bağımsız scale edilebilir
-5. **Fault Tolerance**: Microservice arızası diğerlerini etkilemez
-6. **Unified Cluster Access**: Tüm cluster erişimi ClusterConnectionManager üzerinden
+1. **Separation of Concerns**: Read (query) and Write (writer) services are separate
+2. **Database Abstraction**: Backend does not access the DB directly; it goes through query services
+3. **Consistent Pattern**: graph-query for Neo4j, timeseries-query for ClickHouse
+4. **Horizontal Scaling**: Query services can scale independently
+5. **Fault Tolerance**: Failure in one microservice does not take down the others
+6. **Unified Cluster Access**: All cluster access goes through ClusterConnectionManager
 7. **Hybrid Storage**: PostgreSQL (ACID) + ClickHouse (Analytics) for Change Detection 🆕
 8. **Dual-Write Pattern**: Critical data written to both stores simultaneously 🆕
 9. **Analysis Lifecycle Retention**: Data deleted with analysis (no TTL) 🆕

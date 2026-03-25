@@ -1,8 +1,8 @@
 # 🐟 Flowfish - Microservices Architecture
 
-## Mimari Genel Bakış
+## Architecture Overview
 
-Flowfish platformu, ölçeklenebilir ve modüler bir microservice mimarisi ile geliştirilecektir.
+The Flowfish platform is built with a scalable, modular microservices architecture.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -118,12 +118,12 @@ Flowfish platformu, ölçeklenebilir ve modüler bir microservice mimarisi ile g
 └──────────────────────────────────────────────────┘
 ```
 
-## Microservices Detayları
+## Microservice Details
 
 ### 1. API Gateway (Port: 8000)
-**Teknoloji:** FastAPI + Python
-**Sorumluluklar:**
-- REST API endpoints (frontend ile iletişim)
+**Technology:** FastAPI + Python  
+**Responsibilities:**
+- REST API endpoints (communication with the frontend)
 - Authentication (JWT)
 - Authorization (RBAC)
 - Request routing to microservices
@@ -153,13 +153,13 @@ REDIS_URL=redis://...
 ---
 
 ### 2. Cluster Manager Service (Port: 5001)
-**Teknoloji:** Python + gRPC
-**Sorumluluklar:**
-- Kubernetes/OpenShift cluster kayıt ve yönetimi
+**Technology:** Python + gRPC  
+**Responsibilities:**
+- Kubernetes/OpenShift cluster registration and management
 - Cluster health monitoring
-- Kubernetes API ile iletişim
+- Communication with the Kubernetes API
 - Live resource discovery (namespaces, deployments, pods, services)
-- ServiceAccount token yönetimi
+- ServiceAccount token management
 - Inspektor Gadget health check
 
 **gRPC Services:**
@@ -191,7 +191,7 @@ service ClusterManager {
 
 #### 2.1 ClusterConnectionManager (Backend Service Layer)
 
-**December 2025 Update**: Backend artık `ClusterConnectionManager` üzerinden cluster erişimi yapıyor.
+**December 2025 Update**: The backend now accesses clusters through `ClusterConnectionManager`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -199,10 +199,10 @@ service ClusterManager {
 │  Location: backend/services/cluster_connection_manager.py        │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Özellikler:                                                     │
-│  ├── Connection pooling (cluster başına cache)                  │
-│  ├── Otomatik connection type detection (in-cluster/remote)     │
-│  ├── Fernet encryption ile credential yönetimi                  │
+│  Features:                                                     │
+│  ├── Connection pooling (per-cluster cache)                  │
+│  ├── Automatic connection type detection (in-cluster/remote)     │
+│  ├── Credential management with Fernet encryption                  │
 │  ├── Background health monitoring (circuit breaker)             │
 │  └── Unified API (get_cluster_info, get_namespaces, etc.)       │
 │                                                                  │
@@ -229,12 +229,12 @@ backend/services/
 ---
 
 ### 3. Analysis Orchestrator Service (Port: 5002)
-**Teknoloji:** Python + gRPC
-**Sorumluluklar:**
-- Analysis definition yönetimi
+**Technology:** Python + gRPC  
+**Responsibilities:**
+- Analysis definition management
 - Analysis lifecycle management (create, start, stop, pause)
 - Multi-cluster analysis orchestration
-- Data collector worker'lara task assignment
+- Task assignment to data collector workers
 - Analysis scheduling (periodic, time-based)
 - Analysis status tracking
 - Result aggregation
@@ -278,10 +278,10 @@ service AnalysisOrchestrator {
 ---
 
 ### 4. Ingestion Service (Port: 5003)
-**İsim:** `flowfish-ingestion` (Ingestion Worker / Data Collector Worker)
-**Teknoloji:** Python + gRPC + asyncio + RabbitMQ (pika)
-**Sorumluluklar:**
-- Inspektor Gadget ile gRPC iletişim
+**Name:** `flowfish-ingestion` (Ingestion Worker / Data Collector Worker)  
+**Technology:** Python + gRPC + asyncio + RabbitMQ (pika)  
+**Responsibilities:**
+- gRPC communication with Inspektor Gadget
 - eBPF data collection (streaming)
 - Real-time data transformation
 - Metadata enrichment (analysis_id, cluster_id, timestamps)
@@ -290,8 +290,8 @@ service AnalysisOrchestrator {
 - Multiple workers (horizontal scaling)
 - Worker health monitoring
 
-**İsim Alternatifleri:**
-- ✅ **flowfish-ingestion** (Önerilen - kısa ve açık)
+**Name Alternatives:**
+- ✅ **flowfish-ingestion** (Recommended — short and clear)
 - flowfish-collector
 - flowfish-gadget-worker
 - flowfish-stream-processor
@@ -313,13 +313,13 @@ service DataCollector {
 ```
 
 **Worker Logic:**
-1. Orchestrator'dan task al
-2. Inspektor Gadget'a bağlan (target cluster)
-3. Gadget trace başlat (network, DNS, TCP, etc.)
-4. Data stream'i oku
-5. ClickHouse'a batch write
-6. Status update'leri orchestrator'a gönder
-7. Error durumunda retry veya fail
+1. Receive task from the orchestrator
+2. Connect to Inspektor Gadget (target cluster)
+3. Start gadget trace (network, DNS, TCP, etc.)
+4. Read the data stream
+5. Batch write to ClickHouse
+6. Send status updates to the orchestrator
+7. On error, retry or fail
 
 **Environment Variables:**
 ```env
@@ -340,13 +340,13 @@ MAX_RETRIES=3
 ---
 
 ### 5. Dependency Graph Service (Port: 5004)
-**Teknoloji:** Python + gRPC + Neo4j
-**Sorumluluklar:**
-- ClickHouse'dan communication data okuma
-- Dependency graph oluşturma
-- Graph database (Neo4j) yönetimi
+**Technology:** Python + gRPC + Neo4j  
+**Responsibilities:**
+- Read communication data from ClickHouse
+- Build dependency graphs
+- Graph database (Neo4j) management
 - Graph queries (shortest path, neighbors, etc.)
-- Change detection (yeni/kaybolan bağlantılar)
+- Change detection (new/lost connections)
 - Anomaly detection integration
 
 **gRPC Services:**
@@ -369,13 +369,13 @@ service DependencyGraph {
 ```
 
 **Process:**
-1. Analysis tamamlandığında tetiklenir
-2. ClickHouse'dan network flow data çeker
-3. Vertex'ler oluştur (pods, services, deployments)
-4. Edge'ler oluştur (communication paths)
-5. Neo4j'a yaz
-6. Historical comparison yap
-7. Change detection results döndür
+1. Triggered when an analysis completes
+2. Pull network flow data from ClickHouse
+3. Create vertices (pods, services, deployments)
+4. Create edges (communication paths)
+5. Write to Neo4j
+6. Perform historical comparison
+7. Return change detection results
 
 ---
 

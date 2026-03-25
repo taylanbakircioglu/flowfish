@@ -4,27 +4,28 @@ info:
   description: |
     # Flowfish Platform API
     
-    eBPF tabanlı Kubernetes/OpenShift uygulama iletişimi ve bağımlılık haritalama platformu REST API dokümantasyonu.
+    REST API documentation for the eBPF-based Kubernetes/OpenShift application communication and dependency mapping platform.
     
-    ## Özellikler
+    ## Key Features
     
-    - **Otomatik Keşif**: Pod'lar arası iletişimi eBPF ile otomatik tespit
-    - **Gerçek Zamanlı Harita**: Bağımlılık haritalarını canlı görüntüleme
-    - **Anomali Tespiti**: LLM destekli akıllı anomali algılama
-    - **Multi-Cluster**: Birden fazla cluster'ı tek arayüzden yönetim
-    - **Import/Export**: Veri içe/dışa aktarma
+    - **Automatic Discovery** — Automatically detect inter-pod communications using eBPF
+    - **Real-Time Dependency Map** — Live visualization of service dependency graphs
+    - **Anomaly Detection** — Intelligent anomaly detection powered by statistical analysis
+    - **Multi-Cluster** — Manage multiple clusters from a single interface
+    - **AI Integration** — Dependency intelligence APIs for AI agents and CI/CD pipeline integration
+    - **Pod & Deployment Annotations** — Rich metadata enrichment including annotations merged from owning Deployments/StatefulSets
+    - **Import/Export** — Data import and export in multiple formats
     
-    ## Kimlik Doğrulama
+    ## Authentication
     
-    API, JWT (JSON Web Token) tabanlı kimlik doğrulama kullanır.
+    The API supports two authentication methods:
     
-    1. `/api/v1/auth/login` endpoint'ine kullanıcı adı ve şifre ile POST request gönderin
-    2. Response'da dönen `access_token`'ı alın
-    3. Sonraki tüm isteklerde `Authorization: Bearer <token>` header'ı kullanın
+    1. **JWT (JSON Web Token)** — Send a POST request to `/api/v1/auth/login` with username and password, then include the returned `access_token` in subsequent requests via `Authorization: Bearer <token>` header.
+    2. **API Key** — Generate an API key from Settings > API Keys, then include it via `X-API-Key: <key>` header. Recommended for CI/CD pipelines and AI agent integrations.
     
     ## Rate Limiting
     
-    - **Authenticated Users**: 1000 requests/hour
+    - **Authenticated Users**: 1,000 requests/hour
     - **Unauthenticated**: 100 requests/hour
     
   version: 1.0.0
@@ -45,31 +46,31 @@ servers:
 
 tags:
   - name: Authentication
-    description: Kullanıcı kimlik doğrulama işlemleri
+    description: User authentication, JWT token management, and 2FA
   - name: Users
-    description: Kullanıcı yönetimi
+    description: User management and profile operations
   - name: Clusters
-    description: Kubernetes/OpenShift cluster yönetimi
+    description: Kubernetes/OpenShift cluster registration, connection, and management
   - name: Analyses
-    description: Analiz wizard ve çalıştırma
+    description: Analysis wizard, lifecycle management, and run execution
   - name: Workloads
-    description: Kubernetes workload'ları (Pod, Deployment, Service, StatefulSet)
+    description: Kubernetes workload inventory (Pod, Deployment, Service, StatefulSet) with labels and annotations
   - name: Communications
-    description: Workload'lar arası iletişim kayıtları
-  - name: Dependencies
-    description: Bağımlılık haritası ve graph sorguları
-  - name: Anomalies
-    description: Tespit edilen anomaliler
-  - name: Changes
-    description: Değişim tespiti
-  - name: Baselines
-    description: Trafik baseline profilleri
-  - name: Import/Export
-    description: Veri içe ve dışa aktarma
-  - name: Settings
-    description: Sistem ayarları
+    description: Service-to-service communication records and dependency graphs
   - name: AI Integration
-    description: AI Agent ve CI/CD pipeline entegrasyonlari icin dependency intelligence API'leri
+    description: Dependency intelligence APIs for AI agents and CI/CD pipeline integrations — dependency discovery, impact analysis, and cross-project dependency mapping
+  - name: Dependencies
+    description: Dependency map and graph queries
+  - name: Anomalies
+    description: Detected anomalies and outlier events
+  - name: Changes
+    description: Change detection and infrastructure drift tracking
+  - name: Baselines
+    description: Traffic baseline profiles
+  - name: Import/Export
+    description: Data import and export in CSV, JSON, and graph formats
+  - name: Settings
+    description: System configuration and enterprise settings
 
 components:
   securitySchemes:
@@ -740,8 +741,8 @@ paths:
     post:
       tags:
         - Authentication
-      summary: Kullanıcı girişi
-      description: Kullanıcı adı ve şifre ile JWT token alınır
+      summary: User login
+      description: Authenticate with username and password to obtain a JWT access token
       security: []
       requestBody:
         required: true
@@ -760,13 +761,13 @@ paths:
                   format: password
             examples:
               example1:
-                summary: Admin kullanıcı
+                summary: Admin user
                 value:
                   username: "admin"
                   password: "admin123"
       responses:
         '200':
-          description: Giriş başarılı
+          description: Login successful
           content:
             application/json:
               schema:
@@ -783,7 +784,7 @@ paths:
                   user:
                     $ref: '#/components/schemas/User'
         '401':
-          description: Geçersiz kullanıcı adı veya şifre
+          description: Invalid username or password
           content:
             application/json:
               schema:
@@ -793,17 +794,17 @@ paths:
     get:
       tags:
         - Authentication
-      summary: Mevcut kullanıcı bilgilerini getir
-      description: Token'dan kullanıcı bilgilerini döndürür
+      summary: Get current user info
+      description: Returns user information decoded from the JWT token
       responses:
         '200':
-          description: Kullanıcı bilgileri
+          description: User details
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
         '401':
-          description: Geçersiz veya eksik token
+          description: Invalid or missing token
           content:
             application/json:
               schema:
@@ -813,8 +814,8 @@ paths:
     get:
       tags:
         - Clusters
-      summary: Cluster listesini getir
-      description: Kullanıcının erişim yetkisi olan tüm cluster'ları listeler
+      summary: List clusters
+      description: Lists all clusters the authenticated user has access to
       parameters:
         - name: page
           in: query
@@ -835,7 +836,7 @@ paths:
             type: boolean
       responses:
         '200':
-          description: Cluster listesi
+          description: Cluster list
           content:
             application/json:
               schema:
@@ -851,7 +852,7 @@ paths:
     post:
       tags:
         - Clusters
-      summary: Yeni cluster ekle
+      summary: Add new cluster
       requestBody:
         required: true
         content:
@@ -878,13 +879,13 @@ paths:
                   description: Base64 encoded kubeconfig
       responses:
         '201':
-          description: Cluster başarıyla oluşturuldu
+          description: Cluster created successfully
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Cluster'
         '400':
-          description: Geçersiz istek
+          description: Invalid request
           content:
             application/json:
               schema:
@@ -894,7 +895,7 @@ paths:
     get:
       tags:
         - Clusters
-      summary: Cluster detaylarını getir
+      summary: Get cluster details
       parameters:
         - name: cluster_id
           in: path
@@ -903,13 +904,13 @@ paths:
             type: integer
       responses:
         '200':
-          description: Cluster detayları
+          description: Cluster details
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Cluster'
         '404':
-          description: Cluster bulunamadı
+          description: Cluster not found
           content:
             application/json:
               schema:
@@ -918,7 +919,7 @@ paths:
     put:
       tags:
         - Clusters
-      summary: Cluster güncelle
+      summary: Update cluster
       parameters:
         - name: cluster_id
           in: path
@@ -940,7 +941,7 @@ paths:
                   type: boolean
       responses:
         '200':
-          description: Cluster güncellendi
+          description: Cluster updated
           content:
             application/json:
               schema:
@@ -949,7 +950,7 @@ paths:
     delete:
       tags:
         - Clusters
-      summary: Cluster sil
+      summary: Delete cluster
       parameters:
         - name: cluster_id
           in: path
@@ -958,15 +959,15 @@ paths:
             type: integer
       responses:
         '204':
-          description: Cluster silindi
+          description: Cluster deleted
         '404':
-          description: Cluster bulunamadı
+          description: Cluster not found
   
   /analyses:
     get:
       tags:
         - Analyses
-      summary: Analiz listesini getir
+      summary: List analyses
       parameters:
         - name: cluster_id
           in: query
@@ -979,7 +980,7 @@ paths:
             enum: [draft, running, stopped, completed, failed]
       responses:
         '200':
-          description: Analiz listesi
+          description: Analysis list
           content:
             application/json:
               schema:
@@ -993,8 +994,8 @@ paths:
     post:
       tags:
         - Analyses
-      summary: Yeni analiz oluştur
-      description: Wizard'dan gelen yapılandırma ile yeni analiz tanımlar
+      summary: Create new analysis
+      description: Defines a new analysis using configuration from the wizard
       requestBody:
         required: true
         content:
@@ -1048,7 +1049,7 @@ paths:
                       type: boolean
       responses:
         '201':
-          description: Analiz oluşturuldu
+          description: Analysis created
           content:
             application/json:
               schema:
@@ -1058,7 +1059,7 @@ paths:
     post:
       tags:
         - Analyses
-      summary: Analizi başlat
+      summary: Start analysis
       parameters:
         - name: analysis_id
           in: path
@@ -1067,7 +1068,7 @@ paths:
             type: integer
       responses:
         '200':
-          description: Analiz başlatıldı
+          description: Analysis started
           content:
             application/json:
               schema:
@@ -1082,7 +1083,7 @@ paths:
     post:
       tags:
         - Analyses
-      summary: Analizi durdur
+      summary: Stop analysis
       parameters:
         - name: analysis_id
           in: path
@@ -1091,13 +1092,13 @@ paths:
             type: integer
       responses:
         '200':
-          description: Analiz durduruldu
+          description: Analysis stopped
   
   /workloads:
     get:
       tags:
         - Workloads
-      summary: Workload listesini getir
+      summary: List workloads
       parameters:
         - name: cluster_id
           in: query
@@ -1120,7 +1121,7 @@ paths:
             default: true
       responses:
         '200':
-          description: Workload listesi
+          description: Workload list
           content:
             application/json:
               schema:
@@ -1135,7 +1136,7 @@ paths:
     get:
       tags:
         - Communications
-      summary: İletişim kayıtlarını getir
+      summary: List communication records
       parameters:
         - name: cluster_id
           in: query
@@ -1176,7 +1177,7 @@ paths:
             format: date-time
       responses:
         '200':
-          description: İletişim kayıtları
+          description: Communication records
           content:
             application/json:
               schema:
@@ -1193,12 +1194,12 @@ paths:
     get:
       tags:
         - Dependencies
-      summary: Bağımlılık haritasını getir
-      description: Graph formatında node ve edge'lerle bağımlılık haritasını döndürür
+      summary: Get dependency map
+      description: Returns the dependency map as a graph with nodes and edges
       parameters:
         - name: cluster_id
           in: query
-          description: Opsiyonel; multi-cluster senaryolarında filtreleme için
+          description: Optional; used for filtering in multi-cluster scenarios
           schema:
             type: integer
         - name: analysis_id
@@ -1221,7 +1222,7 @@ paths:
             minLength: 3
       responses:
         '200':
-          description: Graph verisi
+          description: Graph data
           content:
             application/json:
               schema:
@@ -1232,12 +1233,12 @@ paths:
       tags:
         - AI Integration
         - Communications
-      summary: Pod bağımlılıklarını upstream/downstream olarak getir
+      summary: Get pod dependencies as upstream/downstream
       description: |
-        Herhangi bir pod bilgisi (annotation, label, pod name, namespace, ip) ile 
-        istek atılarak o pod'un bağımlı olduğu ve gittiği tüm pod'ları döndürür.
-        Eşleşen pod upstream kabul edilir. İletişim kurduğu pod'lar downstream olarak döner.
-        Bu pod'a bağlanan pod'lar ise callers olarak döner.
+        Query pod dependencies using any identifying information (annotation, label,
+        pod name, namespace, IP). The matched pod is treated as the upstream service.
+        Pods it communicates with are returned as downstream. Pods that connect to it
+        are returned as callers. Annotations include merged Deployment/StatefulSet metadata.
       parameters:
         - name: analysis_id
           in: query
@@ -1257,7 +1258,7 @@ paths:
             type: string
         - name: owner_name
           in: query
-          description: Deployment/StatefulSet/DaemonSet adı
+          description: Deployment/StatefulSet/DaemonSet name
           schema:
             type: string
         - name: annotation_key
@@ -1295,7 +1296,7 @@ paths:
             default: json
       responses:
         '200':
-          description: Upstream pod ve downstream bağımlılıkları
+          description: Upstream pod and its downstream dependencies
           content:
             application/json:
               schema:
@@ -1341,7 +1342,7 @@ paths:
       tags:
         - AI Integration
         - Communications
-      summary: Birden fazla servis için bağımlılıkları toplu sorgula
+      summary: Batch query dependencies for multiple services
       requestBody:
         required: true
         content:
@@ -1350,7 +1351,7 @@ paths:
               $ref: '#/components/schemas/CommunicationsDependenciesBatchRequest'
       responses:
         '200':
-          description: Toplu bağımlılık sonuçları
+          description: Batch dependency results
           content:
             application/json:
               schema:
@@ -1361,7 +1362,7 @@ paths:
       tags:
         - AI Integration
         - Communications
-      summary: İki analiz arasında bağımlılık farkını getir
+      summary: Get dependency diff between two analyses
       parameters:
         - name: analysis_id_before
           in: query
@@ -1391,7 +1392,7 @@ paths:
             type: integer
       responses:
         '200':
-          description: Bağımlılık diff sonucu
+          description: Dependency diff result
           content:
             application/json:
               schema:
@@ -1402,7 +1403,7 @@ paths:
       tags:
         - AI Integration
         - Communications
-      summary: Değişiklik türüne göre bağımlılık etki analizi
+      summary: Dependency impact analysis by change type
       parameters:
         - name: analysis_id
           in: query
@@ -1459,7 +1460,7 @@ paths:
             default: image_update
       responses:
         '200':
-          description: Etki analizi sonucu
+          description: Impact analysis result
           content:
             application/json:
               schema:
@@ -1540,7 +1541,7 @@ paths:
     get:
       tags:
         - Anomalies
-      summary: Anomali listesini getir
+      summary: List anomalies
       parameters:
         - name: cluster_id
           in: query
@@ -1563,7 +1564,7 @@ paths:
             format: date
       responses:
         '200':
-          description: Anomali listesi
+          description: Anomaly list
           content:
             application/json:
               schema:
@@ -1578,7 +1579,7 @@ paths:
     get:
       tags:
         - Import/Export
-      summary: CSV formatında export
+      summary: Export in CSV format
       parameters:
         - name: cluster_id
           in: query
@@ -1601,7 +1602,7 @@ paths:
             format: date-time
       responses:
         '200':
-          description: CSV dosyası
+          description: CSV file
           content:
             text/csv:
               schema:
@@ -1611,7 +1612,7 @@ paths:
     get:
       tags:
         - Import/Export
-      summary: Graph JSON formatında export
+      summary: Export in Graph JSON format
       parameters:
         - name: cluster_id
           in: query
@@ -1620,7 +1621,7 @@ paths:
             type: integer
       responses:
         '200':
-          description: Graph JSON dosyası
+          description: Graph JSON file
           content:
             application/json:
               schema:
@@ -1630,7 +1631,7 @@ paths:
     post:
       tags:
         - Import/Export
-      summary: Veri import et
+      summary: Import data
       requestBody:
         required: true
         content:
@@ -1652,7 +1653,7 @@ paths:
                   enum: [merge, overwrite, snapshot]
       responses:
         '202':
-          description: Import işlemi başlatıldı
+          description: Import job started
           content:
             application/json:
               schema:

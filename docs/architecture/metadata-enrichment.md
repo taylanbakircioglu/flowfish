@@ -46,10 +46,13 @@ Flowfish enriches network flow events with Kubernetes metadata to provide meanin
 │  │  │                        trace_manager.py                                  │ │   │
 │  │  │  ┌────────────────────────────────────────────────────────────────────┐ │ │   │
 │  │  │  │ PodDiscovery (pod_discovery.py)                                     │ │ │   │
-│  │  │  │ • Runs `kubectl get pods -A -o json` every 30s                     │ │ │   │
+│  │  │  │ • Runs `kubectl get pods -A -o json` or gRPC ListPods every 30s   │ │ │   │
 │  │  │  │ • Builds IP → Pod metadata cache                                    │ │ │   │
-│  │  │  │ • Extracts: name, namespace, labels, ownerReferences,              │ │ │   │
-│  │  │  │   pod_uid, host_ip, container, image, service_account, phase       │ │ │   │
+│  │  │  │ • Extracts: name, namespace, labels, annotations,                  │ │ │   │
+│  │  │  │   ownerReferences, pod_uid, host_ip, container, image,            │ │ │   │
+│  │  │  │   service_account, phase                                           │ │ │   │
+│  │  │  │ • Enriches pods with Deployment/StatefulSet annotations            │ │ │   │
+│  │  │  │   (owner annotations merged; pod annotations take priority)        │ │ │   │
 │  │  │  └────────────────────────────────────────────────────────────────────┘ │ │   │
 │  │  │                                     │                                   │ │   │
 │  │  │  ┌────────────────────────────────────────────────────────────────────┐ │ │   │
@@ -200,8 +203,9 @@ class PodInfo:
     name: str              # "backend-5f8f69d45c-7j28g"
     namespace: str         # "flowfish"
     ip: str               # "10.128.22.50"
-    node: str             # "worker1.internal.example.corp"
+    node: str             # "worker1.internal.example.local"
     labels: Dict[str, str] # {"app": "haproxy-openmanager", "component": "backend"}
+    annotations: Dict[str, str]  # {"git-repo": "https://github.com/org/backend", ...}
     owner_kind: str       # "ReplicaSet"
     owner_name: str       # "backend-5f8f69d45c"
     uid: str              # "abc123-def456"
@@ -223,6 +227,7 @@ All metadata is stored on Neo4j nodes:
   namespace: "flowfish",
   kind: "Pod",
   labels: '{"app":"haproxy-openmanager","component":"backend"}',
+  annotations: '{"git-repo":"https://github.com/org/backend","team":"payments"}',
   owner_kind: "ReplicaSet",
   owner_name: "backend-5f8f69d45c",
   ip: "10.128.22.50",
@@ -241,8 +246,9 @@ Node detail drawer shows:
 - **Pod Name**: backend-5f8f69d45c-7j28g
 - **Namespace**: flowfish
 - **Owner**: Deployment/backend (resolved from ReplicaSet)
-- **Node**: worker1.internal.example.corp
+- **Node**: worker1.internal.example.local
 - **Labels**: app=haproxy-openmanager, component=backend
+- **Annotations**: git-repo=https://github.com/org/backend, team=payments (categorized, formatted JSON values)
 - **Container**: backend
 - **Image**: registry/backend:v1.0
 - **Phase**: Running
@@ -257,6 +263,38 @@ In this case:
 - Source shows as IP address with 🌐 icon
 - Namespace shows as "external"
 - No additional metadata available
+
+## Deployment/StatefulSet Annotation Merge
+
+Pods often lack annotations that are set on their owning Deployment or StatefulSet (e.g., `git-repo`, `team`, pipeline metadata). Flowfish automatically merges owner-level annotations into pod metadata during ingestion.
+
+### How It Works
+
+1. After discovering pods (via gRPC `ListPods` or `kubectl get pods`), the Ingestion Service calls `_enrich_with_owner_annotations()`
+2. It fetches Deployment and StatefulSet annotations via gRPC `ListDeployments`/`ListStatefulSets` (or kubectl as fallback)
+3. For each pod, it resolves the owning Deployment/StatefulSet name using:
+   - Pod labels (`app`, `app.kubernetes.io/name`) for direct match
+   - Stripping `pod-template-hash` from ReplicaSet names for ReplicaSet-owned pods
+   - Direct `owner_name` for StatefulSets and DaemonSets
+4. Owner annotations are merged into pod annotations: `{**owner_annotations, **pod_annotations}`
+   - **Pod annotations always take priority** in case of key conflicts
+
+### Annotation Filtering
+
+Both pod-level and owner-level annotations are filtered before storage:
+- **Excluded prefixes**: `kubectl.kubernetes.io/`, `kubernetes.io/`, `openshift.io/`
+- **Excluded values**: Annotations with values exceeding 500 characters
+- This keeps the data focused on custom, application-relevant annotations
+
+### Proto Definition
+
+The `DeploymentInfo` and `StatefulSetInfo` protobuf messages include an `annotations` field:
+```protobuf
+message DeploymentInfo {
+    // ... other fields ...
+    map<string, string> annotations = 11;
+}
+```
 
 ## Troubleshooting
 
@@ -277,4 +315,11 @@ If labels show as `{}`:
 1. Check if labels are being passed in edge cache
 2. Verify graph_client.py is setting labels with CASE WHEN
 3. Ensure PodDiscovery extracted labels correctly
+
+### Annotations Empty
+If annotations show as `{}`:
+1. Verify the gRPC discovery path includes annotations in `PodInfo` proto message
+2. Check that `_filter_annotations()` in grpc_server.py is not filtering out the target annotations
+3. For deployment-level annotations, verify `_enrich_with_owner_annotations()` is running and the owner resolution logic matches the pod's Deployment/StatefulSet
+4. Internal annotations (`kubectl.kubernetes.io/`, `kubernetes.io/`, `openshift.io/`) are intentionally filtered — only custom annotations are stored
 

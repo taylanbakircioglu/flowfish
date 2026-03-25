@@ -471,30 +471,218 @@ class PodDiscovery:
     
     async def _discover_pods(self) -> Dict[str, PodInfo]:
         """
-        Discover pods using kubectl for remote clusters, gRPC for local
-        
-        For remote clusters (kubeconfig specified), we use kubectl directly
-        because gRPC goes to local ClusterManager which doesn't have 
-        remote cluster's pod information.
+        Discover pods using kubectl for remote clusters, gRPC for local.
+        After discovery, enriches pods with owner (Deployment/StatefulSet) annotations.
         
         Returns dict of ip -> PodInfo
         """
-        # Remote cluster: use kubectl with session kubeconfig
-        # gRPC goes to local ClusterManager which doesn't have remote cluster data
+        pods: Dict[str, PodInfo] = {}
+
         if self.kubeconfig:
             logger.debug("Using kubectl for pod discovery (remote cluster)",
                         kubeconfig_prefix=self.kubeconfig[:50] if self.kubeconfig else None)
-            return await self._discover_pods_via_kubectl()
-        
-        # Local cluster: try gRPC first (faster, uses ClusterManager cache)
-        if self._use_grpc and self._grpc_stub:
+            pods = await self._discover_pods_via_kubectl()
+        elif self._use_grpc and self._grpc_stub:
             try:
-                return await self._discover_pods_via_grpc()
+                pods = await self._discover_pods_via_grpc()
             except Exception as e:
                 logger.warning("gRPC pod discovery failed, falling back to kubectl", error=str(e))
-        
-        # Fallback to kubectl
-        return await self._discover_pods_via_kubectl()
+                pods = await self._discover_pods_via_kubectl()
+        else:
+            pods = await self._discover_pods_via_kubectl()
+
+        try:
+            await self._enrich_with_owner_annotations(pods)
+        except Exception as e:
+            logger.warning("Owner annotation enrichment failed (non-fatal)", error=str(e))
+
+        return pods
+
+    async def _enrich_with_owner_annotations(self, pods: Dict[str, PodInfo]):
+        """Merge Deployment/StatefulSet annotations into their pods.
+        Pod's own annotations always take priority over owner annotations.
+        This enables deployment-level metadata (git-repo, team, etc.) to
+        be visible on pods even when set only on the Deployment object."""
+        if not pods:
+            return
+
+        owner_annotations: Dict[tuple, Dict[str, str]] = {}
+
+        if not self.kubeconfig and self._use_grpc and self._grpc_stub:
+            owner_annotations = await self._fetch_owner_annotations_grpc()
+        else:
+            owner_annotations = await self._fetch_owner_annotations_kubectl()
+
+        if not owner_annotations:
+            return
+
+        merged_count = 0
+        for pod_info in pods.values():
+            deploy_name = self._resolve_owner_deployment_name(pod_info)
+            if not deploy_name:
+                continue
+
+            key = (pod_info.namespace, deploy_name)
+            owner_anns = owner_annotations.get(key)
+            if owner_anns:
+                merged = {**owner_anns, **pod_info.annotations}
+                pod_info.annotations = merged
+                merged_count += 1
+
+        if merged_count:
+            logger.info("Enriched pods with owner annotations",
+                        merged_count=merged_count,
+                        owner_count=len(owner_annotations))
+
+    @staticmethod
+    def _resolve_owner_deployment_name(pod_info: 'PodInfo') -> str:
+        """Determine the owning Deployment/StatefulSet name for a pod.
+        Strategy:
+        1. Standard K8s labels (most reliable)
+        2. For ReplicaSet-owned pods, strip the pod-template-hash suffix
+        3. For StatefulSet/DaemonSet-owned pods, use owner_name directly
+        4. Fallback to owner_name from labels
+        """
+        labels = pod_info.labels or {}
+
+        name = labels.get('app.kubernetes.io/name') or labels.get('app')
+        if name:
+            return name
+
+        if pod_info.owner_kind == 'ReplicaSet' and pod_info.owner_name:
+            template_hash = labels.get('pod-template-hash', '')
+            if template_hash and pod_info.owner_name.endswith(f'-{template_hash}'):
+                return pod_info.owner_name[:-len(f'-{template_hash}')]
+            parts = pod_info.owner_name.rsplit('-', 1)
+            if len(parts) == 2 and len(parts[1]) >= 8 and parts[1].isalnum():
+                return parts[0]
+
+        if pod_info.owner_kind in ('StatefulSet', 'DaemonSet') and pod_info.owner_name:
+            return pod_info.owner_name
+
+        return pod_info.owner_name or ''
+
+    async def _fetch_owner_annotations_grpc(self) -> Dict[tuple, Dict[str, str]]:
+        """Fetch Deployment and StatefulSet annotations via gRPC.
+        Returns {(namespace, name): filtered_annotations}."""
+        result: Dict[tuple, Dict[str, str]] = {}
+        namespaces_to_query = self._namespaces if self._namespaces else [None]
+
+        for ns in namespaces_to_query:
+            try:
+                dep_req = cluster_manager_pb2.ListDeploymentsRequest(
+                    cluster_id="", namespace=ns or ""
+                )
+                dep_resp = await self._grpc_stub.ListDeployments(dep_req, timeout=30)
+                for dep in dep_resp.deployments:
+                    anns = dict(dep.annotations) if dep.annotations else {}
+                    if anns:
+                        result[(dep.namespace, dep.name)] = anns
+            except grpc.RpcError as e:
+                logger.debug("gRPC ListDeployments failed for namespace",
+                             namespace=ns, error=str(e))
+
+            try:
+                sts_req = cluster_manager_pb2.ListStatefulSetsRequest(
+                    cluster_id="", namespace=ns or ""
+                )
+                sts_resp = await self._grpc_stub.ListStatefulSets(sts_req, timeout=30)
+                for sts in sts_resp.statefulsets:
+                    anns = dict(sts.annotations) if sts.annotations else {}
+                    if anns:
+                        result[(sts.namespace, sts.name)] = anns
+            except grpc.RpcError as e:
+                logger.debug("gRPC ListStatefulSets failed for namespace",
+                             namespace=ns, error=str(e))
+
+        logger.debug("Fetched owner annotations via gRPC", count=len(result))
+        return result
+
+    async def _fetch_owner_annotations_kubectl(self) -> Dict[tuple, Dict[str, str]]:
+        """Fetch Deployment and StatefulSet annotations via kubectl.
+        Returns {(namespace, name): filtered_annotations}."""
+        result: Dict[tuple, Dict[str, str]] = {}
+        kubectl_path = shutil.which('kubectl')
+        if not kubectl_path:
+            return result
+
+        for resource_kind in ('deployments', 'statefulsets'):
+            cmd = [kubectl_path, 'get', resource_kind, '-o', 'json']
+            if self._namespaces:
+                for ns in self._namespaces:
+                    ns_result = await self._kubectl_get_owner_annotations(
+                        kubectl_path, resource_kind, ns
+                    )
+                    result.update(ns_result)
+                continue
+
+            cmd.append('-A')
+            if self.kubeconfig:
+                cmd.extend(['--kubeconfig', self.kubeconfig])
+            if self.context:
+                cmd.extend(['--context', self.context])
+
+            try:
+                proc_result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda c=cmd: subprocess.run(c, capture_output=True, text=True, timeout=30)
+                )
+                if proc_result.returncode == 0:
+                    result.update(self._parse_owner_annotations_json(proc_result.stdout))
+            except Exception as e:
+                logger.debug("kubectl owner annotation fetch failed",
+                             resource=resource_kind, error=str(e))
+
+        logger.debug("Fetched owner annotations via kubectl", count=len(result))
+        return result
+
+    async def _kubectl_get_owner_annotations(
+        self, kubectl_path: str, resource_kind: str, namespace: str
+    ) -> Dict[tuple, Dict[str, str]]:
+        """Fetch annotations for a specific resource kind in a namespace."""
+        cmd = [kubectl_path, 'get', resource_kind, '-n', namespace, '-o', 'json']
+        if self.kubeconfig:
+            cmd.extend(['--kubeconfig', self.kubeconfig])
+        if self.context:
+            cmd.extend(['--context', self.context])
+
+        try:
+            proc_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda c=cmd: subprocess.run(c, capture_output=True, text=True, timeout=30)
+            )
+            if proc_result.returncode == 0:
+                return self._parse_owner_annotations_json(proc_result.stdout)
+        except Exception as e:
+            logger.debug("kubectl owner annotation fetch failed",
+                         resource=resource_kind, namespace=namespace, error=str(e))
+        return {}
+
+    @staticmethod
+    def _parse_owner_annotations_json(json_str: str) -> Dict[tuple, Dict[str, str]]:
+        """Parse kubectl JSON output and extract filtered annotations.
+        Applies the same filtering rules as cluster-manager (skip kubectl.kubernetes.io/,
+        kubernetes.io/, openshift.io/ prefixes and values > 500 chars)."""
+        result: Dict[tuple, Dict[str, str]] = {}
+        try:
+            data = json.loads(json_str)
+            for item in data.get('items', []):
+                metadata = item.get('metadata', {})
+                name = metadata.get('name', '')
+                namespace = metadata.get('namespace', '')
+                raw_anns = metadata.get('annotations', {}) or {}
+                filtered = {
+                    k: v for k, v in raw_anns.items()
+                    if not k.startswith('kubectl.kubernetes.io/')
+                    and not k.startswith('kubernetes.io/')
+                    and not k.startswith('openshift.io/')
+                    and len(str(v)) < 500
+                }
+                if filtered:
+                    result[(namespace, name)] = filtered
+        except (json.JSONDecodeError, Exception):
+            pass
+        return result
     
     async def _discover_pods_via_grpc(self) -> Dict[str, PodInfo]:
         """Discover pods using Cluster Manager gRPC API"""

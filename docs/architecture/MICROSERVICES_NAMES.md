@@ -1,6 +1,6 @@
-# 🐟 Flowfish - Microservice İsimlendirme
+# 🐟 Flowfish - Microservice Naming
 
-## Service İsimleri
+## Service Names
 
 | Service | Kubernetes Name | Container Name | Port | Description |
 |---------|----------------|----------------|------|-------------|
@@ -14,37 +14,37 @@
 
 ---
 
-## Worker İsimleri
+## Worker Names
 
 ### Ingestion Service (Data Collector Worker)
-**Önerilen İsim:** `flowfish-ingestion`
+**Recommended name:** `flowfish-ingestion`
 
-**Alternatifler:**
-- ❌ `flowfish-collector` (çok genel)
-- ❌ `flowfish-data-collector` (çok uzun)
-- ❌ `flowfish-gadget-worker` (implementation detayı)
-- ✅ **`flowfish-ingestion`** (kısa, açık, mikroservis mimarisinde standart)
+**Alternatives:**
+- ❌ `flowfish-collector` (too generic)
+- ❌ `flowfish-data-collector` (too long)
+- ❌ `flowfish-gadget-worker` (implementation detail)
+- ✅ **`flowfish-ingestion`** (short, clear, standard in microservice architecture)
 
-**Açıklama:**  
-"Ingestion" terimi, streaming data architectures'da gelen veriyi kabul edip işleme sokan bileşenleri ifade eder. Kafka Ingestion, Stream Ingestion gibi kullanımlar yaygındır.
+**Explanation:**  
+The term "Ingestion" refers to components that accept incoming data and feed it into processing in streaming data architectures. Uses like Kafka Ingestion and Stream Ingestion are common.
 
 ---
 
 ### ClickHouse Writer (Stream Writer)
-**Önerilen İsim:** `flowfish-writer`
+**Recommended name:** `flowfish-writer`
 
-**Alternatifler:**
-- ❌ `flowfish-clickhouse-writer` (çok uzun, implementation detayı)
-- ❌ `flowfish-sink` (çok genel, belirsiz)
-- ❌ `flowfish-stream-writer` (orta seviye ama redundant)
-- ✅ **`flowfish-writer`** (kısa, açık, ne yaptığı belli)
+**Alternatives:**
+- ❌ `flowfish-clickhouse-writer` (too long, implementation detail)
+- ❌ `flowfish-sink` (too generic, vague)
+- ❌ `flowfish-stream-writer` (middling but redundant)
+- ✅ **`flowfish-writer`** (short, clear, obvious role)
 
-**Açıklama:**  
-"Writer" terimi, streaming mimarilerinde veriyi son hedefine yazan bileşenleri ifade eder. Clickhouse Writer, Kafka Writer gibi kullanımlar yaygındır.
+**Explanation:**  
+The term "Writer" refers to components that write data to the final destination in streaming architectures. Uses like Clickhouse Writer and Kafka Writer are common.
 
 ---
 
-## Kubernetes Deployment İsimlendirme
+## Kubernetes Deployment Naming
 
 ```yaml
 # Ingestion Service
@@ -112,7 +112,7 @@ spec:
 
 ## Service Discovery (Internal DNS)
 
-Kubernetes içinde servisler birbiriyle DNS üzerinden iletişim kurar:
+Inside Kubernetes, services talk to each other over DNS:
 
 ```
 flowfish-api.flowfish.svc.cluster.local:8000
@@ -124,7 +124,7 @@ flowfish-writer.flowfish.svc.cluster.local:5005
 change-detection-worker.flowfish.svc.cluster.local:8001
 ```
 
-Kısa isim kullanımı (aynı namespace içinde):
+Short names (same namespace):
 ```
 flowfish-api:8000
 flowfish-cluster-mgr:5001
@@ -137,7 +137,7 @@ change-detection-worker:8001
 
 ---
 
-## Docker Image İsimlendirme
+## Docker Image Naming
 
 ```bash
 # Public Docker Hub
@@ -158,7 +158,7 @@ registry.example.com/flowfish/cluster-manager:v1.0.0
 
 ## Environment Variables
 
-Her servis için standart environment variables:
+Standard environment variables per service:
 
 ```bash
 # Common
@@ -187,7 +187,7 @@ ORCHESTRATOR_URL=flowfish-orchestrator:5002
 
 ## Logging & Monitoring Labels
 
-Prometheus metrics ve logging için standart labels:
+Standard labels for Prometheus metrics and logging:
 
 ```yaml
 labels:
@@ -207,30 +207,29 @@ http://flowfish-writer:5005/metrics
 ---
 
 ### Change Detection Worker (Scalable Background Worker)
-**Önerilen İsim:** `change-detection-worker`
+**Recommended name:** `change-detection-worker`
 
-**Özellikler:**
-- ✅ Standalone microservice (ayrı Pod olarak çalışır)
-- ✅ Horizontally scalable (leader election ile)
+**Characteristics:**
+- ✅ Standalone microservice (runs as its own Pod)
+- ✅ Horizontally scalable (with leader election)
 - ✅ Redis-based leader election for HA
 - ✅ Health checks: `/health`, `/ready`, `/metrics`
 
 **Port:** 8001 (HTTP)
 
-**Açıklama:**  
-Change Detection Worker, periyodik olarak altyapı değişikliklerini tespit eden scalable bir worker'dır. PostgreSQL ve Neo4j'den veri okuyarak workload/connection değişikliklerini, risk seviyelerini ve blast radius'u hesaplar.
+**Explanation:**  
+Change Detection Worker is a scalable worker that periodically detects infrastructure changes. It reads from PostgreSQL and Neo4j to compute workload/connection changes, risk levels, and blast radius.
 
 ---
 
-## Karar
+## Decision
 
 ✅ **Ingestion Service:** `flowfish-ingestion`  
 ✅ **ClickHouse Writer:** `flowfish-writer`
 
-Bu isimler:
-- Kısa ve kolay hatırlanır
-- Mikroservis standartlarına uygun
+These names are:
+- Short and easy to remember
+- Aligned with microservice conventions
 - Kubernetes DNS friendly
-- Implementation detaylarını gizler (flexibility)
-- Streaming data architecture terminolojisiyle uyumlu
-
+- Hide implementation details (flexibility)
+- Consistent with streaming data architecture terminology

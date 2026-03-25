@@ -328,7 +328,7 @@ const AIIntegrationHub: React.FC = () => {
 
     if (platform === 'azure_devops') {
       return `# Azure DevOps Pipeline - Flowfish Integration
-# Get your API key from Flowfish Settings > API Keys
+# Set FLOWFISH_API_KEY as a secret variable in Pipeline Settings > Variables
 variables:
   FLOWFISH_URL: '${baseUrl}'
   FLOWFISH_QUERY: '${qsStr}'
@@ -412,18 +412,20 @@ flowfish_dependencies:
 
     if (platform === 'jenkins') {
       return `// Jenkins Pipeline - Flowfish Integration
-// Store FLOWFISH_API_KEY and FLOWFISH_URL in Jenkins credentials
+// Store API key as a Secret Text credential named 'flowfish-api-key'
 def FLOWFISH_URL = '${baseUrl}'
 def FLOWFISH_QUERY = '${qsStr}'
 
 stage('Flowfish Dependencies') {
     steps {
-        script {
-            def deps = sh(returnStdout: true, script: """
-                curl -sf -H "X-API-Key: \${FLOWFISH_API_KEY}" \\
-                  "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}"
-            """).trim()
-            writeFile file: 'flowfish-deps.json', text: deps
+        withCredentials([string(credentialsId: 'flowfish-api-key', variable: 'FLOWFISH_API_KEY')]) {
+            script {
+                def deps = sh(returnStdout: true, script: """
+                    curl -sf -H "X-API-Key: \${FLOWFISH_API_KEY}" \\
+                      "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}"
+                """).trim()
+                writeFile file: 'flowfish-deps.json', text: deps
+            }
         }
     }
 }`;
@@ -451,20 +453,22 @@ curl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\
     if (summaryParams.namespace) paramLines.push(`    ("namespace", "${summaryParams.namespace}"),`);
     if (summaryParams.owner_name) paramLines.push(`    ("owner_name", "${summaryParams.owner_name}"),`);
     if (summaryParams.pod_name) paramLines.push(`    ("pod_name", "${summaryParams.pod_name}"),`);
+    if (summaryParams.ip) paramLines.push(`    ("ip", "${summaryParams.ip}"),`);
     if (summaryParams.depth && summaryParams.depth > 1) paramLines.push(`    ("depth", "${summaryParams.depth}"),`);
 
     return `import requests
 
 FLOWFISH_URL = "${API_BASE}"
-API_KEY = "**********"  # Get from Settings > API Keys
+FLOWFISH_API_KEY = "**********"  # Get from Settings > API Keys
 
 resp = requests.get(
     f"{FLOWFISH_URL}/communications/dependencies/summary",
     params=[
 ${paramLines.join('\n')}
     ],
-    headers={"X-API-Key": API_KEY},
+    headers={"X-API-Key": FLOWFISH_API_KEY},
 )
+resp.raise_for_status()
 deps = resp.json()
 
 # Extract affected git repos from downstream annotations
@@ -498,6 +502,7 @@ const resp = await fetch(
   \`\${FLOWFISH_URL}/communications/dependencies/summary?${qsStr}\`,
   { headers: { "X-API-Key": FLOWFISH_API_KEY } }
 );
+if (!resp.ok) throw new Error(\`HTTP \${resp.status}: \${await resp.text()}\`);
 const deps = await resp.json();
 
 // Extract affected repos

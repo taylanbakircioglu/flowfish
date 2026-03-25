@@ -1,88 +1,88 @@
 # Flowfish - Executive Summary
 
-## 🐟 Genel Bakış
+## 🐟 Overview
 
-**Flowfish**, Kubernetes ve OpenShift ortamlarında çalışan uygulamalar arasındaki iletişimi ve bağımlılıkları otomatik olarak keşfeden, görselleştiren ve analiz eden yeni nesil bir platformdur. eBPF (Extended Berkeley Packet Filter) teknolojisini kullanan Inspektor Gadget framework'ü ile çekirdek seviyesinde veri toplayarak, uygulama katmanında herhangi bir değişiklik gerektirmeden tam görünürlük sağlar.
+**Flowfish** is a next-generation platform that automatically discovers, visualizes, and analyzes communication and dependencies between applications running in Kubernetes and OpenShift environments. Using eBPF (Extended Berkeley Packet Filter) technology with the Inspektor Gadget framework, it collects data at the kernel level and provides full visibility without requiring any changes at the application layer.
 
-### Metafor: Fish, Flow, Water
+### Metaphor: Fish, Flow, Water
 
-- **Fish (Balık)** → Kubernetes Pod'ları temsil eder
-- **Flow (Akış)** → Pod'lar arası network trafiği ve iletişimi ifade eder
-- **Water (Su)** → Tüm sistemin içinde aktığı Kubernetes/OpenShift ortamıdır
+- **Fish** → Represents Kubernetes Pods
+- **Flow** → Denotes network traffic and communication between Pods
+- **Water** → The Kubernetes/OpenShift environment in which the entire system flows
 
-## 🎯 Problem ve Çözüm
+## 🎯 Problem and Solution
 
 ### Problem
 
-Modern mikroservis mimarilerinde:
-- Uygulamalar arası bağımlılıklar manuel dokümante edilir ve hızla güncelliğini yitirir
-- Servisler arası iletişimin görünürlüğü sınırlıdır
-- Beklenmeyen iletişim değişiklikleri güvenlik ve stabilite riskleri yaratır
-- Network policy'lerinin etkilerini önceden test etmek zordur
-- Servis bağımlılıklarını anlamak için uzun troubleshooting süreleri gerekir
+In modern microservice architectures:
+- Inter-application dependencies are documented manually and quickly become outdated
+- Visibility into service-to-service communication is limited
+- Unexpected communication changes create security and stability risks
+- It is difficult to test the effects of network policies in advance
+- Long troubleshooting cycles are needed to understand service dependencies
 
-### Çözüm: Flowfish
+### Solution: Flowfish
 
-Flowfish, bu sorunları şu yeteneklerle çözer:
+Flowfish addresses these challenges with the following capabilities:
 
-1. **Otomatik Keşif**: eBPF ile tüm Pod, Deployment, StatefulSet ve Service'ler arası iletişimi otomatik tespit eder
-2. **Gerçek Zamanlı Görünürlük**: Anlık bağımlılık haritaları ve trafik akışları sunar
-3. **Geçmiş Analizi**: Zaman içindeki değişimleri izler ve karşılaştırır
-4. **AI Destekli Anomali Tespiti**: LLM entegrasyonu ile şüpheli trafik pattern'lerini otomatik tespit eder
-5. **What-If Simülasyonu**: Network policy değişikliklerinin etkilerini uygulama yapmadan önceden test eder
+1. **Automatic Discovery**: Automatically detects communication across all Pods, Deployments, StatefulSets, and Services using eBPF
+2. **Real-Time Visibility**: Provides live dependency maps and traffic flows
+3. **Historical Analysis**: Tracks and compares changes over time
+4. **AI-Powered Anomaly Detection**: Automatically detects suspicious traffic patterns via LLM integration
+5. **What-If Simulation**: Tests the impact of network policy changes before applying them
 
-## 🚀 Temel Yetenekler
+## 🚀 Core Capabilities
 
-### 1. Universal Data Ingestion (Evrensel Veri Toplama)
-eBPF'nin ötesinde, **çoklu kaynaklardan veri toplama**:
+### 1. Universal Data Ingestion
+Beyond eBPF, **data collection from multiple sources**:
 - **Infrastructure**: eBPF, Kubernetes Events/Metrics, CNI plugins
 - **Application**: Prometheus, Service Mesh (Istio/Linkerd), APM traces, Logs
 - **External**: Cloud APIs, CI/CD systems, incident management tools
 
-**Dependency Provenance** (köken izleme): Her bağımlılık için tam veri kökeni:
-- Hangi kaynaktan tespit edildi (eBPF, Istio, Prometheus)
-- Ne zaman keşfedildi, kim doğruladı
-- Güven skoru (0-100%)
+**Dependency Provenance** (origin tracking): Full data lineage for every dependency:
+- Which source detected it (eBPF, Istio, Prometheus)
+- When it was discovered and who validated it
+- Confidence score (0–100%)
 - Multi-source verification
 
-### 2. Uygulama İletişimi ve Bağımlılık Haritası
-- Pod, Deployment, StatefulSet, Service seviyesinde iletişim keşfi
-- Port, protokol, request count, latency gibi detaylı metrikler
-- Etkileşimli graph görselleştirme (node-edge yapısı)
-- Gerçek zamanlı ve geçmişe dönük görüntüleme
-- Cluster, namespace, workload türü ve label bazlı filtreleme
-- Katmanlı görünüm (frontend → backend → database)
-- Fiziksel görünüm (Node / Pod / Service bazlı)
+### 2. Application Communication and Dependency Map
+- Communication discovery at Pod, Deployment, StatefulSet, and Service level
+- Detailed metrics such as port, protocol, request count, latency
+- Interactive graph visualization (node–edge structure)
+- Real-time and historical views
+- Filtering by cluster, namespace, workload type, and labels
+- Layered view (frontend → backend → database)
+- Physical view (Node / Pod / Service based)
 
 ### 3. Disaster Recovery Posture Assessment
-**Stateful workload'lar için otomatik DR değerlendirmesi**:
-- **RPO (Recovery Point Objective)**: Backup sıklığı, son backup zamanı
-- **RTO (Recovery Time Objective)**: Tahmini restore süresi
-- **Parity Check**: Primary-replica data consistency, replication lag
-- **Backup TTL**: Retention period, compliance kontrolü
+**Automatic DR assessment for stateful workloads**:
+- **RPO (Recovery Point Objective)**: Backup frequency, last backup time
+- **RTO (Recovery Time Objective)**: Estimated restore duration
+- **Parity Check**: Primary–replica data consistency, replication lag
+- **Backup TTL**: Retention period, compliance checks
 
-**Otomatik Tespit**:
+**Automatic Detection**:
 - StatefulSets (PostgreSQL, MongoDB, Redis, Kafka)
-- PVC snapshot durumu
+- PVC snapshot status
 - Cross-region replication
 - Velero/Stash backup job status
 
-### 4. Analiz Wizard'ı
-4 adımlı sezgisel wizard yapısı:
-- **Adım 1**: Scope seçimi (Cluster, Namespace, Deployment, Pod, Label)
-- **Adım 2**: Gadget modülleri seçimi (Network, DNS, TCP, Process, Syscall, File)
-- **Adım 3**: Zaman ve profil ayarları
-- **Adım 4**: Çıktı ve entegrasyon yapılandırması
+### 4. Analysis Wizard
+Four-step intuitive wizard structure:
+- **Step 1**: Scope selection (Cluster, Namespace, Deployment, Pod, Label)
+- **Step 2**: Gadget module selection (Network, DNS, TCP, Process, Syscall, File)
+- **Step 3**: Time and profile settings
+- **Step 4**: Output and integration configuration
 
 ### 5. Change Detection & Anomaly Detection
-- Yeni ve kaybolan bağlantıları tespit eder
-- Trafik artış ve düşüşlerini izler
-- Şüpheli pattern'leri AI ile analiz eder
-- Bilinmeyen servis iletişimlerini raporlar
-- Policy ihlallerini (beklenmeyen port/protocol) uyarır
+- Detects new and lost connections
+- Monitors traffic increases and decreases
+- Analyzes suspicious patterns with AI
+- Reports unknown service communication
+- Alerts on policy violations (unexpected port/protocol)
 
 ### 6. Governance Automation & Policy-as-Code
-**CI/CD entegrasyonu ile otomatik policy checks**:
+**Automatic policy checks with CI/CD integration**:
 
 **Pre-Deployment Checks:**
 - Network policy coverage
@@ -91,11 +91,11 @@ eBPF'nin ötesinde, **çoklu kaynaklardan veri toplama**:
 - Pod security standards compliance
 - Resource limits validation
 
-**Admission Controller**: Kubernetes webhook ile deployment-time validation
+**Admission Controller**: Deployment-time validation via Kubernetes webhook
 
 **CI/CD Plugins**: GitHub Actions, GitLab CI, Jenkins, ArgoCD, FluxCD
 
-**Policy as Code**: YAML ile custom policy tanımlama:
+**Policy as Code**: Custom policy definitions in YAML:
 ```yaml
 rules:
   - name: require-network-policy
@@ -105,18 +105,18 @@ rules:
 ```
 
 ### 7. Natural Language Queries & Explainable AI
-**Doğal dilde soru sor, AI-powered cevaplar al**:
+**Ask in natural language, get AI-powered answers**:
 
-**Örnek Sorgular:**
+**Example Queries:**
 - "Show me all external connections from payment service"
 - "Why is checkout-service slow today?"
 - "What happens if I delete redis-cache?"
 - "Find all services without network policies"
 
-**Grounded AI Responses** (kanıtlı cevaplar):
-- Her claim için veri kaynağı gösterilir
+**Grounded AI Responses**:
+- Data sources shown for every claim
 - Evidence-based (eBPF, Kubernetes API, Prometheus)
-- Confidence score (0-100%)
+- Confidence score (0–100%)
 - Actionable recommendations
 - Full traceability
 
@@ -124,171 +124,171 @@ rules:
 - Interactive debugging
 - Root cause analysis
 - Step-by-step investigation
-- Proactive insights ve öneriler
+- Proactive insights and recommendations
 
 ### 8. Import / Export
-İki format desteği:
-- **Format 1 - CSV**: İnsan okunabilir, analiz için ideal
-- **Format 2 - Graph JSON**: Sistem formatı, Neo4j uyumlu, yeniden import edilebilir
+Two supported formats:
+- **Format 1 - CSV**: Human-readable, ideal for analysis
+- **Format 2 - Graph JSON**: System format, Neo4j-compatible, re-importable
 
-Özellikler:
-- Manuel ve otomatik periyodik export
-- Tek dosya veya batch import
-- Mevcut harita ile merge veya overwrite
-- Snapshot versiyonlama
+Features:
+- Manual and automatic periodic export
+- Single-file or batch import
+- Merge or overwrite with existing map
+- Snapshot versioning
 
 ### 9. Multi-Cluster / Multi-Domain
-- Birden fazla Kubernetes/OpenShift cluster'ını tek arayüzden yönetim
-- İzole veya birleştirilmiş görüntüleme
-- Domain bazlı filtreleme
-- Yetki bazlı erişim kontrolü
+- Manage multiple Kubernetes/OpenShift clusters from a single interface
+- Isolated or merged views
+- Domain-based filtering
+- Role-based access control
 
-### 10. Kapsamlı Dashboard'lar
-- **Ana Dashboard**: Genel sistem metrikleri, anomali sayısı, risk skorları
-- **Application Dependency**: Upstream/downstream görünüm, kritik bağımlılıklar
-- **Traffic & Behavior**: Zaman bazlı trafik grafikleri, normal/anormal karşılaştırması
-- **Security & Risk**: Açık portlar, beklenmeyen iletişimler, policy önerileri
-- **Change Timeline**: Günlük/haftalık değişimler, topoloji drift oranı
-- **Audit & Activity**: Kullanıcı işlemleri, analiz geçmişi, import/export logları
+### 10. Comprehensive Dashboards
+- **Main Dashboard**: Overall system metrics, anomaly counts, risk scores
+- **Application Dependency**: Upstream/downstream view, critical dependencies
+- **Traffic & Behavior**: Time-based traffic charts, normal vs. abnormal comparison
+- **Security & Risk**: Open ports, unexpected communication, policy recommendations
+- **Change Timeline**: Daily/weekly changes, topology drift rate
+- **Audit & Activity**: User actions, analysis history, import/export logs
 
-## 🏗️ Teknik Mimari (Kısa Özet)
+## 🏗️ Technical Architecture (Brief)
 
-### Veri Katmanı
-- **ClickHouse**: Metric & time-series veriler için yüksek performanslı OLAP veritabanı
-- **PostgreSQL**: İlişkisel veriler (kullanıcılar, konfigürasyon, metadata)
-- **Redis**: Cache ve real-time metrics
-- **Neo4j**: Graph veritabanı, bağımlılık haritaları
+### Data Layer
+- **ClickHouse**: High-performance OLAP database for metrics and time-series data
+- **PostgreSQL**: Relational data (users, configuration, metadata)
+- **Redis**: Cache and real-time metrics
+- **Neo4j**: Graph database for dependency maps
 
-### Uygulama Katmanı
+### Application Layer
 - **Backend**: Python + FastAPI
   - User management, RBAC
-  - Analiz orkestrasyonu
-  - Import/export işlemleri
-  - LLM entegrasyonu
+  - Analysis orchestration
+  - Import/export operations
+  - LLM integration
   - Scheduler
-  - Graph & DB sorguları
+  - Graph & DB queries
 - **Frontend**: ReactJS + Ant Design + Cytoscape.js
 
-### Veri Toplama
-- **Inspektor Gadget**: DaemonSet olarak her node'da çalışır
-- Varsayılan olarak pasif, sadece analiz başlatıldığında aktif
-- eBPF ile çekirdek seviyesinde veri toplama (sıfır overhead)
+### Data Collection
+- **Inspektor Gadget**: Runs as a DaemonSet on every node
+- Passive by default; active only when analysis is started
+- Kernel-level data collection with eBPF (near-zero overhead)
 
-## 🔒 Güvenlik ve Yetkilendirme
+## 🔒 Security and Authorization
 
-### Multi-Tenant Mimari
-- Cluster ve namespace bazlı izolasyon
-- Veri ayrımı ve gizlilik garantisi
+### Multi-Tenant Architecture
+- Isolation by cluster and namespace
+- Data separation and privacy guarantees
 
-### RBAC Rolleri
-- **Super Admin**: Tam sistem kontrolü
-- **Platform Admin**: Platform yönetimi
-- **Security Analyst**: Güvenlik analizi ve raporlama
-- **Developer**: Sadece okuma yetkisi
+### RBAC Roles
+- **Super Admin**: Full system control
+- **Platform Admin**: Platform management
+- **Security Analyst**: Security analysis and reporting
+- **Developer**: Read-only access
 
-### Kimlik Doğrulama
-- OAuth 2.0 / SSO entegrasyonu
+### Authentication
+- OAuth 2.0 / SSO integration
 - Kubernetes Service Account Authentication
-- API Key desteği
+- API Key support
 
-## 📊 Kullanım Senaryoları
+## 📊 Use Cases
 
-### Senaryo 1: Mikroservis Bağımlılık Dokümantasyonu
-Geliştirme ekibi yeni bir servis deploy ediyor. Flowfish otomatik olarak:
-- Hangi servislere bağlandığını tespit eder
-- Hangi port ve protokolleri kullandığını gösterir
-- Bağımlılık haritasını günceller
-- Risk skorunu hesaplar
+### Scenario 1: Microservice Dependency Documentation
+A development team deploys a new service. Flowfish automatically:
+- Detects which services it connects to
+- Shows which ports and protocols it uses
+- Updates the dependency map
+- Computes the risk score
 
-### Senaryo 2: Güvenlik İhlali Tespiti
-Bir pod aniden bilinmeyen bir external IP'ye bağlantı kuruyor. Flowfish:
-- Yeni bağlantıyı anında tespit eder
-- LLM ile anomali analizi yapar
-- Security Analyst'e alarm gönderir
-- İlgili pod ve namespace bilgilerini raporlar
+### Scenario 2: Security Incident Detection
+A pod suddenly connects to an unknown external IP. Flowfish:
+- Detects the new connection immediately
+- Runs anomaly analysis with the LLM
+- Alerts the Security Analyst
+- Reports the relevant pod and namespace information
 
-### Senaryo 3: Network Policy Test
-Platform ekibi yeni bir network policy uygulamak istiyor. Flowfish ile:
-- Mevcut trafik pattern'i baseline olarak kaydedilir
-- Policy simulator ile değişiklik test edilir
-- Etkilenecek bağlantılar gösterilir
-- Uygulama sonrası değişim karşılaştırılır
+### Scenario 3: Network Policy Testing
+The platform team wants to apply a new network policy. With Flowfish:
+- Current traffic patterns are recorded as a baseline
+- Changes are tested with the policy simulator
+- Affected connections are shown
+- Post-apply changes are compared
 
-### Senaryo 4: Incident Troubleshooting
-Production'da bir servis çalışmıyor. Flowfish:
-- Son 24 saatteki trafik değişimlerini gösterir
-- Kaybolan bağlantıları listeler
-- Bağımlı servislerin durumunu kontrol eder
-- Root cause'u hızlıca bulmayı sağlar
+### Scenario 4: Incident Troubleshooting
+A service is down in production. Flowfish:
+- Shows traffic changes over the last 24 hours
+- Lists lost connections
+- Checks the status of dependent services
+- Helps find the root cause quickly
 
-### Senaryo 5: Change Advisory Process (CAP) Otomasyonu
-DevOps ekibi payment-service'i v2.3'ten v2.5'e güncellemek istiyor. Flowfish CAP entegrasyonu ile:
-- Otomatik impact analizi: 12 upstream, 8 downstream servis etkileniyor
-- Breaking API değişikliği tespit edildi (checkout-service uyumlu değil)
-- Risk skoru: 65 (High) - Security Lead ve Change Manager onayı gerekli
-- Öneriler: Önce checkout-service'i güncelle, canary deployment kullan
-- ServiceNow'da otomatik Change Request oluşturuldu
-- Onaylar tamamlandıktan sonra: Otomatik deployment + post-change validation
-- Eğer hata oranı %5'i geçerse: Otomatik rollback v2.3'e
+### Scenario 5: Change Advisory Process (CAP) Automation
+The DevOps team wants to upgrade payment-service from v2.3 to v2.5. With Flowfish CAP integration:
+- Automatic impact analysis: 12 upstream, 8 downstream services affected
+- Breaking API change detected (checkout-service incompatible)
+- Risk score: 65 (High) — Security Lead and Change Manager approval required
+- Recommendations: Upgrade checkout-service first, use canary deployment
+- Automatic Change Request created in ServiceNow
+- After approvals: Automatic deployment + post-change validation
+- If error rate exceeds 5%: Automatic rollback to v2.3
 
-## 📈 Rekabet Avantajları
+## 📈 Competitive Advantages
 
-| Özellik | Flowfish | Geleneksel APM | Service Mesh |
-|---------|----------|----------------|--------------|
-| **Kurulum Karmaşıklığı** | Düşük (DaemonSet) | Orta-Yüksek | Yüksek |
-| **Uygulama Değişikliği** | Yok | Ajan kurulumu | Sidecar injection |
-| **Performance Overhead** | Minimal (eBPF) | Orta | Orta-Yüksek |
-| **Bağımlılık Haritası** | ✅ Otomatik | ❌ Manuel | ✅ Otomatik |
-| **Geçmiş Analizi** | ✅ Full history | ⚠️ Sınırlı | ⚠️ Sınırlı |
-| **What-If Analizi** | ✅ Var | ❌ Yok | ❌ Yok |
-| **Multi-Cluster** | ✅ Native | ⚠️ Eklenti ile | ⚠️ Eklenti ile |
-| **AI Anomali Tespiti** | ✅ LLM entegre | ❌ Yok | ❌ Yok |
+| Feature | Flowfish | Traditional APM | Service Mesh |
+|---------|----------|-----------------|--------------|
+| **Setup Complexity** | Low (DaemonSet) | Medium–High | High |
+| **Application Change** | None | Agent install | Sidecar injection |
+| **Performance Overhead** | Minimal (eBPF) | Medium | Medium–High |
+| **Dependency Map** | ✅ Automatic | ❌ Manual | ✅ Automatic |
+| **Historical Analysis** | ✅ Full history | ⚠️ Limited | ⚠️ Limited |
+| **What-If Analysis** | ✅ Yes | ❌ No | ❌ No |
+| **Multi-Cluster** | ✅ Native | ⚠️ Via add-on | ⚠️ Via add-on |
+| **AI Anomaly Detection** | ✅ LLM integrated | ❌ No | ❌ No |
 
-## 🎯 Hedef Kullanıcılar
+## 🎯 Target Users
 
-### Birincil
-- **Platform/DevOps Ekipleri**: Kubernetes/OpenShift altyapı yönetimi
-- **Security Operations Center (SOC)**: Güvenlik izleme ve anomali tespiti
-- **Site Reliability Engineers (SRE)**: Sistem güvenilirliği ve troubleshooting
+### Primary
+- **Platform/DevOps Teams**: Kubernetes/OpenShift infrastructure management
+- **Security Operations Center (SOC)**: Security monitoring and anomaly detection
+- **Site Reliability Engineers (SRE)**: System reliability and troubleshooting
 
-### İkincil
-- **Uygulama Geliştiriciler**: Mikroservis bağımlılıklarını anlama
-- **Compliance/Audit Ekipleri**: Network iletişim denetimi ve raporlama
-- **Architecture Ekipleri**: Sistem tasarımı ve dokümantasyon
+### Secondary
+- **Application Developers**: Understanding microservice dependencies
+- **Compliance/Audit Teams**: Network communication auditing and reporting
+- **Architecture Teams**: System design and documentation
 
-## 🌟 Başarı Metrikleri
+## 🌟 Success Metrics
 
-### Teknik Metrikler
-- Bağımlılık keşif doğruluğu: %99+
-- Real-time veri gecikme: <5 saniye
-- Graph sorgu performansı: <1 saniye
-- Desteklenen cluster boyutu: 10,000+ pod
+### Technical Metrics
+- Dependency discovery accuracy: 99%+
+- Real-time data latency: <5 seconds
+- Graph query performance: <1 second
+- Supported cluster size: 10,000+ pods
 
-### İş Metrikleri
-- Incident çözüm süresinde %70 azalma
-- Manuel dokümantasyon yükünde %90 azalma
-- Security incident tespit süresinde %80 iyileşme
-- Network policy güven seviyesinde %95 artış
+### Business Metrics
+- 70% reduction in incident resolution time
+- 90% reduction in manual documentation burden
+- 80% improvement in security incident detection time
+- 95% increase in confidence in network policies
 
-## 🛣️ Yol Haritası (Özet)
+## 🛣️ Roadmap (Summary)
 
-### Faz 1 - MVP (0-3 ay)
-Temel platform, otomatik keşif, gerçek zamanlı harita, wizard, temel dashboard
+### Phase 1 - MVP (0–3 months)
+Core platform, automatic discovery, real-time map, wizard, basic dashboards
 
-### Faz 2 - Advanced Features (4-6 ay)
-Geçmiş analizi, anomali tespiti, import/export, risk skorları, multi-cluster
+### Phase 2 - Advanced Features (4–6 months)
+Historical analysis, anomaly detection, import/export, risk scores, multi-cluster
 
-### Faz 3 - Enterprise Features (7-9 ay)
-What-if analizi, Change Simulation (CAP), gelişmiş AI/ML, compliance raporları, custom dashboards
+### Phase 3 - Enterprise Features (7–9 months)
+What-if analysis, Change Simulation (CAP), advanced AI/ML, compliance reports, custom dashboards
 
-## 📞 İletişim ve Destek
+## 📞 Contact and Support
 
-**Proje Adı**: Flowfish  
-**Versiyon**: 1.0.0 (Tasarım Aşaması)  
+**Project Name**: Flowfish  
+**Version**: 1.0.0 (Design Phase)  
 **Platform**: Kubernetes / OpenShift  
-**Lisans**: TBD (Enterprise/Commercial)
+**License**: TBD (Enterprise/Commercial)
 
 ---
 
-**Flowfish ile mikroservisleriniz arasındaki iletişim artık görünmez olmaktan çıkıyor!** 🐟🌊
+**With Flowfish, communication between your microservices is no longer invisible!** 🐟🌊
 

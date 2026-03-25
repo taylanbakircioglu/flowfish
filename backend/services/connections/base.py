@@ -101,6 +101,7 @@ class Deployment:
     replicas: int = 0
     available_replicas: int = 0
     labels: Dict[str, str] = field(default_factory=dict)
+    annotations: Dict[str, str] = field(default_factory=dict)
     image: Optional[str] = None
     created_at: Optional[str] = None
     spec_hash: str = ""
@@ -114,6 +115,7 @@ class Deployment:
             "replicas": self.replicas,
             "available_replicas": self.available_replicas,
             "labels": self.labels,
+            "annotations": self.annotations,
             "image": self.image,
             "created_at": self.created_at,
             "workload_type": "deployment",
@@ -225,6 +227,7 @@ class StatefulSet:
     replicas: int = 0
     ready_replicas: int = 0
     labels: Dict[str, str] = field(default_factory=dict)
+    annotations: Dict[str, str] = field(default_factory=dict)
     image: Optional[str] = None
     created_at: Optional[str] = None
     spec_hash: str = ""
@@ -238,6 +241,7 @@ class StatefulSet:
             "replicas": self.replicas,
             "ready_replicas": self.ready_replicas,
             "labels": self.labels,
+            "annotations": self.annotations,
             "workload_type": "statefulset",
             "image": self.image,
             "created_at": self.created_at,

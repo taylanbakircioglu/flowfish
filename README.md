@@ -29,6 +29,8 @@ Centralized multi-cluster Kubernetes observability platform — real-time depend
    - [Change Detection](#change-detection)
    - [Impact Simulation](#impact-simulation)
    - [Blast Radius Oracle](#blast-radius-oracle)
+   - [AI Integration Hub](#ai-integration-hub)
+   - [Pod & Deployment Annotations](#pod--deployment-annotations)
    - [Activity Monitor](#activity-monitor)
    - [Events Timeline](#events-timeline)
    - [Security Center](#security-center)
@@ -99,6 +101,9 @@ Unlike traditional APM tools that require agent installation or service meshes t
 - **Role-Based Access Control** — User and role management with Admin, Viewer, and custom roles with granular permissions
 - **Multi-Tab Dashboard** — Overview, Operations, Security, Network, Changes, and Workloads tabs with real-time metrics
 - **CI/CD Pipeline Integration** — Blast radius checks for Azure DevOps, GitHub Actions, Jenkins, and GitLab CI
+- **AI Integration Hub** — Guided wizard for AI agent and CI/CD pipeline dependency integrations with ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, and JavaScript
+- **Pod & Deployment Annotations** — Full annotation support including automatic merge of Deployment/StatefulSet annotations into pods, visible across Map, Network Explorer, Application Inventory, Impact Simulation, and AI Integration Hub
+- **API Key Management** — Generate, expire, and revoke API keys for secure programmatic access alongside JWT authentication
 
 ---
 
@@ -246,6 +251,10 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 
 ![API Documentation](docs/screenshots/APIs.png)
 
+**AI Integration Hub** — Guided wizard for setting up AI agent and CI/CD pipeline integrations with dependency data. Select an analysis, configure search parameters, test queries live, and generate ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, and JavaScript:
+
+![AI Integration Hub](docs/screenshots/ai-integration-hub.png)
+
 ---
 
 ### Management
@@ -282,7 +291,7 @@ Flowfish uses [Inspektor Gadget](https://github.com/inspektor-gadget/inspektor-g
 
 1. The user creates an analysis through the wizard, selecting which namespaces/workloads to observe and which gadgets to activate
 2. The backend instructs Inspektor Gadget to start the selected eBPF programs on the target nodes
-3. Captured events are streamed to the Ingestion Service, which enriches them with Kubernetes metadata (pod name, namespace, labels, deployment owner)
+3. Captured events are streamed to the Ingestion Service, which enriches them with Kubernetes metadata (pod name, namespace, labels, annotations, deployment owner). Annotations from owning Deployments and StatefulSets are automatically merged into pod metadata
 4. Enriched events are published to RabbitMQ and written to ClickHouse (time-series), Neo4j (graph relationships), and PostgreSQL (metadata)
 
 **Supported gadget modules:**
@@ -681,6 +690,77 @@ The UI includes a live test runner for ad-hoc assessments: select cluster, analy
 #### Assessment History
 
 Full history of all assessments with assessment ID, timestamp, target, namespace, change type, risk score, risk level, affected count, and pipeline source. Click any entry for detailed JSON view.
+
+---
+
+### AI Integration Hub
+
+The AI Integration Hub provides a **guided wizard** for setting up dependency data integrations with AI code agents and CI/CD pipelines. It enables cross-project impact analysis by exposing Flowfish dependency data through a compact, categorized JSON API.
+
+#### Use Case: Cross-Project Impact Analysis
+
+When a pull request is opened in Project A, an AI code agent (running as a build validation job) can query Flowfish to discover all services that depend on Project A — across clusters and namespaces. The agent receives a structured JSON response with upstream/downstream dependencies grouped by category, including rich metadata (annotations, labels, git-repo URLs, team ownership) that enables it to assess cross-project impact.
+
+#### Wizard Steps
+
+| Step | Description |
+|------|-------------|
+| **Integration Type** | Choose between AI Agent Integration (code analysis tools) or CI/CD Pipeline Integration (build/deploy automation) |
+| **Configure & Test** | Select analysis scope, choose a service identification method (Namespace + Deployment, Namespace + Pod, Annotation key/value), and optionally test the query live |
+| **Review & Setup** | Preview the dependency summary, review matched services and their metadata, and copy the generated integration code |
+
+#### Supported Platforms
+
+| Platform | Snippet Type |
+|----------|-------------|
+| **Azure DevOps** | YAML pipeline task with secret variable guidance |
+| **GitHub Actions** | Workflow step with secrets integration |
+| **Jenkins** | Groovy pipeline with `withCredentials` block |
+| **GitLab CI** | YAML job with CI/CD variable integration |
+| **Python** | `requests` library with proper parameter serialization |
+| **JavaScript** | `fetch` API with error handling |
+| **Generic CI/CD** | `curl` command with `--fail` flag |
+
+#### Authentication
+
+The generated snippets use API Keys (`X-API-Key` header) for authentication. API keys can be created, expired, and revoked from **Settings > API Keys**. The snippets include a `FLOWFISH_API_KEY` placeholder variable for secure credential management.
+
+#### Key API Endpoint
+
+```
+GET /api/v1/communications/dependencies/summary
+  ?analysis_ids=1,2
+  &namespace=my-app
+  &annotation_key=git-repo
+  &annotation_value=https://github.com/org/project-a
+```
+
+Returns a compact, grouped JSON response with:
+- **Upstream service** metadata (annotations, labels, kind, namespace)
+- **Downstream dependencies** grouped by service category (Database, Message Queue, Cache, API, etc.)
+- **Callers** (services that depend on the upstream)
+- **Matched services** list when multiple pods match the query
+
+---
+
+### Pod & Deployment Annotations
+
+Flowfish captures and displays Kubernetes annotations alongside labels for every discovered pod. Annotations from owning **Deployments** and **StatefulSets** are automatically merged into pod metadata during ingestion — pod-level annotations take priority in case of conflicts.
+
+This enables use cases such as:
+- **Git repository tracking** — Annotations like `git-repo: https://github.com/org/service-a` set during CI/CD deployment
+- **Team ownership** — Annotations like `team: payments-team` for organizational mapping
+- **Pipeline metadata** — Who triggered the deployment, build number, commit SHA
+- **Cross-project impact analysis** — AI agents use annotation data to identify which git repositories are affected
+
+Annotations are visible across:
+- **Dependency Map** — Node detail drawer with categorized, formatted annotations
+- **Application Inventory** — Searchable annotation column with expandable detail view
+- **Network Explorer** — Metadata column with annotations included in CSV exports
+- **Impact Simulation** — Affected service annotations in results and exports
+- **AI Integration Hub** — Annotations exposed in dependency summary API responses
+
+Internal Kubernetes annotations (`kubectl.kubernetes.io/`, `kubernetes.io/`, `openshift.io/` prefixes) are filtered during ingestion to reduce noise, and values exceeding 500 characters are excluded.
 
 ---
 
@@ -1466,10 +1546,12 @@ Interactive docs at `http://localhost:8000/api/docs` (Swagger) or `http://localh
 |---------------|-----------|-------------|
 | **Auth** | `/api/v1/auth` | Login, logout, refresh, user info |
 | **Users** | `/api/v1/users` | User management |
+| **API Keys** | `/api/v1/settings/api-keys` | API key creation, listing, and revocation |
 | **Clusters** | `/api/v1/clusters` | Cluster management, namespace listing |
 | **Analyses** | `/api/v1/analyses` | Create, start, stop, delete analyses |
 | **Dependencies** | `/api/v1/dependencies` | Graph queries, upstream/downstream |
 | **Communications** | `/api/v1/communications` | Network flow data |
+| **AI Integration** | `/api/v1/communications/dependencies/*` | Dependency summary, stream, batch, diff, and impact for AI agents and CI/CD pipelines |
 | **Changes** | `/api/v1/changes` | Change detection events |
 | **Blast Radius** | `/api/v1/blast-radius` | Pre-deployment assessment |
 | **Simulation** | `/api/v1/simulation` | Impact simulation |

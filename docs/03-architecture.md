@@ -1,28 +1,28 @@
-# Flowfish - Sistem Mimarisi
+# Flowfish - System Architecture
 
-Bu dokümant, Flowfish platformunun teknik mimarisini detaylı olarak açıklar.
+This document describes the technical architecture of the Flowfish platform in detail.
 
-## 📋 İçindekiler
+## 📋 Table of Contents
 
-- [Genel Bakış](#genel-bakış)
-- [Mantıksal Mimari](#mantıksal-mimari)
-- [Fiziksel Mimari](#fiziksel-mimari)
-- [Veri Akış Diyagramları](#veri-akış-diyagramları)
-- [Component Detayları](#component-detayları)
-- [Veri Modeli](#veri-modeli)
-- [API Mimarisi](#api-mimarisi)
-- [Deployment Mimarisi](#deployment-mimarisi)
+- [Overview](#overview)
+- [Logical Architecture](#logical-architecture)
+- [Physical Architecture](#physical-architecture)
+- [Data Flow Diagrams](#data-flow-diagrams)
+- [Component Details](#component-details)
+- [Data Model](#database-schemas-high-level)
+- [API Architecture](#api-architecture)
+- [Deployment Architecture](#deployment-architecture)
 
 ---
 
-## Genel Bakış
+## Overview
 
-Flowfish, mikro servis mimarisi prensiplerine göre tasarlanmış, Kubernetes/OpenShift native bir platformdur. eBPF tabanlı veri toplama, çoklu veritabanı kullanımı ve modern web teknolojileri ile yüksek performanslı, ölçeklenebilir bir çözüm sunar.
+Flowfish is a Kubernetes/OpenShift-native platform designed according to microservice architecture principles. It delivers a high-performance, scalable solution through eBPF-based data collection, multi-database usage, and modern web technologies.
 
-### Temel Prensipler
+### Core Principles
 
-1. **Cloud-Native**: Kubernetes/OpenShift için optimize edilmiş
-2. **Scalable**: Horizontal scaling desteği
+1. **Cloud-Native**: Optimized for Kubernetes/OpenShift
+2. **Scalable**: Horizontal scaling support
 3. **Resilient**: Fault-tolerant, self-healing
 4. **Observable**: Comprehensive logging, metrics, tracing
 5. **Secure**: Multi-tenant, RBAC, encryption
@@ -30,11 +30,11 @@ Flowfish, mikro servis mimarisi prensiplerine göre tasarlanmış, Kubernetes/Op
 
 ---
 
-## Mantıksal Mimari
+## Logical Architecture
 
-### Mimari Katmanlar
+### Architecture Layers
 
-Flowfish 5 ana katmandan oluşur:
+Flowfish consists of 5 main layers:
 
 ```mermaid
 graph TB
@@ -116,9 +116,9 @@ graph TB
     style K8S fill:#13c2c2,color:#fff
 ```
 
-### Katman Açıklamaları
+### Layer Descriptions
 
-#### 1. Presentation Layer (Sunum Katmanı)
+#### 1. Presentation Layer
 
 **React Frontend:**
 - Single Page Application (SPA)
@@ -135,7 +135,7 @@ graph TB
 - Request routing
 - Load balancing
 
-#### 2. Application Layer (Uygulama Katmanı)
+#### 2. Application Layer
 
 **Authentication Service:**
 - JWT token generation/validation
@@ -143,6 +143,7 @@ graph TB
 - Kubernetes SA authentication
 - Session management
 - RBAC enforcement
+- **Authentication methods:** JWT (Bearer) and API keys via the `X-API-Key` header are both supported for programmatic and UI access.
 
 **Analysis Orchestrator:**
 - Wizard workflow management
@@ -192,7 +193,7 @@ graph TB
   - Run-based filtering (filter changes by analysis run)
   - Analysis lifecycle-based data retention (no TTL)
 
-#### 3. Data Collection Layer (Veri Toplama Katmanı)
+#### 3. Data Collection Layer
 
 **Inspektor Gadget DaemonSet:**
 - eBPF program loading
@@ -215,7 +216,9 @@ graph TB
 - Namespace and cluster tagging
 - IP-to-workload mapping
 
-#### 4. Data Layer (Veri Katmanı)
+**Ingestion Service (enrichment):** The Ingestion Service enriches pod records with annotations merged from **pod-level** metadata and from the owning **Deployment** or **StatefulSet**. When the same key exists in both places, **pod annotations take precedence** in the merge.
+
+#### 4. Data Layer
 
 **PostgreSQL:**
 - Relational data (users, clusters, analyses, configurations)
@@ -245,7 +248,7 @@ graph TB
 - Pub/Sub for real-time updates
 - Distributed locks
 
-#### 5. Infrastructure Layer (Altyapı Katmanı)
+#### 5. Infrastructure Layer
 
 **Kubernetes/OpenShift:**
 - Container orchestration
@@ -270,7 +273,7 @@ graph TB
 
 ---
 
-## Fiziksel Mimari
+## Physical Architecture
 
 ### Deployment Architecture
 
@@ -494,9 +497,11 @@ Leader Election: Redis-based (optional)
 
 ---
 
-## Veri Akış Diyagramları
+## Data Flow Diagrams
 
-### 1. Veri Toplama Akışı
+### 1. Data Collection Flow
+
+Enrichment in this pipeline includes the Ingestion Service behavior described under [Logical Architecture — Data Collection Layer](#3-data-collection-layer): pod annotations merged from the pod and from the owning Deployment/StatefulSet, with pod-level values winning on conflicts.
 
 ```mermaid
 sequenceDiagram
@@ -542,7 +547,7 @@ sequenceDiagram
     UI->>UI: Render with Cytoscape.js
 ```
 
-### 2. Anomaly Detection Akışı
+### 2. Anomaly Detection Flow
 
 ```mermaid
 sequenceDiagram
@@ -582,7 +587,7 @@ sequenceDiagram
     API-->>Scheduler: Anomaly detection complete
 ```
 
-### 3. Import/Export Akışı
+### 3. Import/Export Flow
 
 ```mermaid
 sequenceDiagram
@@ -628,7 +633,7 @@ sequenceDiagram
     end
 ```
 
-### 4. Real-Time Update Akışı
+### 4. Real-Time Update Flow
 
 ```mermaid
 sequenceDiagram
@@ -661,11 +666,11 @@ sequenceDiagram
 
 ---
 
-## Component Detayları
+## Component Details
 
 ### Backend API (FastAPI)
 
-#### Teknoloji Stack
+#### Technology Stack
 - **Framework**: FastAPI 0.100+
 - **Language**: Python 3.11+
 - **ASGI Server**: Uvicorn
@@ -674,7 +679,7 @@ sequenceDiagram
 - **Validation**: Pydantic v2
 - **Authentication**: python-jose (JWT), authlib (OAuth)
 
-#### Modül Yapısı
+#### Module Structure
 
 ```
 backend/
@@ -813,7 +818,7 @@ backend/
 
 ### Frontend (React)
 
-#### Teknoloji Stack
+#### Technology Stack
 - **Framework**: React 18+
 - **UI Library**: Ant Design 5+
 - **Graph Visualization**: Cytoscape.js
@@ -825,7 +830,7 @@ backend/
 - **Build Tool**: Vite
 - **Language**: TypeScript
 
-#### Component Yapısı
+#### Component Structure
 
 ```
 frontend/
@@ -969,7 +974,25 @@ frontend/
 
 ---
 
-## Deployment Mimarisi
+## API Architecture
+
+The HTTP API is organized under `/api/v1/` (see the endpoint tree under **Backend API (FastAPI)** above). **Authentication** supports both **JWT** (standard Bearer tokens) and **API keys** supplied via the **`X-API-Key`** header, so automation, agents, and CI/CD can authenticate without an interactive login flow.
+
+**AI Integration** exposes dependency-oriented endpoints for AI agents and CI/CD pipelines (tagged **AI Integration** in the OpenAPI spec), including:
+
+| Area | Path (relative to `/api/v1`) |
+|------|------------------------------|
+| Summary | `GET /communications/dependencies/summary` |
+| Streaming | `GET /communications/dependencies/stream` |
+| Batch | `POST /communications/dependencies/batch` |
+| Diff | `GET /communications/dependencies/diff` |
+| Impact | `GET /communications/dependencies/impact` |
+
+These complement the core REST surface (graph, map, upstream/downstream) for programmatic analysis and integration scenarios.
+
+---
+
+## Deployment Architecture
 
 ### Kubernetes Namespace Organization
 
@@ -990,7 +1013,7 @@ flowfish-gadget/                 # Inspektor Gadget namespace
 
 ### Service Mesh Integration (Optional)
 
-Flowfish, Istio veya Linkerd gibi service mesh'lerle entegre çalışabilir:
+Flowfish can integrate with service meshes such as Istio or Linkerd:
 
 ```mermaid
 graph LR
@@ -1064,7 +1087,7 @@ graph LR
 
 ---
 
-## Güvenlik Mimarisi
+## Security Architecture
 
 ### Network Policies
 
@@ -1138,7 +1161,7 @@ spec:
 
 ---
 
-## Monitoring ve Observability
+## Monitoring and Observability
 
 ### Metrics (Prometheus)
 
@@ -1200,16 +1223,16 @@ spec:
 
 ### ClusterConnectionManager
 
-Backend, Kubernetes cluster'larına erişim için merkezi bir `ClusterConnectionManager` servisi kullanır.
+The backend uses a central `ClusterConnectionManager` service to access Kubernetes clusters.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    ClusterConnectionManager                      │
 ├─────────────────────────────────────────────────────────────────┤
-│  Özellikler:                                                     │
-│  ✅ Connection pooling (cluster başına cache)                   │
-│  ✅ Otomatik connection type detection (in-cluster/remote)      │
-│  ✅ Fernet encryption ile credential yönetimi                   │
+│  Features:                                                       │
+│  ✅ Connection pooling (per-cluster cache)                     │
+│  ✅ Automatic connection type detection (in-cluster/remote)     │
+│  ✅ Credential management with Fernet encryption                │
 │  ✅ Background health monitoring (circuit breaker)              │
 │  ✅ Unified API                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -1226,7 +1249,7 @@ Backend, Kubernetes cluster'larına erişim için merkezi bir `ClusterConnection
 
 | Type | Use Case | Backend Implementation |
 |------|----------|----------------------|
-| **in-cluster** | Flowfish aynı cluster'da | gRPC → cluster-manager pod |
+| **in-cluster** | Flowfish in the same cluster | gRPC → cluster-manager pod |
 | **token** | Remote cluster (ServiceAccount) | httpx → K8s API Server |
 | **kubeconfig** | Remote cluster (kubeconfig file) | kubernetes-client → K8s API |
 
@@ -1246,18 +1269,17 @@ backend/services/
 
 ### Multi-Cluster Analysis Support
 
-Flowfish, birden fazla cluster üzerinde analiz yapabilir:
+Flowfish can run analyses across multiple clusters:
 
 - **Analysis ID Format**: 
   - Single cluster: `{analysis_id}`
   - Multi-cluster: `{analysis_id}-{cluster_id}`
-- **Data Isolation**: Her cluster'ın verileri ayrı tutulur
-- **Unified View**: Frontend tüm cluster verilerini birleştirir
+- **Data Isolation**: Each cluster’s data is kept separate
+- **Unified View**: The frontend merges data from all clusters
 
 ---
 
-**Versiyon**: 2.0.0  
-**Son Güncelleme**: Ocak 2026  
-**Durum**: Implementasyon Dokümantasyonu  
-**Mimari**: Hybrid Change Detection (PostgreSQL + ClickHouse)
-
+**Version**: 2.0.0  
+**Last Updated**: January 2026  
+**Status**: Implementation Documentation  
+**Architecture**: Hybrid Change Detection (PostgreSQL + ClickHouse)

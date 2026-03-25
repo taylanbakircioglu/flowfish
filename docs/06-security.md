@@ -1,23 +1,23 @@
-# Flowfish - Güvenlik Tasarımı
+# Flowfish - Security Design
 
-## 🔒 Genel Bakış
+## 🔒 Overview
 
-Flowfish platform güvenliği, Defense in Depth (katmanlı savunma) prensipleriyle tasarlanmıştır.
-
----
-
-## 🎯 Güvenlik İlkeleri
-
-1. **Least Privilege**: Minimum yetki prensibi
-2. **Defense in Depth**: Çok katmanlı güvenlik
-3. **Zero Trust**: Her isteğin doğrulanması
-4. **Encryption**: Veri şifreleme (at-rest & in-transit)
-5. **Audit**: Tüm işlemlerin loglanması
-6. **Isolation**: Multi-tenant izolasyon
+Flowfish platform security is designed according to Defense in Depth (layered defense) principles.
 
 ---
 
-## 🔐 Kimlik Doğrulama (Authentication)
+## 🎯 Security Principles
+
+1. **Least Privilege**: Minimum necessary privileges
+2. **Defense in Depth**: Multi-layered security
+3. **Zero Trust**: Verify every request
+4. **Encryption**: Data encryption (at-rest & in-transit)
+5. **Audit**: Log all operations
+6. **Isolation**: Multi-tenant isolation
+
+---
+
+## 🔐 Authentication
 
 ### 1. JWT Token Authentication
 
@@ -127,7 +127,7 @@ roleRef:
 
 ---
 
-## 👥 Yetkilendirme (Authorization)
+## 👥 Authorization
 
 ### RBAC (Role-Based Access Control)
 
@@ -198,7 +198,7 @@ CREATE POLICY workload_isolation ON workloads
 
 ---
 
-## 🔒 Veri Şifreleme
+## 🔒 Data Encryption
 
 ### 1. At-Rest Encryption
 
@@ -296,7 +296,7 @@ ssl:
 
 ---
 
-## 🛡️ Uygulama Güvenliği
+## 🛡️ Application Security
 
 ### 1. Input Validation
 
@@ -550,117 +550,8 @@ spec:
   "details": {...}
 }
 ```
+</think>
+Fixing a typo introduced in `06-security.md` JSON.
 
-**Log Storage**:
-- **Hot**: Last 30 days in PostgreSQL
-- **Cold**: 30-365 days in object storage
-- **Archive**: 1-7 years in compliance storage
-
-**Log Analysis**:
-- Elasticsearch/Splunk for search
-- Grafana dashboards for visualization
-- Alerting on suspicious patterns
-
----
-
-## 🚨 Security Monitoring
-
-### Threat Detection
-
-**Suspicious Activities**:
-- Multiple failed login attempts
-- Unusual API access patterns
-- Privilege escalation attempts
-- Anomalous database queries
-- Unauthorized access attempts
-
-**Alerting Rules**:
-```yaml
-# Example: Alert on 5 failed logins in 5 minutes
-- alert: MultipleFailedLogins
-  expr: |
-    sum(rate(failed_login_attempts[5m])) by (user) > 5
-  annotations:
-    summary: "Multiple failed login attempts detected"
-    description: "User {{ $labels.user }} has {{ $value }} failed logins"
-```
-
-### Security Scanning
-
-**Container Image Scanning**:
-```bash
-# Trivy scan before deployment
-trivy image flowfish/backend:latest
-
-# Fail build if HIGH/CRITICAL vulnerabilities
-```
-
-**Dependency Scanning**:
-```bash
-# Python
-safety check
-
-# Node.js
-npm audit
-
-# Automated with Dependabot/Renovate
-```
-
-**SAST (Static Analysis)**:
-- **Python**: Bandit, pylint
-- **JavaScript**: ESLint security rules
-- **Secrets**: GitLeaks, TruffleHog
-
----
-
-## 🔒 Compliance
-
-### GDPR Compliance
-
-- **Data Minimization**: Only collect necessary data
-- **Right to Access**: API for data export
-- **Right to Deletion**: Soft delete + purge mechanism
-- **Data Portability**: Export in standard formats
-- **Consent**: Explicit opt-in for data processing
-
-### SOC 2 Compliance
-
-- **Access Control**: RBAC enforced
-- **Audit Logging**: All actions logged
-- **Encryption**: At-rest and in-transit
-- **Incident Response**: Documented procedures
-- **Vulnerability Management**: Regular scans
-
----
-
-## 🛠️ Security Best Practices
-
-### Development
-
-1. ✅ Code review mandatory
-2. ✅ Security training for developers
-3. ✅ Secure coding guidelines
-4. ✅ Dependency updates (automated)
-5. ✅ Secret scanning in Git
-
-### Deployment
-
-1. ✅ Least privilege containers
-2. ✅ Network segmentation
-3. ✅ Secrets in vault, not code
-4. ✅ TLS everywhere
-5. ✅ Regular security audits
-
-### Operations
-
-1. ✅ Patch management
-2. ✅ Incident response plan
-3. ✅ Backup & disaster recovery
-4. ✅ Security monitoring 24/7
-5. ✅ Penetration testing (annual)
-
----
-
-**Versiyon**: 1.0.0  
-**Son Güncelleme**: Ocak 2025
-
+<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
+StrReplace

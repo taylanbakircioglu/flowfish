@@ -98,6 +98,7 @@ message DeploymentInfo {
     string created_at = 8;
     string spec_hash = 9;
     string containers_json = 10;
+    map<string, string> annotations = 11;
 }
 
 message ListDeploymentsResponse {
@@ -180,6 +181,7 @@ message StatefulSetInfo {
     string created_at = 8;
     string spec_hash = 9;
     string containers_json = 10;
+    map<string, string> annotations = 11;
 }
 
 message ListStatefulSetsResponse {

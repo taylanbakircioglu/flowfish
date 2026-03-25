@@ -2,11 +2,11 @@
 
 ## 📋 Overview
 
-Flowfish enterprise mimarisi, farklı konumlardaki, farklı güvenlik seviyelerindeki ve farklı ağ topolojilerindeki Kubernetes/OpenShift cluster'ları destekler.
+The Flowfish enterprise architecture supports Kubernetes/OpenShift clusters in different locations, with different security levels, and different network topologies.
 
 ---
 
-## 🎯 Enterprise Gereksinimleri
+## 🎯 Enterprise Requirements
 
 ### 1. Multi-Cluster Support
 - ✅ On-premise Kubernetes clusters
@@ -41,7 +41,7 @@ Flowfish enterprise mimarisi, farklı konumlardaki, farklı güvenlik seviyeleri
 
 ### Pattern 1: Direct gRPC Connection (Same Network)
 
-**Use Case:** Flowfish ve target cluster aynı Kubernetes/OpenShift ortamında
+**Use Case:** Flowfish and the target cluster are in the same Kubernetes/OpenShift environment
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -74,7 +74,7 @@ cluster:
 
 ### Pattern 2: Direct HTTP/REST Connection (Cross-Network)
 
-**Use Case:** Uzak cluster, firewall/proxy arkasında, gRPC blocked
+**Use Case:** Remote cluster, behind firewall/proxy, gRPC blocked
 
 ```
 ┌────────────────┐                   ┌────────────────┐

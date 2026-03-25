@@ -124,9 +124,11 @@ const APIDocumentation: React.FC = () => {
       <Card title="Quick Start Guide">
         <Title level={4}>1. Authentication</Title>
         <Paragraph>
-          All API endpoints (except <Text code>/api/v1/auth/login</Text>) require JWT authentication.
+          All API endpoints (except <Text code>/api/v1/auth/login</Text>) require authentication.
+          Flowfish supports two methods:
         </Paragraph>
 
+        <Title level={5}>Option A: JWT Token (Interactive Use)</Title>
         <div style={codeBlockStyle}>
           <pre style={{ margin: 0, color: '#e6e6e6' }}>
 {`# Login to get access token
@@ -137,26 +139,30 @@ curl -X POST "${baseUrl}/api/v1/auth/login" \\
     "password": "your_password"
   }'
 
-# Response
-{
-  "access_token": "eyJhbGciOiJIUz...",
-  "token_type": "bearer",
-  "expires_in": 28800,
-  "user": {
-    "id": 1,
-    "username": "admin",
-    "email": "admin@example.com",
-    "roles": ["Super Admin"]
-  },
-  "requires_2fa": false,
-  "two_fa_sent": false
-}`}
+# Use the token in subsequent requests
+curl -X GET "${baseUrl}/api/v1/clusters" \\
+  -H "Authorization: Bearer eyJhbGciOiJIUz..."`}
+          </pre>
+        </div>
+
+        <Title level={5}>Option B: API Key (CI/CD & AI Agents)</Title>
+        <Paragraph>
+          For CI/CD pipelines and AI agent integrations, use an API key generated from{' '}
+          <Text strong>Settings &gt; API Keys</Text>. API keys support expiration and revocation.
+        </Paragraph>
+        <div style={codeBlockStyle}>
+          <pre style={{ margin: 0, color: '#e6e6e6' }}>
+{`# Use API key for programmatic access
+curl -s -f -H "X-API-Key: fk_your_api_key_here" \\
+  "${baseUrl}/api/v1/communications/dependencies/summary?analysis_ids=1&namespace=my-app" \\
+  > flowfish-deps.json`}
           </pre>
         </div>
 
         <Title level={4}>2. Using the Token</Title>
         <Paragraph>
-          Include the access token in the <Text code>Authorization</Text> header:
+          Include the access token in the <Text code>Authorization</Text> header or the API key in the{' '}
+          <Text code>X-API-Key</Text> header:
         </Paragraph>
 
         <div style={codeBlockStyle}>
@@ -165,9 +171,9 @@ curl -X POST "${baseUrl}/api/v1/auth/login" \\
 curl -X GET "${baseUrl}/api/v1/clusters" \\
   -H "Authorization: Bearer eyJhbGciOiJIUz..."
 
-# Example: Get a specific cluster
-curl -X GET "${baseUrl}/api/v1/clusters/1" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUz..."
+# Example: Get dependency summary (AI Integration)
+curl -s -f -H "X-API-Key: fk_your_api_key" \\
+  "${baseUrl}/api/v1/communications/dependencies/summary?analysis_ids=1&namespace=production"
 
 # Example: Get dependency graph
 curl -X GET "${baseUrl}/api/v1/communications/graph?cluster_id=1" \\
@@ -229,6 +235,7 @@ curl -X GET "${baseUrl}/api/v1/communications/graph?cluster_id=1" \\
             <Text strong>Ingestion Service</Text> - Network traffic capture (gRPC)
             <ul>
               <li>Processes eBPF-based events via Inspector Gadget</li>
+              <li>Enriches pods with Kubernetes metadata, labels, and annotations (including merged Deployment/StatefulSet annotations)</li>
               <li>Dispatches data to TimeSeries and Graph writers</li>
             </ul>
           </li>

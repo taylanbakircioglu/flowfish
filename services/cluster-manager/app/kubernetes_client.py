@@ -375,6 +375,7 @@ class KubernetesClient:
             "available_replicas": ready,
             "ready_replicas": ready,
             "labels": workload.metadata.labels or {},
+            "annotations": workload.metadata.annotations or {},
             "image": first_image,
             "containers": containers_info,
             "spec_hash": spec_hash,

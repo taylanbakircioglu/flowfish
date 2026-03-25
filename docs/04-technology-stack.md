@@ -1,21 +1,21 @@
-# Flowfish - Teknoloji Seçimi ve Gerekçeleri
+# Flowfish - Technology Choices and Rationale
 
-## 🎯 Genel Bakış
+## 🎯 Overview
 
-Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçeklenebilirlik, güvenilirlik ve geliştirici üretkenliği prensiplerine göre belirlenmiştir.
+Technologies selected for the Flowfish platform follow principles of high performance, scalability, reliability, and developer productivity.
 
 ---
 
-## 📊 Teknoloji Stack Özeti
+## 📊 Technology Stack Summary
 
-| Katman | Teknoloji | Versiyon |
+| Layer | Technology | Version |
 |--------|-----------|----------|
-| **Veri Toplama** | Inspektor Gadget + eBPF | Latest |
+| **Data Collection** | Inspektor Gadget + eBPF | Latest |
 | **Backend** | Python + FastAPI | 3.11+ / 0.100+ |
 | **Frontend** | React + TypeScript | 18+ / 5+ |
 | **UI Framework** | Ant Design | 5+ |
 | **Graph Viz** | Cytoscape.js | 3.26+ |
-| **İlişkisel DB** | PostgreSQL | 15+ |
+| **Relational DB** | PostgreSQL | 15+ |
 | **Graph DB** | Neo4j | 3.6+ |
 | **Time-series DB** | ClickHouse | 23+ |
 | **Cache** | Redis | 7+ |
@@ -24,37 +24,37 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 
 ---
 
-## 🔬 Veri Toplama: Inspektor Gadget + eBPF
+## 🔬 Data Collection: Inspektor Gadget + eBPF
 
-### Seçim Gerekçeleri
+### Selection Rationale
 
-**Neden Inspektor Gadget?**
-- ✅ **Kubernetes Native**: K8s/OpenShift için özel tasarlanmış
-- ✅ **eBPF Powered**: Çekirdek seviyesinde veri toplama, sıfır overhead
-- ✅ **Zero Application Change**: Uygulama değişikliği gerektirmez
-- ✅ **DaemonSet Architecture**: Kolay deployment, otomatik scaling
+**Why Inspektor Gadget?**
+- ✅ **Kubernetes Native**: Purpose-built for K8s/OpenShift
+- ✅ **eBPF Powered**: Kernel-level data collection, near-zero overhead
+- ✅ **Zero Application Change**: No application changes required
+- ✅ **DaemonSet Architecture**: Easy deployment, automatic scaling
 - ✅ **Rich Gadget Library**: Network, DNS, TCP, process, syscall, file tracking
-- ✅ **Open Source**: MIT lisanslı, aktif topluluk
+- ✅ **Open Source**: MIT license, active community
 
-**Alternatifler ve Neden Seçilmedi:**
+**Alternatives and Why They Were Not Chosen:**
 
-| Alternatif | Artıları | Eksileri | Neden Seçilmedi |
-|------------|----------|----------|-----------------|
-| **Service Mesh (Istio/Linkerd)** | L7 metrics, mTLS | Sidecar injection gerekli, yüksek overhead | Uygulama değişikliği gerektirir |
-| **APM Tools (Datadog, New Relic)** | Zengin UI, kolay kurulum | Ücretli, vendor lock-in | Maliyetli, dışa bağımlı |
-| **Custom eBPF Programs** | Tam kontrol | Geliştirme karmaşıklığı | Yüksek development cost |
-| **Network Sniffer (tcpdump)** | Basit | Performans etkisi yüksek | Scalability sorunları |
+| Alternative | Pros | Cons | Why Not Chosen |
+|------------|------|------|----------------|
+| **Service Mesh (Istio/Linkerd)** | L7 metrics, mTLS | Sidecar injection required, high overhead | Requires application changes |
+| **APM Tools (Datadog, New Relic)** | Rich UI, easy setup | Paid, vendor lock-in | Costly, external dependency |
+| **Custom eBPF Programs** | Full control | Development complexity | High development cost |
+| **Network Sniffer (tcpdump)** | Simple | High performance impact | Scalability issues |
 
-### Teknik Detaylar
+### Technical Details
 
 **eBPF (Extended Berkeley Packet Filter)**:
-- Linux kernel 4.4+ desteği
-- In-kernel execution (user-space'e geçiş yok)
-- Verifiable bytecode (güvenli çalıştırma)
+- Linux kernel 4.4+ support
+- In-kernel execution (no user-space round trips)
+- Verifiable bytecode (safe execution)
 - CO-RE (Compile Once Run Everywhere)
-- Minimal CPU/memory overhead (<1-2%)
+- Minimal CPU/memory overhead (<1–2%)
 
-**Inspektor Gadget Gadget'leri**:
+**Inspektor Gadgets**:
 - `trace_network`: TCP/UDP connection tracking
 - `trace_dns`: DNS query/response logging
 - `trace_tcp`: TCP lifecycle events
@@ -66,147 +66,147 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 
 ## 🚀 Backend: Python + FastAPI
 
-### Seçim Gerekçeleri
+### Selection Rationale
 
 **Python**:
-- ✅ **Ecosystem**: Zengin kütüphane desteği (data processing, ML/AI)
-- ✅ **LLM Integration**: OpenAI, LangChain gibi kütüphaneler native Python
-- ✅ **Async Support**: asyncio ile modern async programming
-- ✅ **Developer Productivity**: Hızlı development, readable syntax
+- ✅ **Ecosystem**: Rich library support (data processing, ML/AI)
+- ✅ **LLM Integration**: Libraries like OpenAI, LangChain are native to Python
+- ✅ **Async Support**: Modern async programming with asyncio
+- ✅ **Developer Productivity**: Fast development, readable syntax
 
 **FastAPI**:
-- ✅ **High Performance**: Starlette + Pydantic, Go/Node.js seviyesinde hız
-- ✅ **Automatic OpenAPI**: Swagger UI otomatik oluşturulur
-- ✅ **Type Safety**: Pydantic ile compile-time type checking
+- ✅ **High Performance**: Starlette + Pydantic, Go/Node.js–level speed
+- ✅ **Automatic OpenAPI**: Swagger UI generated automatically
+- ✅ **Type Safety**: Compile-time type checking with Pydantic
 - ✅ **Async Native**: Native async/await support
 - ✅ **Dependency Injection**: Clean, testable code
 - ✅ **WebSocket Support**: Real-time communication
 
-**Alternatifler**:
+**Alternatives**:
 
-| Alternatif | Neden Seçilmedi |
-|------------|-----------------|
-| **Django** | Monolithic, REST dışı ihtiyaçlar için overhead |
-| **Flask** | Sync-only, modern features eksik |
-| **Go (Gin/Echo)** | Python ecosystem ve LLM entegrasyonu daha zayıf |
-| **Node.js (Express)** | Callback hell, type safety zayıf |
+| Alternative | Why Not Chosen |
+|------------|----------------|
+| **Django** | Monolithic, overhead for non-REST needs |
+| **Flask** | Sync-only, lacks modern features |
+| **Go (Gin/Echo)** | Weaker Python ecosystem and LLM integration |
+| **Node.js (Express)** | Callback hell, weak type safety |
 
 ---
 
 ## ⚛️ Frontend: React + TypeScript + Ant Design
 
-### Seçim Gerekçeleri
+### Selection Rationale
 
 **React 18**:
-- ✅ **Industry Standard**: Geniş topluluk, bol kaynak
+- ✅ **Industry Standard**: Large community, abundant resources
 - ✅ **Component-Based**: Reusable, maintainable components
 - ✅ **Hooks**: Modern state management
 - ✅ **Virtual DOM**: Efficient rendering
 - ✅ **Server Components**: Future-proof (RSC)
 
 **TypeScript**:
-- ✅ **Type Safety**: Compile-time hata yakalama
-- ✅ **Better IntelliSense**: IDE desteği mükemmel
+- ✅ **Type Safety**: Catch errors at compile time
+- ✅ **Better IntelliSense**: Excellent IDE support
 - ✅ **Refactoring**: Safe rename, move operations
 - ✅ **Documentation**: Types = self-documenting code
 
 **Ant Design (antd)**:
-- ✅ **Enterprise-Grade**: Fortune 500 şirketleri kullanıyor
+- ✅ **Enterprise-Grade**: Used by Fortune 500 companies
 - ✅ **Comprehensive**: 60+ high-quality components
 - ✅ **Consistent**: Unified design language
 - ✅ **Customizable**: Theme support, CSS-in-JS
 - ✅ **Accessible**: WCAG 2.0 AA compliant
 - ✅ **I18n**: Multi-language support built-in
 
-**Alternatifler**:
+**Alternatives**:
 
-| Alternatif | Neden Seçilmedi |
-|------------|-----------------|
-| **Vue.js** | Daha küçük ecosystem, daha az enterprise adoption |
+| Alternative | Why Not Chosen |
+|------------|----------------|
+| **Vue.js** | Smaller ecosystem, less enterprise adoption |
 | **Angular** | Steep learning curve, verbose |
-| **Material-UI** | Ant Design daha enterprise-focused |
-| **Chakra UI** | Daha genç, daha az battle-tested |
+| **Material-UI** | Ant Design is more enterprise-focused |
+| **Chakra UI** | Younger, less battle-tested |
 
 ---
 
-## 🎨 Graph Görselleştirme: Cytoscape.js
+## 🎨 Graph Visualization: Cytoscape.js
 
-### Seçim Gerekçeleri
+### Selection Rationale
 
 **Cytoscape.js**:
-- ✅ **Purpose-Built**: Graph visualization için özel tasarlanmış
-- ✅ **Performance**: 1000+ node/edge handle eder
+- ✅ **Purpose-Built**: Designed specifically for graph visualization
+- ✅ **Performance**: Handles 1000+ nodes/edges
 - ✅ **Extensible**: Plugin ecosystem
 - ✅ **Layout Algorithms**: Hierarchical, force-directed, circular, grid
 - ✅ **Styling**: CSS-like styling system
 - ✅ **Events**: Rich interaction events
 - ✅ **Export**: PNG, JPG, JSON export
 
-**Alternatifler**:
+**Alternatives**:
 
-| Alternatif | Artıları | Eksileri |
-|------------|----------|----------|
-| **D3.js** | Çok esnek, powerful | Steep learning curve, verbose |
-| **Vis.js** | Kolay kullanım | Performans sorunları (>500 nodes) |
-| **Sigma.js** | Hızlı rendering | Feature set sınırlı |
-| **React Flow** | React-native | Graph algorithms eksik |
+| Alternative | Pros | Cons |
+|------------|------|------|
+| **D3.js** | Very flexible, powerful | Steep learning curve, verbose |
+| **Vis.js** | Easy to use | Performance issues (>500 nodes) |
+| **Sigma.js** | Fast rendering | Limited feature set |
+| **React Flow** | React-native | Missing graph algorithms |
 
 ---
 
-## 🗄️ Veritabanları
+## 🗄️ Databases
 
-### PostgreSQL 15+ (İlişkisel Veri)
+### PostgreSQL 15+ (Relational Data)
 
-**Seçim Gerekçeleri**:
-- ✅ **ACID Compliance**: Güvenilir transactions
-- ✅ **JSONB Support**: Flexible schema için JSON storage
+**Selection Rationale**:
+- ✅ **ACID Compliance**: Reliable transactions
+- ✅ **JSONB Support**: JSON storage for flexible schema
 - ✅ **Full-Text Search**: Built-in search capabilities
 - ✅ **Extensions**: PostGIS, pg_trgm, btree_gin
 - ✅ **Replication**: Streaming replication, logical replication
 - ✅ **Partitioning**: Table partitioning for large datasets
 - ✅ **Mature**: 30+ years, production-proven
 
-**Kullanım Alanları**:
+**Use Cases**:
 - User accounts, roles, permissions
-- Cluster ve namespace metadata
+- Cluster and namespace metadata
 - Analysis configurations
-- Anomaly ve change records
+- Anomaly and change records
 - Audit logs
 
-**Alternatifler Neden Seçilmedi**:
-- **MySQL**: JSONB desteği zayıf, replication complex
-- **MongoDB**: ACID guarantees zayıf, not ideal for relational data
+**Why Alternatives Were Not Chosen**:
+- **MySQL**: Weak JSONB support, complex replication
+- **MongoDB**: Weak ACID guarantees, not ideal for relational data
 
-### Neo4j 3.6+ (Graph Veritabanı)
+### Neo4j 3.6+ (Graph Database)
 
-**Seçim Gerekçeleri**:
+**Selection Rationale**:
 - ✅ **Distributed**: Native distributed architecture
-- ✅ **Scale**: Trillions of vertices/edges desteği
+- ✅ **Scale**: Support for trillions of vertices/edges
 - ✅ **Performance**: Sub-millisecond graph traversal
 - ✅ **GQL (nGQL)**: SQL-like graph query language
 - ✅ **Open Source**: Apache 2.0 license
 - ✅ **Kubernetes-Friendly**: Helm charts, operators
 - ✅ **Consistency**: Strong consistency via Raft
 
-**Kullanım Alanları**:
+**Use Cases**:
 - Workload dependencies (Pod → Deployment → Service)
 - Communication edges (COMMUNICATES_WITH)
 - Dependency chains (DEPENDS_ON)
 - Graph traversal queries (upstream/downstream)
 
-**Alternatifler**:
+**Alternatives**:
 
-| Alternatif | Neden Seçilmedi |
-|------------|-----------------|
-| **Neo4j** | Ücretli (enterprise), Cypher proprietary |
-| **JanusGraph** | Performance Neo4j'den düşük |
+| Alternative | Why Not Chosen |
+|------------|----------------|
+| **Neo4j** | Paid (enterprise), Cypher proprietary |
+| **JanusGraph** | Lower performance than Neo4j |
 | **Amazon Neptune** | Vendor lock-in, cloud-only |
-| **ArangoDB** | Multi-model karmaşıklık |
+| **ArangoDB** | Multi-model complexity |
 
 ### ClickHouse 23+ (Time-Series/OLAP)
 
-**Seçim Gerekçeleri**:
-- ✅ **Columnar Storage**: Yüksek compression (10-100x)
+**Selection Rationale**:
+- ✅ **Columnar Storage**: High compression (10–100x)
 - ✅ **Fast Queries**: Billions of rows, sub-second queries
 - ✅ **Aggregations**: Pre-aggregation via materialized views
 - ✅ **TTL Support**: Automatic data cleanup
@@ -214,25 +214,25 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 - ✅ **Replication**: Built-in replication
 - ✅ **SQL**: Standard SQL dialect
 
-**Kullanım Alanları**:
+**Use Cases**:
 - Network flow events (raw eBPF data)
 - DNS queries, TCP connections
 - HTTP requests, metrics
 - Process events, syscall traces
 - Aggregated request metrics
 
-**Alternatifler**:
+**Alternatives**:
 
-| Alternatif | Neden Seçilmedi |
-|------------|-----------------|
-| **TimescaleDB** | PostgreSQL extension, daha yavaş |
+| Alternative | Why Not Chosen |
+|------------|----------------|
+| **TimescaleDB** | PostgreSQL extension, slower |
 | **InfluxDB** | Non-SQL, limited query capabilities |
 | **Elasticsearch** | Resource-heavy, complex operations |
 | **Prometheus** | Short retention, not for raw events |
 
 ### Redis 7+ (Cache & Real-time)
 
-**Seçim Gerekçeleri**:
+**Selection Rationale**:
 - ✅ **In-Memory**: Microsecond latency
 - ✅ **Pub/Sub**: Real-time event streaming
 - ✅ **Data Structures**: Lists, sets, sorted sets, hashes
@@ -241,7 +241,7 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 - ✅ **Clustering**: Native clustering support
 - ✅ **Sentinel**: Automatic failover
 
-**Kullanım Alanları**:
+**Use Cases**:
 - Session storage (JWT tokens)
 - Real-time metrics cache
 - Rate limiting counters
@@ -254,7 +254,7 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 
 ### Docker
 
-**Seçim Gerekçeleri**:
+**Selection Rationale**:
 - ✅ **Industry Standard**: De facto containerization platform
 - ✅ **Image Registry**: Docker Hub, private registries
 - ✅ **Multi-Stage Builds**: Optimized images
@@ -262,33 +262,33 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 
 ### Kubernetes / OpenShift
 
-**Seçim Gerekçeleri**:
+**Selection Rationale**:
 - ✅ **Cloud-Native Standard**: Industry standard orchestration
 - ✅ **Auto-Scaling**: HPA, VPA
 - ✅ **Self-Healing**: Automatic restarts, health checks
 - ✅ **Service Discovery**: Built-in DNS
 - ✅ **Storage**: PersistentVolumes, StorageClasses
 - ✅ **Security**: RBAC, NetworkPolicies, PodSecurityPolicies
-- ✅ **OpenShift**: Enterprise features, operatorlar, built-in monitoring
+- ✅ **OpenShift**: Enterprise features, operators, built-in monitoring
 
 ---
 
-## 🔐 Kimlik Doğrulama
+## 🔐 Authentication
 
 ### JWT (JSON Web Tokens)
 
-**Seçim Gerekçeleri**:
-- ✅ **Stateless**: Sunucu-side session gerektirmez
+**Selection Rationale**:
+- ✅ **Stateless**: No server-side session required
 - ✅ **Scalable**: Horizontal scaling friendly
 - ✅ **Cross-Domain**: CORS-friendly
 - ✅ **Standard**: RFC 7519
-- ✅ **Libraries**: Her dil için mature library
+- ✅ **Libraries**: Mature libraries for every language
 
 ### OAuth 2.0 / OpenID Connect
 
-**Seçim Gerekçeleri**:
+**Selection Rationale**:
 - ✅ **SSO**: Single Sign-On support
-- ✅ **Enterprise**: Azure AD, Okta, Keycloak entegrasyonu
+- ✅ **Enterprise**: Azure AD, Okta, Keycloak integration
 - ✅ **Delegation**: Secure delegation of access
 - ✅ **Standard**: Industry standard protocol
 
@@ -296,10 +296,10 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 
 ## 📊 Monitoring & Observability
 
-### Önerilen Stack (Opsiyonel)
+### Recommended Stack (Optional)
 
-| Component | Teknoloji | Amaç |
-|-----------|-----------|------|
+| Component | Technology | Purpose |
+|-----------|------------|---------|
 | **Metrics** | Prometheus | Time-series metrics |
 | **Logs** | Loki / ELK | Centralized logging |
 | **Tracing** | Jaeger / Tempo | Distributed tracing |
@@ -308,17 +308,17 @@ Flowfish platformu için seçilen teknolojiler, yüksek performans, ölçekleneb
 
 ---
 
-## 🎯 Sonuç
+## 🎯 Conclusion
 
-Flowfish technology stack, modern cloud-native uygulama geliştirme best practice'lerini takip eder:
+The Flowfish technology stack follows modern cloud-native application development best practices:
 
-**✅ Performans**: eBPF, FastAPI, ClickHouse, Redis  
-**✅ Ölçeklenebilirlik**: Kubernetes, distributed databases  
-**✅ Güvenilirlik**: PostgreSQL ACID, replication  
+**✅ Performance**: eBPF, FastAPI, ClickHouse, Redis  
+**✅ Scalability**: Kubernetes, distributed databases  
+**✅ Reliability**: PostgreSQL ACID, replication  
 **✅ Developer Experience**: Python, TypeScript, React  
 **✅ Maintainability**: Type safety, test frameworks  
-**✅ Open Source**: Vendor lock-in yok, community support  
+**✅ Open Source**: No vendor lock-in, community support  
 
-**Versiyon**: 1.0.0  
-**Son Güncelleme**: Ocak 2025
+**Version**: 1.0.0  
+**Last Updated**: January 2025
 

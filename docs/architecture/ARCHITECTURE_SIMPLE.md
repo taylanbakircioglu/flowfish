@@ -138,17 +138,17 @@
                                  CRITICAL POINT
 ═══════════════════════════════════════════════════════════════════════════════════════
 
-  ⚠️  ingestion-service Gadget'a CLIENT olarak bağlanır!
+  ⚠️  ingestion-service connects to Gadget as a CLIENT!
   
-      Inspektor Gadget → gRPC SERVER (sadece API sunar, hiçbir yere push yapmaz)
-      ingestion-service → gRPC CLIENT (Gadget'tan event ÇEKER)
-      ingestion-service → RabbitMQ'ya PUBLISH eder
+      Inspektor Gadget → gRPC SERVER (exposes API only; does not push anywhere)
+      ingestion-service → gRPC CLIENT (PULLS events from Gadget)
+      ingestion-service → PUBLISHES to RabbitMQ
       
-      Bu mimari sayesinde:
-      ✓ Gadget lightweight kalır (sadece eBPF + gRPC server)
-      ✓ Decouple - Queue failure Gadget'ı etkilemez
-      ✓ Backpressure - ingestion-service rate control yapabilir
-      ✓ Multi-cluster - Farklı cluster'lara farklı protokollerle bağlanılabilir
+      Thanks to this architecture:
+      ✓ Gadget stays lightweight (eBPF + gRPC server only)
+      ✓ Decoupled — queue failure does not affect Gadget
+      ✓ Backpressure — ingestion-service can apply rate control
+      ✓ Multi-cluster — different clusters can use different connection protocols
 
 ```
 

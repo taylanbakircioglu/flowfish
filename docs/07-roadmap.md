@@ -1,30 +1,30 @@
-# Flowfish - Roadmap ve Faz Planlaması
+# Flowfish - Roadmap and Phase Planning
 
-## 🎯 Genel Bakış
+## 🎯 Overview
 
-Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz kademeli olarak değer sağlayacak şekilde tasarlanmıştır.
-
----
-
-## 📅 Faz Özeti
-
-| Faz | Süre | Milestone | Çıktı |
-|-----|------|-----------|-------|
-| **Faz 1: MVP** | 0-3 ay | M1, M2, M3 | Production-ready temel platform |
-| **Faz 2: Advanced** | 4-6 ay | M4, M5 | Enterprise özellikleri |
-| **Faz 3: AI/ML** | 7-9 ay | M6, M7 | İleri seviye analitik |
+Development of the Flowfish platform is planned in three main phases. Each phase is designed to deliver value incrementally.
 
 ---
 
-## 🚀 Faz 1: MVP (Minimum Viable Product)
+## 📅 Phase Summary
 
-**Hedef Süre**: 0-3 ay  
-**Durum**: Planlama  
-**Amaç**: Temel platform altyapısı ve core özelliklerin tamamlanması
+| Phase | Duration | Milestones | Deliverable |
+|-------|----------|------------|-------------|
+| **Phase 1: MVP** | 0–3 months | M1, M2, M3 | Production-ready core platform |
+| **Phase 2: Advanced** | 4–6 months | M4, M5 | Enterprise features |
+| **Phase 3: AI/ML** | 7–9 months | M6, M7 | Advanced analytics |
 
-### Milestone 1: Foundation (Ay 1)
+---
 
-**Sprint 1-2: Infrastructure Setup**
+## 🚀 Phase 1: MVP (Minimum Viable Product)
+
+**Target Duration**: 0–3 months  
+**Status**: Planning  
+**Goal**: Complete core platform infrastructure and core features
+
+### Milestone 1: Foundation (Month 1)
+
+**Sprint 1–2: Infrastructure Setup**
 
 **Backend**:
 - ✅ FastAPI project setup
@@ -55,7 +55,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 3-4: Cluster Management & Inspektor Gadget**
+**Sprint 3–4: Cluster Management & Inspektor Gadget**
 
 **Backend**:
 - ✅ Kubernetes API client integration
@@ -83,9 +83,9 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-### Milestone 2: Core Features (Ay 2)
+### Milestone 2: Core Features (Month 2)
 
-**Sprint 5-6: Analysis Wizard & Communication Discovery**
+**Sprint 5–6: Analysis Wizard & Communication Discovery**
 
 **Backend**:
 - ✅ Analysis wizard API (4-step workflow)
@@ -114,7 +114,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 7-8: Dependency Map Visualization**
+**Sprint 7–8: Dependency Map Visualization**
 
 **Backend**:
 - ✅ Graph service (Neo4j queries)
@@ -138,9 +138,9 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-### Milestone 3: Polish & Testing (Ay 3)
+### Milestone 3: Polish & Testing (Month 3)
 
-**Sprint 9-10: Dashboard & Refinement**
+**Sprint 9–10: Dashboard & Refinement**
 
 **Backend**:
 - ✅ Dashboard metrics API
@@ -165,7 +165,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 - ✅ Comprehensive documentation
 - ✅ Performance benchmarks met
 
-**Faz 1 Başarı Kriterleri**:
+**Phase 1 Success Criteria**:
 - ✅ 1000+ pods handled
 - ✅ Real-time graph updates <5s
 - ✅ API response time p95 <500ms
@@ -175,15 +175,15 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-## 🌟 Faz 2: Advanced Features
+## 🌟 Phase 2: Advanced Features
 
-**Hedef Süre**: 4-6 ay  
-**Durum**: Planned  
-**Amaç**: Enterprise features ve gelişmiş analitik
+**Target Duration**: 4–6 months  
+**Status**: Planned  
+**Goal**: Enterprise features and advanced analytics
 
-### Milestone 4: Historical Analysis (Ay 4)
+### Milestone 4: Historical Analysis (Month 4)
 
-**Sprint 11-12: Time Travel & Baseline**
+**Sprint 11–12: Time Travel & Baseline**
 
 **Backend**:
 - ✅ Historical graph snapshots
@@ -206,7 +206,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 13-14: Change Detection**
+**Sprint 13–14: Change Detection**
 
 **Backend**:
 - ✅ Change detection algorithm
@@ -227,9 +227,9 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-### Milestone 5: AI & Multi-Cluster (Ay 5-6)
+### Milestone 5: AI & Multi-Cluster (Months 5–6)
 
-**Sprint 15-16: LLM Integration & Anomaly Detection**
+**Sprint 15–16: LLM Integration & Anomaly Detection**
 
 **Backend**:
 - ✅ LLM service (OpenAI/Anthropic/Azure)
@@ -251,7 +251,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 17-18: Import/Export & Multi-Cluster**
+**Sprint 17–18: Import/Export & Multi-Cluster**
 
 **Backend**:
 - ✅ CSV export logic
@@ -275,7 +275,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 19-20: Webhooks & SIEM Integration**
+**Sprint 19–20: Webhooks & SIEM Integration**
 
 **Backend**:
 - ✅ Webhook engine
@@ -293,24 +293,24 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 - ✅ SIEM integration tested
 - ✅ Alert templates
 
-**Faz 2 Başarı Kriterleri**:
-- ✅ Geçmiş data 30+ gün saklanıyor
-- ✅ Change detection %95 doğruluk
+**Phase 2 Success Criteria**:
+- ✅ Historical data retained 30+ days
+- ✅ Change detection 95% accuracy
 - ✅ LLM response <10 seconds
 - ✅ Multi-cluster 5+ clusters
 - ✅ Import/export 10MB+ files
 
 ---
 
-## 🔮 Faz 3: AI/ML & Enterprise
+## 🔮 Phase 3: AI/ML & Enterprise
 
-**Hedef Süre**: 7-9 ay  
-**Durum**: Conceptual  
-**Amaç**: AI/ML ve enterprise özellikleri
+**Target Duration**: 7–9 months  
+**Status**: Conceptual  
+**Goal**: AI/ML and enterprise features
 
-### Milestone 6: Policy & Change Simulation (Ay 7-8)
+### Milestone 6: Policy & Change Simulation (Months 7–8)
 
-**Sprint 21-22: What-If Analysis Engine**
+**Sprint 21–22: What-If Analysis Engine**
 
 **Backend**:
 - ⏳ Policy parser (YAML)
@@ -339,7 +339,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 23-24: CAP Integration & Change Management**
+**Sprint 23–24: CAP Integration & Change Management**
 
 **Backend**:
 - ⏳ Change Request API
@@ -372,7 +372,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 25-26: Universal Ingestion & Governance**
+**Sprint 25–26: Universal Ingestion & Governance**
 
 **Backend**:
 - ⏳ Prometheus metrics collector
@@ -399,7 +399,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 27-28: DR Assessment & Predictive Analytics**
+**Sprint 27–28: DR Assessment & Predictive Analytics**
 
 **Backend**:
 - ⏳ DR posture scanner
@@ -423,9 +423,9 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-### Milestone 7: AI & Enterprise Features (Ay 9)
+### Milestone 7: AI & Enterprise Features (Month 9)
 
-**Sprint 29-30: Natural Language & Explainable AI**
+**Sprint 29–30: Natural Language & Explainable AI**
 
 **Backend**:
 - ⏳ Natural language query parser
@@ -451,7 +451,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Sprint 31-32: Advanced Features & Polish**
+**Sprint 31–32: Advanced Features & Polish**
 
 **Backend**:
 - ⏳ Custom dashboard builder API
@@ -471,7 +471,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 - ⏳ Compliance reports (PCI-DSS, HIPAA, SOC 2)
 - ⏳ Auto-remediation playbooks
 
-**Faz 3 Başarı Kriterleri**:
+**Phase 3 Success Criteria**:
 - ⏳ What-if simulation <30s
 - ⏳ **Change simulation <20s**
 - ⏳ Prediction accuracy >80%
@@ -487,26 +487,26 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 ### Typical 2-Week Sprint
 
 **Week 1**:
-- Day 1-2: Sprint planning, task breakdown
-- Day 3-5: Development (backend + frontend parallel)
-- Day 6-8: Integration & testing
-- Day 9-10: Code review, refinement
+- Day 1–2: Sprint planning, task breakdown
+- Day 3–5: Development (backend + frontend parallel)
+- Day 6–8: Integration & testing
+- Day 9–10: Code review, refinement
 
 **Week 2**:
-- Day 1-3: Bug fixes, polish
-- Day 4-5: Documentation
-- Day 6-7: QA testing
+- Day 1–3: Bug fixes, polish
+- Day 4–5: Documentation
+- Day 6–7: QA testing
 - Day 8: Demo & retrospective
-- Day 9-10: Sprint planning (next sprint)
+- Day 9–10: Sprint planning (next sprint)
 
 ---
 
 ## 👥 Team Structure
 
-### Önerilen Ekip (Faz 1)
+### Recommended Team (Phase 1)
 
-| Rol | Sayı | Sorumluluk |
-|-----|------|------------|
+| Role | Count | Responsibility |
+|------|-------|------------------|
 | **Product Owner** | 1 | Backlog, prioritization |
 | **Scrum Master** | 1 | Sprint facilitation |
 | **Backend Developer** | 2 | Python, FastAPI, databases |
@@ -515,9 +515,9 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 | **QA Engineer** | 1 | Testing, automation |
 | **UI/UX Designer** | 0.5 (part-time) | UI design, wireframes |
 
-**Toplam**: 7.5 FTE
+**Total**: 7.5 FTE
 
-### Faz 2'de Genişleme
+### Expansion in Phase 2
 
 - +1 Backend Developer (LLM, ML)
 - +1 Data Engineer (ClickHouse optimization)
@@ -531,7 +531,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 | KPI | Target |
 |-----|--------|
-| Sprint Velocity | 40-50 story points/sprint |
+| Sprint Velocity | 40–50 story points/sprint |
 | Code Coverage | >80% |
 | Bug Escape Rate | <5% |
 | API Response Time | p95 < 500ms |
@@ -573,17 +573,17 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ## 📅 Release Schedule
 
-### Alpha Release (End of Faz 1 - Month 3)
+### Alpha Release (End of Phase 1 - Month 3)
 - Internal testing
 - Limited feature set
 - Kubernetes clusters only
 
-### Beta Release (End of Faz 2 - Month 6)
+### Beta Release (End of Phase 2 - Month 6)
 - Select customer testing
-- Full feature set (Faz 1 + 2)
+- Full feature set (Phase 1 + 2)
 - OpenShift support added
 
-### GA (General Availability) Release (End of Faz 3 - Month 9)
+### GA (General Availability) Release (End of Phase 3 - Month 9)
 - Public release
 - All features complete
 - Production-ready
@@ -614,7 +614,7 @@ Flowfish platformunun geliştirilmesi 3 ana faz olarak planlanmıştır. Her faz
 
 ---
 
-**Versiyon**: 1.0.0  
-**Son Güncelleme**: Ocak 2025  
-**Durum**: Detaylı Roadmap
+**Version**: 1.0.0  
+**Last Updated**: January 2025  
+**Status**: Detailed Roadmap
 

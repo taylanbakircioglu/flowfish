@@ -1,38 +1,38 @@
 # 🐟 Flowfish - RabbitMQ Integration
 
-## Neden RabbitMQ?
+## Why RabbitMQ?
 
-Inspector Gadget'tan gelen stream verileri doğrudan ClickHouse'a yazmak yerine, RabbitMQ message queue kullanmanın avantajları:
+Benefits of using a RabbitMQ message queue instead of writing stream data from Inspector Gadget directly to ClickHouse:
 
-### 1. **Decoupling (Ayrıştırma)**
-- Ingestion Service ve ClickHouse Writer birbirinden bağımsız
-- Her servis kendi hızında çalışır
-- Bir servisin fail olması diğerini etkilemez
+### 1. **Decoupling**
+- Ingestion Service and ClickHouse Writer are independent of each other
+- Each service runs at its own pace
+- Failure in one service does not affect the other
 
 ### 2. **Buffering & Backpressure**
-- RabbitMQ mesajları queue'da tutar
-- ClickHouse yavaşsa, mesajlar kaybolmaz
-- Ingestion Service bloke olmaz
+- RabbitMQ holds messages in the queue
+- If ClickHouse is slow, messages are not lost
+- Ingestion Service does not block
 
-### 3. **Scalability (Ölçeklenebilirlik)**
+### 3. **Scalability**
 - Multiple Ingestion workers (1-N)
 - Multiple ClickHouse writers (1-N)
-- Her worker bağımsız scale edilir
+- Each worker scales independently
 
-### 4. **Reliability (Güvenilirlik)**
-- Message persistence (disk'e yazılır)
+### 4. **Reliability**
+- Message persistence (written to disk)
 - Delivery acknowledgment
 - Dead Letter Queue (failed messages)
 - Retry logic
 
-### 5. **Flexibility (Esneklik)**
-- Aynı veriyi birden fazla consumer okuyabilir
-- Gelecekte: Neo4j writer, Kafka bridge, etc.
+### 5. **Flexibility**
+- The same data can be consumed by multiple consumers
+- Future: Neo4j writer, Kafka bridge, etc.
 - Real-time streaming to dashboard
 
 ---
 
-## Mimari
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

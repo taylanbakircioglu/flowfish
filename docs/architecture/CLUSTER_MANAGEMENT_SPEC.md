@@ -1,8 +1,8 @@
 # Cluster Management - Technical Specification
 
-## 🎯 Genel Bakış
+## 🎯 Overview
 
-Flowfish'in **cluster management** modülü, multi-cluster ortamlarda Kubernetes/OpenShift cluster'larını yönetir ve **Inspector Gadget zorunluluğunu** enforce eder.
+Flowfish's **cluster management** module manages Kubernetes/OpenShift clusters in multi-cluster environments and **enforces the Inspector Gadget requirement**.
 
 ---
 
