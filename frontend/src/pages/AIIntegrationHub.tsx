@@ -317,7 +317,7 @@ const AIIntegrationHub: React.FC = () => {
   const buildCurlSnippet = useCallback(() => {
     const qsStr = buildQueryString();
     if (!qsStr) return '';
-    return `# Get your API key from Settings > API Keys\ncurl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
+    return `# Get your API key from Settings > API Keys\nFLOWFISH_API_KEY='**********'\n\ncurl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
   }, [buildQueryString]);
 
   const buildPipelineSnippet = useCallback(() => {
@@ -431,6 +431,7 @@ stage('Flowfish Dependencies') {
 
     return `# Generic CI/CD - Flowfish Integration
 # Get your API key from Flowfish Settings > API Keys
+FLOWFISH_API_KEY='**********'
 FLOWFISH_URL='${baseUrl}'
 FLOWFISH_QUERY='${qsStr}'
 
@@ -455,7 +456,7 @@ curl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\
     return `import requests
 
 FLOWFISH_URL = "${API_BASE}"
-API_KEY = "fk_your_api_key_here"  # Get from Settings > API Keys
+API_KEY = "**********"  # Get from Settings > API Keys
 
 resp = requests.get(
     f"{FLOWFISH_URL}/communications/dependencies/summary",
@@ -490,8 +491,11 @@ for r in affected_repos:
     const qsStr = buildQueryString();
     if (!qsStr) return '';
     return `// Get your API key from Flowfish Settings > API Keys
+const FLOWFISH_API_KEY = "**********";
+const FLOWFISH_URL = "${API_BASE}";
+
 const resp = await fetch(
-  \`\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?${qsStr}\`,
+  \`\${FLOWFISH_URL}/communications/dependencies/summary?${qsStr}\`,
   { headers: { "X-API-Key": FLOWFISH_API_KEY } }
 );
 const deps = await resp.json();
