@@ -757,6 +757,19 @@ class KubectlGadgetClient(AbstractGadgetClient):
                     return True
         return False
 
+    def _is_dns_event(self, event_data: dict) -> bool:
+        """
+        Detect DNS trace events. These carry external dependency info
+        (query_name -> api.example.com) even though dst_ip points at the
+        cluster DNS server. Filtering them would erase the app's external
+        dependency map without removing any system-pod node from the graph.
+        """
+        if "qr" in event_data or "qtype" in event_data:
+            return True
+        if "name" in event_data and ("rcode" in event_data or "ancount" in event_data):
+            return True
+        return False
+
     def _should_exclude_event(self, event_data: dict, config: TraceConfig,
                                pod_ip_cache: Optional["PodIPCache"] = None) -> bool:
         """
@@ -767,6 +780,13 @@ class KubectlGadgetClient(AbstractGadgetClient):
         - conservative: drop only if BOTH source AND destination match.
           Preserves app↔system cross-traffic in dependency map.
         
+        DNS event special handling (aggressive only):
+          DNS events have dst_ip = cluster DNS server (kube-system/openshift-dns)
+          but the graph builder maps them to the queried domain name, not the
+          server pod. So we skip the destination check for DNS events to
+          preserve external dependency data. Source check still applies: DNS
+          queries originating FROM excluded namespaces are still dropped.
+        
         Returns True if the event should be dropped.
         """
         exc_ns = config.exclude_namespaces
@@ -775,6 +795,7 @@ class KubectlGadgetClient(AbstractGadgetClient):
             return False
 
         strategy = config.exclude_strategy or 'aggressive'
+        is_dns = self._is_dns_event(event_data)
 
         # --- Source info (always in k8s context) ---
         if "k8s" in event_data and isinstance(event_data["k8s"], dict):
@@ -789,6 +810,8 @@ class KubectlGadgetClient(AbstractGadgetClient):
         if strategy == 'aggressive':
             if src_excluded:
                 return True  # source matches → drop immediately
+            if is_dns:
+                return False  # app-pod DNS query → keep (dst is DNS server, not real target)
             # Check destination
             dst_ip = self._extract_dst_ip(event_data)
             if dst_ip and pod_ip_cache:
