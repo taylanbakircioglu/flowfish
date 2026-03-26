@@ -43,6 +43,7 @@ class TraceConfig:
     filters: Optional[Dict[str, Any]] = None
     exclude_namespaces: Optional[List[str]] = None
     exclude_pod_patterns: Optional[List[str]] = None
+    exclude_strategy: Optional[str] = None  # "aggressive" or "conservative"
 
 
 @dataclass

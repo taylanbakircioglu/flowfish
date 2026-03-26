@@ -211,9 +211,10 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             global_pods = scope_data.get('pods', []) or []
             global_labels = scope_data.get('labels', {}) or {}
             
-            # Exclusion filters (conservative strategy: both src & dst must match to drop)
+            # Exclusion filters
             exclude_namespaces = scope_data.get('exclude_namespaces', []) or []
             exclude_pod_patterns = scope_data.get('exclude_pod_patterns', []) or []
+            exclude_strategy = scope_data.get('exclude_strategy', 'aggressive') or 'aggressive'
             
             gadget_data = analysis.gadget_config or {}
             # Default gadgets: network flow, TCP throughput (for bytes), TCP retransmit (for errors)
@@ -288,7 +289,7 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             logger.info(f"Analysis {request.analysis_id} config: scope_type={scope_type_str}, "
                        f"global_namespaces={global_namespaces}, global_pods={global_pods}, "
                        f"per_cluster_scope_defined={bool(per_cluster_scope)}, "
-                       f"exclude_namespaces={exclude_namespaces}, exclude_pod_patterns={exclude_pod_patterns}, "
+                       f"exclude_namespaces={exclude_namespaces}, exclude_pod_patterns={exclude_pod_patterns}, exclude_strategy={exclude_strategy}, "
                        f"gadgets={gadget_modules}, clusters={len(cluster_ids)}")
             
             # Start collection for each cluster
@@ -330,7 +331,8 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                         pods=cluster_pods,
                         labels=cluster_labels,
                         exclude_namespaces=exclude_namespaces,
-                        exclude_pod_patterns=exclude_pod_patterns
+                        exclude_pod_patterns=exclude_pod_patterns,
+                        exclude_strategy=exclude_strategy
                     )
                     
                     logger.info(f"Cluster {cluster_id} ({cluster_name}): scope namespaces={cluster_namespaces}, "

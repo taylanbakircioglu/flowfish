@@ -107,6 +107,7 @@ class ScopeConfig(BaseModel):
     # Uses fnmatch glob patterns: openshift-* matches openshift-monitoring, openshift-ingress, etc.
     exclude_namespaces: Optional[List[str]] = Field(None, description="Namespace patterns to exclude (e.g. 'openshift-*', 'kube-system')")
     exclude_pod_patterns: Optional[List[str]] = Field(None, description="Pod name patterns to exclude (e.g. 'calico-node-*')")
+    exclude_strategy: Optional[str] = Field('aggressive', description="'aggressive' drops if EITHER endpoint matches, 'conservative' drops only if BOTH match")
     
     @staticmethod
     def _strip_cluster_suffix(values: Optional[List[str]]) -> Optional[List[str]]:

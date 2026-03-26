@@ -177,10 +177,11 @@ const AnalysisWizard: React.FC = () => {
   const [perClusterScope, setPerClusterScope] = useState<Record<number, PerClusterScope>>({});
   const [scopeMode, setScopeMode] = useState<'unified' | 'per-cluster'>('unified');
   
-  // System noise exclusion (default ON)
+  // System noise exclusion (default ON, aggressive strategy)
   const [excludeEnabled, setExcludeEnabled] = useState(true);
   const [excludeNamespaces, setExcludeNamespaces] = useState<string[]>([...DEFAULT_EXCLUDE_NAMESPACES]);
   const [excludePodPatterns, setExcludePodPatterns] = useState<string[]>([...DEFAULT_EXCLUDE_POD_PATTERNS]);
+  const [excludeStrategy, setExcludeStrategy] = useState<'aggressive' | 'conservative'>('aggressive');
   
   // ============================================
   // Global Settings for Continuous Mode Auto-Stop
@@ -912,6 +913,7 @@ const AnalysisWizard: React.FC = () => {
           per_cluster_scope: perClusterScopeConfig,
           exclude_namespaces: excludeEnabled && excludeNamespaces.length > 0 ? excludeNamespaces : undefined,
           exclude_pod_patterns: excludeEnabled && excludePodPatterns.length > 0 ? excludePodPatterns : undefined,
+          exclude_strategy: excludeEnabled ? excludeStrategy : undefined,
         },
         gadgets: {
           enabled_gadgets: finalValues.enabled_gadgets || [],
@@ -2000,13 +2002,6 @@ const AnalysisWizard: React.FC = () => {
                   System Noise Filter
                 </Space>
               </Title>
-              <Alert
-                message="Reduces noise from system/infrastructure pods"
-                description="Only events where BOTH source and destination match exclusion patterns are filtered. Traffic between your application and system components (ingress, DNS, monitoring) is always preserved."
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-              />
               <div style={{ marginBottom: 16 }}>
                 <Space align="center">
                   <Switch
@@ -2026,6 +2021,40 @@ const AnalysisWizard: React.FC = () => {
 
               {excludeEnabled && (
                 <>
+                  <div style={{ marginBottom: 16 }}>
+                    <Text strong style={{ display: 'block', marginBottom: 8 }}>Filter Strategy:</Text>
+                    <Radio.Group
+                      value={excludeStrategy}
+                      onChange={(e) => setExcludeStrategy(e.target.value)}
+                    >
+                      <Radio.Button value="aggressive">
+                        <Tooltip title="Events are dropped if EITHER source or destination matches an exclusion pattern. System namespaces/pods are completely removed from map and timeseries. Recommended for most use cases.">
+                          Aggressive (Recommended)
+                        </Tooltip>
+                      </Radio.Button>
+                      <Radio.Button value="conservative">
+                        <Tooltip title="Events are dropped only if BOTH source and destination match. App↔System traffic (ingress, DNS, monitoring) is preserved in the dependency map.">
+                          Conservative
+                        </Tooltip>
+                      </Radio.Button>
+                    </Radio.Group>
+                    {excludeStrategy === 'aggressive' && (
+                      <Alert
+                        message="Excluded namespaces/pods will be completely removed from the dependency map and timeseries data."
+                        type="info"
+                        showIcon
+                        style={{ marginTop: 8 }}
+                      />
+                    )}
+                    {excludeStrategy === 'conservative' && (
+                      <Alert
+                        message="Traffic between your applications and system components (ingress, DNS, monitoring) will still be visible. Only system↔system noise is filtered."
+                        type="warning"
+                        showIcon
+                        style={{ marginTop: 8 }}
+                      />
+                    )}
+                  </div>
                   <div style={{ marginBottom: 12 }}>
                     <Text strong style={{ display: 'block', marginBottom: 8 }}>Quick Presets:</Text>
                     <Space wrap>

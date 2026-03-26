@@ -69,6 +69,7 @@ message ScopeConfig {
   map<string, string> labels = 6;
   repeated string exclude_namespaces = 7;
   repeated string exclude_pod_patterns = 8;
+  string exclude_strategy = 9; // "aggressive" (default) or "conservative"
 }
 
 message TimeConfig {

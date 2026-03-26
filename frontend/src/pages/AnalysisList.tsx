@@ -1146,6 +1146,13 @@ const AnalysisList: React.FC = () => {
                     </Space>
                   </Descriptions.Item>
                 )}
+                {selectedAnalysis.scope_config?.exclude_strategy && (
+                  <Descriptions.Item label="Exclusion Strategy">
+                    <Tag color={selectedAnalysis.scope_config.exclude_strategy === 'aggressive' ? 'red' : 'orange'}>
+                      {selectedAnalysis.scope_config.exclude_strategy as string}
+                    </Tag>
+                  </Descriptions.Item>
+                )}
                 {selectedAnalysis.scope_config?.exclude_namespaces && (selectedAnalysis.scope_config.exclude_namespaces as string[]).length > 0 && (
                   <Descriptions.Item label="Excluded Namespaces">
                     <Space wrap>

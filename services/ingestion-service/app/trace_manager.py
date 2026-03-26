@@ -511,7 +511,8 @@ class TraceManager:
                     pod_name=request.scope.pods[0] if request.scope.pods else None,
                     labels=dict(request.scope.labels) if request.scope.labels else None,
                     exclude_namespaces=list(request.scope.exclude_namespaces) if request.scope.exclude_namespaces else None,
-                    exclude_pod_patterns=list(request.scope.exclude_pod_patterns) if request.scope.exclude_pod_patterns else None
+                    exclude_pod_patterns=list(request.scope.exclude_pod_patterns) if request.scope.exclude_pod_patterns else None,
+                    exclude_strategy=request.scope.exclude_strategy or None
                 )
                 
                 trace_id = await client.start_trace(trace_config)
@@ -965,5 +966,7 @@ class TraceManager:
             result["exclude_namespaces"] = list(scope.exclude_namespaces)
         if scope.exclude_pod_patterns:
             result["exclude_pod_patterns"] = list(scope.exclude_pod_patterns)
+        if scope.exclude_strategy:
+            result["exclude_strategy"] = scope.exclude_strategy
         return result
 

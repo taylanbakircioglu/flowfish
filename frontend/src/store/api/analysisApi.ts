@@ -13,6 +13,7 @@ interface ScopeConfig {
   per_cluster_scope?: Record<string, any>;  // Per-cluster scope configuration
   exclude_namespaces?: string[];
   exclude_pod_patterns?: string[];
+  exclude_strategy?: 'aggressive' | 'conservative';
 }
 
 interface GadgetConfig {

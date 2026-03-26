@@ -760,9 +760,12 @@ class KubectlGadgetClient(AbstractGadgetClient):
     def _should_exclude_event(self, event_data: dict, config: TraceConfig,
                                pod_ip_cache: Optional["PodIPCache"] = None) -> bool:
         """
-        Conservative exclusion: drop event only if BOTH source AND destination
-        match an exclusion pattern. This preserves all app-to-system and
-        system-to-app relationships in the dependency graph.
+        Exclusion filter with two strategies:
+        
+        - aggressive (default): drop if EITHER source OR destination matches.
+          Completely removes excluded namespaces/pods from graph and timeseries.
+        - conservative: drop only if BOTH source AND destination match.
+          Preserves app↔system cross-traffic in dependency map.
         
         Returns True if the event should be dropped.
         """
@@ -770,6 +773,8 @@ class KubectlGadgetClient(AbstractGadgetClient):
         exc_pods = config.exclude_pod_patterns
         if not exc_ns and not exc_pods:
             return False
+
+        strategy = config.exclude_strategy or 'aggressive'
 
         # --- Source info (always in k8s context) ---
         if "k8s" in event_data and isinstance(event_data["k8s"], dict):
@@ -780,21 +785,33 @@ class KubectlGadgetClient(AbstractGadgetClient):
             src_pod = event_data.get("k8s.podName", event_data.get("pod", ""))
 
         src_excluded = self._matches_exclusion(src_ns, src_pod, exc_ns or [], exc_pods or [])
-        if not src_excluded:
-            return False  # source is NOT excluded → keep event regardless of dst
 
-        # --- Destination info (resolve from IP via pod_ip_cache) ---
-        dst_ip = self._extract_dst_ip(event_data)
-        dst_ns = None
-        dst_pod = None
-        if dst_ip and pod_ip_cache:
-            dst_info = pod_ip_cache.lookup(dst_ip)
-            if dst_info:
-                dst_ns = dst_info.namespace
-                dst_pod = dst_info.name
-
-        dst_excluded = self._matches_exclusion(dst_ns, dst_pod, exc_ns or [], exc_pods or [])
-        return dst_excluded  # drop only if BOTH are excluded
+        if strategy == 'aggressive':
+            if src_excluded:
+                return True  # source matches → drop immediately
+            # Check destination
+            dst_ip = self._extract_dst_ip(event_data)
+            if dst_ip and pod_ip_cache:
+                dst_info = pod_ip_cache.lookup(dst_ip)
+                if dst_info:
+                    dst_excluded = self._matches_exclusion(
+                        dst_info.namespace, dst_info.name, exc_ns or [], exc_pods or [])
+                    if dst_excluded:
+                        return True
+            return False
+        else:
+            # Conservative: drop only if BOTH match
+            if not src_excluded:
+                return False
+            dst_ip = self._extract_dst_ip(event_data)
+            dst_ns = None
+            dst_pod = None
+            if dst_ip and pod_ip_cache:
+                dst_info = pod_ip_cache.lookup(dst_ip)
+                if dst_info:
+                    dst_ns = dst_info.namespace
+                    dst_pod = dst_info.name
+            return self._matches_exclusion(dst_ns, dst_pod, exc_ns or [], exc_pods or [])
 
     def _extract_dst_ip(self, event_data: dict) -> Optional[str]:
         """
