@@ -57,7 +57,9 @@ import {
   InfoCircleOutlined,
   FileTextOutlined,
   SettingOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
 import { useGetAnalysesQuery } from '../store/api/analysisApi';
 import { colors } from '../styles/colors';
@@ -429,10 +431,13 @@ const BlastRadiusOracle: React.FC = () => {
     }
   };
 
-  // Copy code to clipboard
-  const copyCode = (code: string) => {
-    navigator.clipboard.writeText(code);
-    message.success('Code copied to clipboard!');
+  const copyCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      message.success('Code copied to clipboard!');
+    } catch {
+      message.error('Clipboard unavailable');
+    }
   };
 
   // View assessment detail
@@ -747,6 +752,21 @@ const BlastRadiusOracle: React.FC = () => {
                     )}
                   />
                 </Card>
+
+                <Card size="small" bordered style={{ marginTop: 16 }}>
+                  <Space>
+                    <RobotOutlined />
+                    <div>
+                      <Text strong>Need dependency data for AI agents?</Text>
+                      <br />
+                      <Link to="/integration/ai-hub">
+                        <Text type="secondary">
+                          AI Integration Hub &mdash; generate integration snippets for dependency analysis
+                        </Text>
+                      </Link>
+                    </div>
+                  </Space>
+                </Card>
               </Col>
             </Row>
           </TabPane>
@@ -801,14 +821,15 @@ const BlastRadiusOracle: React.FC = () => {
               }
             >
               <pre style={{ 
-                background: '#1e1e1e', 
-                color: '#d4d4d4',
+                background: token.colorBgLayout, 
+                color: token.colorText,
                 padding: 16, 
                 borderRadius: 8,
                 fontSize: 12,
                 overflow: 'auto',
                 maxHeight: 500,
                 margin: 0,
+                border: `1px solid ${token.colorBorderSecondary}`,
               }}>
                 {codeSnippets[selectedPlatform as keyof typeof codeSnippets]}
               </pre>

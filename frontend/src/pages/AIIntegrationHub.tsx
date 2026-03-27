@@ -14,7 +14,6 @@ import {
   Typography,
   Alert,
   Divider,
-  Empty,
   Tooltip,
   message,
   Spin,
@@ -23,13 +22,11 @@ import {
   Descriptions,
   Statistic,
   Radio,
+  theme,
 } from 'antd';
 import {
   RobotOutlined,
-  ApartmentOutlined,
   CodeOutlined,
-  CopyOutlined,
-  ApiOutlined,
   CheckCircleOutlined,
   ArrowLeftOutlined,
   ArrowRightOutlined,
@@ -37,11 +34,10 @@ import {
   ArrowUpOutlined,
   RocketOutlined,
   EyeOutlined,
-  AlertOutlined,
-  MessageOutlined,
-  AuditOutlined,
   ExperimentOutlined,
   KeyOutlined,
+  ThunderboltOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
@@ -49,152 +45,45 @@ import { useGetAnalysesQuery } from '../store/api/analysisApi';
 import {
   useLazyGetDependencySummaryQuery,
   DependencySummaryParams,
-  DependencySummaryService,
-  DependencySummaryGroup,
   MatchedService,
 } from '../store/api/communicationApi';
+import CodeBlock from '../components/integration/CodeBlock';
+import DependencyCategoryGroup from '../components/integration/DependencyCategoryGroup';
+import {
+  PIPELINE_PLATFORMS,
+  ID_METHODS,
+  buildCurlSnippet,
+  buildPythonSnippet,
+  buildJsSnippet,
+  buildPipelineSnippet,
+  buildBlastRadiusCurlSnippet,
+  buildBlastRadiusPipelineSnippet,
+} from '../utils/snippetBuilders';
 
 const { Text, Title, Paragraph } = Typography;
 const { Option } = Select;
 
-const API_BASE = typeof window !== 'undefined' ? `${window.location.origin}/api/v1` : '/api/v1';
-
-type IntegrationType = 'cicd' | 'agent' | 'explorer' | null;
-
-const PIPELINE_PLATFORMS = [
-  { value: 'azure_devops', label: 'Azure DevOps' },
-  { value: 'github_actions', label: 'GitHub Actions' },
-  { value: 'gitlab_ci', label: 'GitLab CI' },
-  { value: 'jenkins', label: 'Jenkins' },
-  { value: 'tekton', label: 'Tekton' },
-  { value: 'argocd', label: 'ArgoCD' },
-  { value: 'other', label: 'Other' },
-];
-
-const AGENT_TYPES = [
-  { value: 'code_review', label: 'Code Review' },
-  { value: 'security_scan', label: 'Security Scan' },
-  { value: 'architecture', label: 'Architecture Compliance' },
-  { value: 'migration', label: 'Migration Impact' },
-  { value: 'custom', label: 'Custom' },
-];
-
-const ID_METHODS = [
-  { value: 'annotation', label: 'Annotation (e.g. git-repo URL)' },
-  { value: 'label', label: 'Label (e.g. app name)' },
-  { value: 'namespace_deployment', label: 'Namespace + Deployment' },
-  { value: 'pod_name', label: 'Pod Name' },
-  { value: 'advanced', label: 'Advanced (any combination)' },
-];
-
-const CODE_BLOCK_STYLE: React.CSSProperties = {
-  background: '#0d1117',
-  color: '#e6edf3',
-  padding: 16,
-  borderRadius: 8,
-  overflow: 'auto',
-  fontSize: 12,
-  margin: 0,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
-};
-
-function CodeBlockWithCopy({ code, label }: { code: string; label: string }) {
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      message.success(`${label} copied`);
-    } catch {
-      message.error('Clipboard unavailable');
-    }
-  };
-  return (
-    <div style={{ position: 'relative' }}>
-      <Button
-        size="small"
-        icon={<CopyOutlined />}
-        onClick={copy}
-        style={{ position: 'absolute', top: 8, right: 8, zIndex: 1, opacity: 0.85 }}
-      >
-        Copy
-      </Button>
-      <pre style={CODE_BLOCK_STYLE}>{code}</pre>
-    </div>
-  );
-}
-
-function CategoryGroup({ group, title }: { group: DependencySummaryGroup; title: string }) {
-  if (!group || group.total === 0) {
-    return <Empty description={`No ${title.toLowerCase()}`} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
-  }
-
-  return (
-    <div>
-      <Row gutter={16} style={{ marginBottom: 12 }}>
-        <Col><Statistic title="Total" value={group.total} valueStyle={{ fontSize: 20 }} /></Col>
-        {(group.critical_count ?? 0) > 0 && (
-          <Col><Statistic title="Critical" value={group.critical_count} valueStyle={{ fontSize: 20, color: '#cf1322' }} /></Col>
-        )}
-        <Col><Statistic title="Categories" value={Object.keys(group.by_category || {}).length} valueStyle={{ fontSize: 20 }} /></Col>
-      </Row>
-      {Object.entries(group.by_category || {}).map(([cat, services]) => (
-        <Card
-          key={cat}
-          size="small"
-          title={<><Tag color={cat === 'database' ? 'blue' : cat === 'cache' ? 'green' : cat === 'message_broker' ? 'purple' : 'default'}>{cat}</Tag> <Text type="secondary">({services.length})</Text></>}
-          style={{ marginBottom: 8 }}
-        >
-          <Table
-            dataSource={services}
-            rowKey={(r) => `${r.namespace}/${r.name}`}
-            size="small"
-            pagination={false}
-            columns={[
-              { title: 'Name', dataIndex: 'name', key: 'name', render: (v: string, r: DependencySummaryService) => <><Text strong>{v}</Text>{r.is_critical && <Tag color="red" style={{ marginLeft: 4 }}>critical</Tag>}</> },
-              { title: 'Namespace', dataIndex: 'namespace', key: 'ns' },
-              { title: 'Kind', dataIndex: 'kind', key: 'kind', render: (v: string) => v ? <Tag>{v}</Tag> : '-' },
-              { title: 'Port', dataIndex: 'port', key: 'port', render: (v: number) => v ?? '-' },
-              {
-                title: 'Annotations',
-                key: 'ann',
-                render: (_: unknown, r: DependencySummaryService) => {
-                  const entries = Object.entries(r.annotations || {});
-                  if (!entries.length) return <Text type="secondary">-</Text>;
-                  const gitRepo = r.annotations['git-repo'] || r.annotations['gitRepo'] || r.annotations['source-repo'];
-                  if (gitRepo) return <Tooltip title={gitRepo}><Tag color="geekblue">git-repo</Tag></Tooltip>;
-                  return <Tooltip title={entries.map(([k, v]) => `${k}=${v}`).join(', ')}><Tag>{entries.length} annotations</Tag></Tooltip>;
-                },
-              },
-            ]}
-          />
-        </Card>
-      ))}
-    </div>
-  );
-}
-
 const AIIntegrationHub: React.FC = () => {
+  const { token } = theme.useToken();
   const [currentStep, setCurrentStep] = useState(0);
-  const [integrationType, setIntegrationType] = useState<IntegrationType>(null);
   const [form] = Form.useForm();
 
   const [selectedAnalysisIds, setSelectedAnalysisIds] = useState<number[]>([]);
   const [platform, setPlatform] = useState('azure_devops');
-  const [agentType, setAgentType] = useState('code_review');
   const [idMethod, setIdMethod] = useState('annotation');
   const [depth, setDepth] = useState(1);
 
-  // Lazy query: triggered manually, always fresh. Use isFetching (not isLoading)
-  // so the spinner shows even during forced refetch of cached params.
   const [triggerSummary, { data: rawSummaryData, isFetching: summaryLoading, error: rawSummaryError }] =
     useLazyGetDependencySummaryQuery();
   const [summaryParams, setSummaryParams] = useState<DependencySummaryParams | null>(null);
   const [summaryCleared, setSummaryCleared] = useState(false);
   const summaryData = summaryCleared ? undefined : rawSummaryData;
   const summaryError = summaryCleared ? undefined : rawSummaryError;
-  const resetSummary = useCallback(() => setSummaryCleared(true), []);
+  const resetSummary = useCallback(() => {
+    setSummaryCleared(true);
+    setSummaryParams(null);
+  }, []);
 
-  // Pre-fill from URL params (e.g. when navigating from Map page)
   const [searchParams] = useSearchParams();
   useEffect(() => {
     const urlOwner = searchParams.get('owner_name');
@@ -202,11 +91,8 @@ const AIIntegrationHub: React.FC = () => {
     const urlAnnotationKey = searchParams.get('annotation_key');
     const urlAnnotationValue = searchParams.get('annotation_value');
     if (urlOwner || urlNs || urlAnnotationKey) {
-      setIntegrationType('explorer');
-      setCurrentStep(1);
       if (urlAnnotationKey) setIdMethod('annotation');
-      else if (urlOwner && urlNs) setIdMethod('namespace_deployment');
-      else if (urlOwner) setIdMethod('pod_name');
+      else if (urlOwner || urlNs) setIdMethod('namespace_deployment');
       setTimeout(() => {
         const fields: Record<string, string> = {};
         if (urlOwner) fields.owner_name = urlOwner;
@@ -218,7 +104,6 @@ const AIIntegrationHub: React.FC = () => {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load ALL analyses (no cluster filter) and cluster names for display
   const { data: clustersData } = useGetClustersQuery();
   const clusters: any[] = (clustersData as any)?.clusters || [];
   const clusterNameMap = useMemo(() => {
@@ -247,7 +132,7 @@ const AIIntegrationHub: React.FC = () => {
     return raw;
   }, [summaryError, summaryData]);
 
-  const canProceedStep1 = selectedAnalysisIds.length > 0;
+  const canProceedStep0 = selectedAnalysisIds.length > 0;
 
   const buildParamsFromForm = useCallback((): DependencySummaryParams | null => {
     const values = form.getFieldsValue();
@@ -295,261 +180,16 @@ const AIIntegrationHub: React.FC = () => {
       return;
     }
     setSummaryParams(params);
-    setCurrentStep(3);
+    setCurrentStep(2);
   }, [selectedAnalysisIds, buildParamsFromForm]);
-
-  const buildQueryString = useCallback(() => {
-    if (!summaryParams) return '';
-    const qs = new URLSearchParams();
-    summaryParams.analysis_ids.forEach(id => qs.append('analysis_ids', String(id)));
-    if (summaryParams.annotation_key) qs.set('annotation_key', summaryParams.annotation_key);
-    if (summaryParams.annotation_value) qs.set('annotation_value', summaryParams.annotation_value);
-    if (summaryParams.label_key) qs.set('label_key', summaryParams.label_key);
-    if (summaryParams.label_value) qs.set('label_value', summaryParams.label_value);
-    if (summaryParams.namespace) qs.set('namespace', summaryParams.namespace);
-    if (summaryParams.owner_name) qs.set('owner_name', summaryParams.owner_name);
-    if (summaryParams.pod_name) qs.set('pod_name', summaryParams.pod_name);
-    if (summaryParams.ip) qs.set('ip', summaryParams.ip);
-    if (summaryParams.depth && summaryParams.depth > 1) qs.set('depth', String(summaryParams.depth));
-    return qs.toString();
-  }, [summaryParams]);
-
-  const buildCurlSnippet = useCallback(() => {
-    const qsStr = buildQueryString();
-    if (!qsStr) return '';
-    return `# Get your API key from Settings > API Keys\nFLOWFISH_API_KEY='**********'\n\ncurl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\\n  "${API_BASE}/communications/dependencies/summary?${qsStr}"`;
-  }, [buildQueryString]);
-
-  const buildPipelineSnippet = useCallback(() => {
-    const qsStr = buildQueryString();
-    if (!qsStr) return '';
-
-    const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://your-flowfish-instance';
-
-    if (platform === 'azure_devops') {
-      return `# Azure DevOps Pipeline - Flowfish Integration
-# Set FLOWFISH_API_KEY as a secret variable in Pipeline Settings > Variables
-variables:
-  FLOWFISH_URL: '${baseUrl}'
-  FLOWFISH_QUERY: '${qsStr}'
-
-steps:
-  - script: |
-      DEPS=$(curl -sf -H "X-API-Key: $(FLOWFISH_API_KEY)" \\
-        "$(FLOWFISH_URL)/api/v1/communications/dependencies/summary?$(FLOWFISH_QUERY)")
-      echo "$DEPS" > flowfish-deps.json
-      
-      CRITICAL=$(echo "$DEPS" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-c=d.get('downstream',{}).get('critical_count',0)
-print(c)
-")
-      echo "##vso[task.setvariable variable=CRITICAL_DEPS]$CRITICAL"
-    displayName: 'Flowfish: Get Cross-Project Dependencies'
-    env:
-      FLOWFISH_API_KEY: $(FLOWFISH_API_KEY)
-      FLOWFISH_URL: $(FLOWFISH_URL)
-  
-  - script: |
-      python ai-agent/analyze.py \\
-        --pr-diff $(System.PullRequest.PullRequestId) \\
-        --deps flowfish-deps.json
-    displayName: 'AI Impact Analysis (Cross-Project)'
-    condition: succeededOrFailed()`;
-    }
-
-    if (platform === 'github_actions') {
-      return `# GitHub Actions - Flowfish Integration
-# Store your API key in repository secrets as FLOWFISH_API_KEY
-# Set FLOWFISH_URL in repository variables (Settings > Secrets and variables > Actions)
-env:
-  FLOWFISH_QUERY: '${qsStr}'
-
-jobs:
-  flowfish:
-    steps:
-      - name: Get Flowfish Dependencies
-        id: flowfish
-        run: |
-          curl -sf -H "X-API-Key: \${{ secrets.FLOWFISH_API_KEY }}" \\
-            "\${{ vars.FLOWFISH_URL }}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}" \\
-            > flowfish-deps.json
-          
-          CRITICAL=$(python3 -c "
-import json
-d=json.load(open('flowfish-deps.json'))
-print(d.get('downstream',{}).get('critical_count',0))
-")
-          echo "critical_deps=$CRITICAL" >> $GITHUB_OUTPUT
-
-      - name: AI Impact Analysis
-        run: |
-          python ai-agent/analyze.py \\
-            --pr-diff \${{ github.event.pull_request.number }} \\
-            --deps flowfish-deps.json`;
-    }
-
-    if (platform === 'gitlab_ci') {
-      return `# GitLab CI - Flowfish Integration
-# Store FLOWFISH_API_KEY and FLOWFISH_URL as CI/CD variables
-variables:
-  FLOWFISH_URL: '${baseUrl}'
-  FLOWFISH_QUERY: '${qsStr}'
-
-flowfish_dependencies:
-  stage: test
-  script:
-    - |
-      curl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\
-        "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
-        > flowfish-deps.json
-    - python ai-agent/analyze.py --deps flowfish-deps.json
-  artifacts:
-    paths:
-      - flowfish-deps.json`;
-    }
-
-    if (platform === 'jenkins') {
-      return `// Jenkins Pipeline - Flowfish Integration
-// Store API key as a Secret Text credential named 'flowfish-api-key'
-def FLOWFISH_URL = '${baseUrl}'
-def FLOWFISH_QUERY = '${qsStr}'
-
-stage('Flowfish Dependencies') {
-    steps {
-        withCredentials([string(credentialsId: 'flowfish-api-key', variable: 'FLOWFISH_API_KEY')]) {
-            script {
-                def deps = sh(returnStdout: true, script: """
-                    curl -sf -H "X-API-Key: \${FLOWFISH_API_KEY}" \\
-                      "\${FLOWFISH_URL}/api/v1/communications/dependencies/summary?\${FLOWFISH_QUERY}"
-                """).trim()
-                writeFile file: 'flowfish-deps.json', text: deps
-            }
-        }
-    }
-}`;
-    }
-
-    return `# Generic CI/CD - Flowfish Integration
-# Get your API key from Flowfish Settings > API Keys
-FLOWFISH_API_KEY='**********'
-FLOWFISH_URL='${baseUrl}'
-FLOWFISH_QUERY='${qsStr}'
-
-curl -sf -H "X-API-Key: $FLOWFISH_API_KEY" \\
-  "$FLOWFISH_URL/api/v1/communications/dependencies/summary?$FLOWFISH_QUERY" \\
-  > flowfish-deps.json`;
-  }, [buildQueryString, platform]);
-
-  const buildPythonSnippet = useCallback(() => {
-    if (!summaryParams) return '';
-    const paramLines: string[] = [];
-    summaryParams.analysis_ids.forEach(id => paramLines.push(`    ("analysis_ids", "${id}"),`));
-    if (summaryParams.annotation_key) paramLines.push(`    ("annotation_key", "${summaryParams.annotation_key}"),`);
-    if (summaryParams.annotation_value) paramLines.push(`    ("annotation_value", "${summaryParams.annotation_value}"),`);
-    if (summaryParams.label_key) paramLines.push(`    ("label_key", "${summaryParams.label_key}"),`);
-    if (summaryParams.label_value) paramLines.push(`    ("label_value", "${summaryParams.label_value}"),`);
-    if (summaryParams.namespace) paramLines.push(`    ("namespace", "${summaryParams.namespace}"),`);
-    if (summaryParams.owner_name) paramLines.push(`    ("owner_name", "${summaryParams.owner_name}"),`);
-    if (summaryParams.pod_name) paramLines.push(`    ("pod_name", "${summaryParams.pod_name}"),`);
-    if (summaryParams.ip) paramLines.push(`    ("ip", "${summaryParams.ip}"),`);
-    if (summaryParams.depth && summaryParams.depth > 1) paramLines.push(`    ("depth", "${summaryParams.depth}"),`);
-
-    return `import requests
-
-FLOWFISH_URL = "${API_BASE}"
-FLOWFISH_API_KEY = "**********"  # Get from Settings > API Keys
-
-resp = requests.get(
-    f"{FLOWFISH_URL}/communications/dependencies/summary",
-    params=[
-${paramLines.join('\n')}
-    ],
-    headers={"X-API-Key": FLOWFISH_API_KEY},
-)
-resp.raise_for_status()
-deps = resp.json()
-
-# Extract affected git repos from downstream annotations
-affected_repos = []
-for category, services in deps.get("downstream", {}).get("by_category", {}).items():
-    for svc in services:
-        repo = svc.get("annotations", {}).get("git-repo")
-        if repo:
-            affected_repos.append({
-                "repo": repo,
-                "service": svc["name"],
-                "namespace": svc["namespace"],
-                "category": category,
-                "critical": svc.get("is_critical", False),
-            })
-
-print(f"Found {len(affected_repos)} affected repositories")
-for r in affected_repos:
-    flag = " [CRITICAL]" if r["critical"] else ""
-    print(f"  {r['service']} ({r['category']}){flag} -> {r['repo']}")`;
-  }, [summaryParams]);
-
-  const buildJsSnippet = useCallback(() => {
-    const qsStr = buildQueryString();
-    if (!qsStr) return '';
-    return `// Get your API key from Flowfish Settings > API Keys
-const FLOWFISH_API_KEY = "**********";
-const FLOWFISH_URL = "${API_BASE}";
-
-const resp = await fetch(
-  \`\${FLOWFISH_URL}/communications/dependencies/summary?${qsStr}\`,
-  { headers: { "X-API-Key": FLOWFISH_API_KEY } }
-);
-if (!resp.ok) throw new Error(\`HTTP \${resp.status}: \${await resp.text()}\`);
-const deps = await resp.json();
-
-// Extract affected repos
-const affectedRepos = Object.entries(deps.downstream?.by_category ?? {})
-  .flatMap(([category, services]) =>
-    services
-      .filter(svc => svc.annotations?.["git-repo"])
-      .map(svc => ({
-        repo: svc.annotations["git-repo"],
-        service: svc.name,
-        category,
-        critical: svc.is_critical,
-      }))
-  );
-
-console.log(\`Found \${affectedRepos.length} affected repos\`);`;
-  }, [buildQueryString]);
 
   const responseSize = useMemo(() => {
     if (!summaryData) return 0;
     return Math.round(JSON.stringify(summaryData).length / 1024 * 10) / 10;
   }, [summaryData]);
 
-  // Step navigation helper
-  function StepNav({ disableNext, nextLabel }: { disableNext?: boolean; nextLabel?: string }) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
-        <Button
-          icon={<ArrowLeftOutlined />}
-          disabled={currentStep === 0}
-          onClick={() => setCurrentStep(s => s - 1)}
-        >
-          Back
-        </Button>
-        <Button
-          type="primary"
-          icon={<ArrowRightOutlined />}
-          disabled={disableNext || currentStep === 3}
-          onClick={() => setCurrentStep(s => s + 1)}
-        >
-          {nextLabel || 'Next'}
-        </Button>
-      </div>
-    );
-  }
-
-  // ───────────────────────── RENDER ─────────────────────────
+  const contextNamespace = summaryParams?.namespace;
+  const contextOwnerName = summaryParams?.owner_name;
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto' }}>
@@ -559,7 +199,7 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             <RobotOutlined /> AI Integration Hub
           </Title>
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Set up CI/CD pipeline and AI agent integrations with Flowfish dependency data.
+            Set up CI/CD pipeline and AI agent integrations with Flowfish dependency and impact data.
           </Paragraph>
         </div>
         <Link to="/discovery/map">
@@ -572,74 +212,19 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
           current={currentStep}
           onChange={(n) => {
             if (n < currentStep) setCurrentStep(n);
-            else if (n === 1 && integrationType) setCurrentStep(n);
-            else if (n === 2 && summaryData?.success) setCurrentStep(n);
-            else if (n === 3 && (summaryData?.success || summaryParams)) setCurrentStep(n);
+            else if (n === 1 && summaryData?.success) setCurrentStep(n);
+            else if (n === 2 && (summaryData?.success || summaryParams)) setCurrentStep(n);
           }}
           items={[
-            { title: 'Integration Type', icon: <ApiOutlined /> },
             { title: 'Configure', icon: <ExperimentOutlined /> },
             { title: 'Preview', icon: <EyeOutlined /> },
-            { title: 'Integration Setup', icon: <CodeOutlined /> },
+            { title: 'Integration Code', icon: <CodeOutlined /> },
           ]}
         />
       </Card>
 
-      {/* ─── Step 0: Integration Type ─── */}
+      {/* ─── Step 0: Configure ─── */}
       {currentStep === 0 && (
-        <div>
-          <Row gutter={[16, 16]}>
-            {[
-              { key: 'cicd' as const, icon: <RocketOutlined style={{ fontSize: 28 }} />, title: 'CI/CD Pipeline', desc: 'PR validation, deployment gates, build job dependency and impact analysis', tags: ['Azure DevOps', 'GitHub Actions', 'GitLab CI', 'Jenkins'] },
-              { key: 'agent' as const, icon: <RobotOutlined style={{ fontSize: 28 }} />, title: 'AI Agent', desc: 'Code review agents, security scan agents, architecture compliance', tags: ['Code Review', 'Security', 'Compliance'] },
-              { key: 'explorer' as const, icon: <ApartmentOutlined style={{ fontSize: 28 }} />, title: 'Analysis Explorer', desc: 'Browse analysis dependencies, export data, generate reports', tags: ['Browse', 'Export', 'Audit'] },
-            ].map(item => (
-              <Col xs={24} md={8} key={item.key}>
-                <Card
-                  hoverable
-                  onClick={() => { setIntegrationType(item.key); form.resetFields(); resetSummary(); setCurrentStep(1); }}
-                  style={{
-                    borderColor: integrationType === item.key ? '#1677ff' : undefined,
-                    borderWidth: integrationType === item.key ? 2 : 1,
-                    height: '100%',
-                  }}
-                >
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    {item.icon}
-                    <Text strong style={{ fontSize: 16 }}>{item.title}</Text>
-                    <Text type="secondary" style={{ fontSize: 13 }}>{item.desc}</Text>
-                    <div>{item.tags.map(t => <Tag key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}</div>
-                  </Space>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-
-          <Divider>Coming Soon</Divider>
-
-          <Row gutter={[16, 16]}>
-            {[
-              { icon: <AlertOutlined />, title: 'Monitoring & Alerting', desc: 'Prometheus/Grafana dashboards, PagerDuty/OpsGenie' },
-              { icon: <AuditOutlined />, title: 'Change Management', desc: 'ServiceNow/Jira change request enrichment' },
-              { icon: <MessageOutlined />, title: 'ChatOps', desc: 'Slack/Teams bot dependency queries' },
-            ].map(item => (
-              <Col xs={24} md={8} key={item.title}>
-                <Card style={{ opacity: 0.55, cursor: 'not-allowed' }}>
-                  <Space direction="vertical" size={4}>
-                    {item.icon}
-                    <Text strong>{item.title}</Text>
-                    <Text type="secondary" style={{ fontSize: 12 }}>{item.desc}</Text>
-                    <Badge count="Coming Soon" style={{ backgroundColor: '#d9d9d9', color: '#666' }} />
-                  </Space>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-        </div>
-      )}
-
-      {/* ─── Step 1: Configure ─── */}
-      {currentStep === 1 && (
         <Card title="Analysis Scope & Service Identification">
           <Form.Item label="Analysis (required, multi-select)" required>
             <Select
@@ -682,114 +267,102 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
 
           <Divider />
 
-          {/* Integration-type-specific config */}
-          {integrationType === 'cicd' && (
-            <Form.Item label="Pipeline Platform">
-              <Select value={platform} onChange={setPlatform} style={{ width: 300 }}>
-                {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
-              </Select>
-            </Form.Item>
-          )}
+          <Form.Item label="Service Identification Method">
+            <Radio.Group
+              value={idMethod}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next === 'advanced') {
+                  setIdMethod(next);
+                  resetSummary();
+                  return;
+                }
+                const keep: Record<string, string> = {};
+                const current = form.getFieldsValue();
+                const fieldsForMethod: Record<string, string[]> = {
+                  annotation: ['annotation_key', 'annotation_value'],
+                  label: ['label_key', 'label_value'],
+                  namespace_deployment: ['namespace', 'owner_name'],
+                  pod_name: ['pod_name'],
+                };
+                const nextFields = fieldsForMethod[next] || [];
+                nextFields.forEach((f) => { if (current[f]) keep[f] = current[f]; });
+                form.resetFields();
+                if (Object.keys(keep).length) {
+                  setTimeout(() => form.setFieldsValue(keep), 0);
+                }
+                setIdMethod(next);
+                resetSummary();
+              }}
+            >
+              {ID_METHODS.map(m => <Radio.Button key={m.value} value={m.value}>{m.label}</Radio.Button>)}
+            </Radio.Group>
+          </Form.Item>
 
-          {integrationType === 'agent' && (
-            <Form.Item label="Agent Type">
-              <Select value={agentType} onChange={setAgentType} style={{ width: 300 }}>
-                {AGENT_TYPES.map(a => <Option key={a.value} value={a.value}>{a.label}</Option>)}
-              </Select>
-            </Form.Item>
-          )}
-
-          {(integrationType === 'cicd' || integrationType === 'agent') && (
-            <>
-              <Form.Item label="Service Identification Method">
-                <Radio.Group value={idMethod} onChange={(e) => { setIdMethod(e.target.value); form.resetFields(); resetSummary(); }}>
-                  {ID_METHODS.map(m => <Radio.Button key={m.value} value={m.value}>{m.label}</Radio.Button>)}
-                </Radio.Group>
-              </Form.Item>
-
-              <Form form={form} layout="vertical">
-                <Row gutter={16}>
-                  {(idMethod === 'annotation' || idMethod === 'advanced') && (
-                    <>
-                      <Col xs={24} sm={12}>
-                        <Form.Item
-                          name="annotation_key"
-                          label="Annotation Key"
-                          tooltip="Use custom annotations set during deployment (e.g. git-repo, team, version). Infrastructure annotations like openshift.io/* and kubernetes.io/* are not indexed."
-                        >
-                          <Input placeholder="e.g. git-repo, build-id, team" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} sm={12}>
-                        <Form.Item name="annotation_value" label="Annotation Value">
-                          <Input placeholder="e.g. https://tfs.company.com/.../my-service" />
-                        </Form.Item>
-                      </Col>
-                    </>
-                  )}
-                  {(idMethod === 'label' || idMethod === 'advanced') && (
-                    <>
-                      <Col xs={24} sm={12}>
-                        <Form.Item name="label_key" label="Label Key">
-                          <Input placeholder="e.g. app" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} sm={12}>
-                        <Form.Item name="label_value" label="Label Value">
-                          <Input placeholder="e.g. payment-service" />
-                        </Form.Item>
-                      </Col>
-                    </>
-                  )}
-                  {(idMethod === 'namespace_deployment' || idMethod === 'advanced') && (
-                    <>
-                      <Col xs={24} sm={12}>
-                        <Form.Item name="namespace" label="Namespace">
-                          <Input placeholder="e.g. production" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} sm={12}>
-                        <Form.Item name="owner_name" label="Deployment Name">
-                          <Input placeholder="e.g. payment-service" />
-                        </Form.Item>
-                      </Col>
-                    </>
-                  )}
-                  {(idMethod === 'pod_name' || idMethod === 'advanced') && (
-                    <Col xs={24} sm={12}>
-                      <Form.Item name="pod_name" label="Pod Name">
-                        <Input placeholder="e.g. payment-service-7b9d4" />
-                      </Form.Item>
-                    </Col>
-                  )}
-                  {idMethod === 'advanced' && (
-                    <Col xs={24} sm={12}>
-                      <Form.Item name="ip" label="Pod IP">
-                        <Input placeholder="e.g. 10.244.1.15" />
-                      </Form.Item>
-                    </Col>
-                  )}
-                </Row>
-              </Form>
-            </>
-          )}
-
-          {integrationType === 'explorer' && (
-            <Form form={form} layout="vertical">
-              <Row gutter={16}>
+          <Form form={form} layout="vertical">
+            <Row gutter={16}>
+              {(idMethod === 'annotation' || idMethod === 'advanced') && (
+                <>
+                  <Col xs={24} sm={12}>
+                    <Form.Item
+                      name="annotation_key"
+                      label="Annotation Key"
+                      tooltip="Use custom annotations set during deployment (e.g. git-repo, team, version). Infrastructure annotations like openshift.io/* and kubernetes.io/* are not indexed."
+                    >
+                      <Input placeholder="e.g. git-repo, build-id, team" />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    <Form.Item name="annotation_value" label="Annotation Value">
+                      <Input placeholder="e.g. https://tfs.company.com/.../my-service" />
+                    </Form.Item>
+                  </Col>
+                </>
+              )}
+              {(idMethod === 'label' || idMethod === 'advanced') && (
+                <>
+                  <Col xs={24} sm={12}>
+                    <Form.Item name="label_key" label="Label Key">
+                      <Input placeholder="e.g. app" />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    <Form.Item name="label_value" label="Label Value">
+                      <Input placeholder="e.g. payment-service" />
+                    </Form.Item>
+                  </Col>
+                </>
+              )}
+              {(idMethod === 'namespace_deployment' || idMethod === 'advanced') && (
+                <>
+                  <Col xs={24} sm={12}>
+                    <Form.Item name="namespace" label="Namespace">
+                      <Input placeholder="e.g. production" />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    <Form.Item name="owner_name" label="Deployment Name">
+                      <Input placeholder="e.g. payment-service" />
+                    </Form.Item>
+                  </Col>
+                </>
+              )}
+              {(idMethod === 'pod_name' || idMethod === 'advanced') && (
                 <Col xs={24} sm={12}>
-                  <Form.Item name="namespace" label="Namespace (optional)">
-                    <Input placeholder="e.g. production" />
+                  <Form.Item name="pod_name" label="Pod Name">
+                    <Input placeholder="e.g. payment-service-7b9d4" />
                   </Form.Item>
                 </Col>
+              )}
+              {idMethod === 'advanced' && (
                 <Col xs={24} sm={12}>
-                  <Form.Item name="owner_name" label="Workload Name (optional)">
-                    <Input placeholder="e.g. payment-service" />
+                  <Form.Item name="ip" label="Pod IP">
+                    <Input placeholder="e.g. 10.244.1.15" />
                   </Form.Item>
                 </Col>
-              </Row>
-            </Form>
-          )}
+              )}
+            </Row>
+          </Form>
 
           <Form.Item label="Traversal Depth" style={{ maxWidth: 200 }}>
             <Select value={depth} onChange={setDepth}>
@@ -803,7 +376,7 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
               icon={<ExperimentOutlined />}
               onClick={onTestQuery}
               loading={summaryLoading}
-              disabled={!canProceedStep1}
+              disabled={!canProceedStep0}
             >
               Test Query
             </Button>
@@ -834,32 +407,39 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             />
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24 }}>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(0)}>Back</Button>
-            <Space>
-              {!summaryData?.success && (
-                <Button onClick={onSkipToSetup} disabled={!canProceedStep1}>
-                  Skip to Setup <ArrowRightOutlined />
-                </Button>
-              )}
-              <Button
-                type="primary"
-                icon={<ArrowRightOutlined />}
-                disabled={!summaryData?.success}
-                onClick={() => setCurrentStep(2)}
-              >
-                Preview Results
+          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginTop: 24, gap: 8 }}>
+            {!summaryData?.success && (
+              <Button onClick={onSkipToSetup} disabled={!canProceedStep0}>
+                Skip to Integration Code <ArrowRightOutlined />
               </Button>
-            </Space>
+            )}
+            <Button
+              type="primary"
+              icon={<ArrowRightOutlined />}
+              disabled={!summaryData?.success}
+              onClick={() => setCurrentStep(1)}
+            >
+              Preview Results
+            </Button>
           </div>
         </Card>
       )}
 
-      {/* ─── Step 2: Preview & Validate ─── */}
-      {currentStep === 2 && summaryData?.success && (
+      {/* ─── Step 1: Preview & Validate ─── */}
+      {currentStep === 1 && !summaryData?.success && (
+        <Card>
+          <Alert
+            type="warning"
+            showIcon
+            message="Preview data is no longer available. Please run Test Query again."
+            style={{ marginBottom: 16 }}
+          />
+          <Button type="primary" onClick={() => setCurrentStep(0)}>Back to Configure</Button>
+        </Card>
+      )}
+      {currentStep === 1 && summaryData?.success && (
         <div>
-          {/* Service banner */}
-          <Card size="small" style={{ borderLeft: '3px solid #1677ff', marginBottom: 16 }}>
+          <Card size="small" style={{ borderLeft: `3px solid ${token.colorPrimary}`, marginBottom: 16 }}>
             <Row gutter={16} align="middle">
               <Col flex="auto">
                 <Space split={<Divider type="vertical" />}>
@@ -877,7 +457,6 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             </Row>
           </Card>
 
-          {/* Multi-service: show matched upstream services table */}
           {summaryData.multi_service && summaryData.matched_services && summaryData.matched_services.length > 0 && (
             <Card size="small" title={`Matched Upstream Services (${summaryData.matched_services.length})`} style={{ marginBottom: 16 }}>
               <Table<MatchedService>
@@ -889,8 +468,8 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
                   { title: 'Name', dataIndex: 'name', key: 'name', render: (v: string) => <Text strong>{v}</Text> },
                   { title: 'Namespace', dataIndex: 'namespace', key: 'ns' },
                   { title: 'Kind', dataIndex: 'kind', key: 'kind', render: (v: string) => v ? <Tag>{v}</Tag> : '-' },
-                  { title: 'Downstream', dataIndex: 'downstream_count', key: 'ds', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? '#1677ff' : '#d9d9d9' }} /> },
-                  { title: 'Callers', dataIndex: 'callers_count', key: 'cl', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? '#52c41a' : '#d9d9d9' }} /> },
+                  { title: 'Downstream', dataIndex: 'downstream_count', key: 'ds', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? token.colorPrimary : token.colorBorderSecondary }} /> },
+                  { title: 'Callers', dataIndex: 'callers_count', key: 'cl', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? token.colorSuccess : token.colorBorderSecondary }} /> },
                   {
                     title: 'Metadata',
                     key: 'meta',
@@ -909,12 +488,11 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             </Card>
           )}
 
-          {/* Single-service: show annotations only when not multi */}
           {!summaryData.multi_service && Object.keys(summaryData.service.annotations || {}).length > 0 && (
             <Card size="small" title="Upstream Service Metadata" style={{ marginBottom: 16 }}>
               <Descriptions size="small" column={{ xs: 1, sm: 2 }}>
                 {Object.entries(summaryData.service.annotations).map(([k, v]) => (
-                  <Descriptions.Item key={k} label={<Text strong style={{ fontSize: 11, color: '#d48806' }}>{k}</Text>}>
+                  <Descriptions.Item key={k} label={<Text strong style={{ fontSize: 11, color: token.colorWarning }}>{k}</Text>}>
                     <Text style={{ fontSize: 11, wordBreak: 'break-all' }}>{v}</Text>
                   </Descriptions.Item>
                 ))}
@@ -927,12 +505,12 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
               {
                 key: 'downstream',
                 label: <span><ArrowDownOutlined /> Downstream ({summaryData.downstream.total})</span>,
-                children: <CategoryGroup group={summaryData.downstream} title="Downstream" />,
+                children: <DependencyCategoryGroup group={summaryData.downstream} title="Downstream" />,
               },
               {
                 key: 'callers',
                 label: <span><ArrowUpOutlined /> Callers ({summaryData.callers.total})</span>,
-                children: <CategoryGroup group={summaryData.callers} title="Callers" />,
+                children: <DependencyCategoryGroup group={summaryData.callers} title="Callers" />,
               },
               {
                 key: 'raw',
@@ -940,19 +518,44 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
                 children: (
                   <div>
                     <Text type="secondary" style={{ marginBottom: 8, display: 'block' }}>Response size: ~{responseSize} KB</Text>
-                    <CodeBlockWithCopy code={JSON.stringify(summaryData, null, 2)} label="JSON" />
+                    <CodeBlock code={JSON.stringify(summaryData, null, 2)} label="JSON" />
                   </div>
                 ),
               },
             ]}
           />
 
-          <StepNav />
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
+            <Button
+              icon={<ArrowLeftOutlined />}
+              onClick={() => setCurrentStep(0)}
+            >
+              Back
+            </Button>
+            <Button
+              type="primary"
+              icon={<ArrowRightOutlined />}
+              onClick={() => setCurrentStep(2)}
+            >
+              Integration Code
+            </Button>
+          </div>
         </div>
       )}
 
-      {/* ─── Step 3: Integration Setup ─── */}
-      {currentStep === 3 && (summaryData?.success || summaryParams) && (
+      {/* ─── Step 2: Integration Code ─── */}
+      {currentStep === 2 && !summaryData?.success && !summaryParams && (
+        <Card>
+          <Alert
+            type="warning"
+            showIcon
+            message="Configuration required. Please set up your query in the Configure step."
+            style={{ marginBottom: 16 }}
+          />
+          <Button type="primary" onClick={() => setCurrentStep(0)}>Back to Configure</Button>
+        </Card>
+      )}
+      {currentStep === 2 && (summaryData?.success || summaryParams) && (
         <div>
           {!summaryData?.success && (
             <Alert
@@ -969,27 +572,78 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             style={{ marginBottom: 16 }}
           />
 
+          <Card
+            size="small"
+            style={{ marginBottom: 16 }}
+          >
+            <Space align="center">
+              <Text strong>Pipeline Platform:</Text>
+              <Select value={platform} onChange={setPlatform} style={{ width: 200 }}>
+                {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
+              </Select>
+              <Text type="secondary">(affects pipeline snippet format)</Text>
+            </Space>
+          </Card>
+
           <Tabs
             items={[
-              ...(integrationType === 'cicd' ? [{
+              {
                 key: 'pipeline',
                 label: <span><RocketOutlined /> {PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline'}</span>,
-                children: <CodeBlockWithCopy code={buildPipelineSnippet()} label="Pipeline YAML" />,
-              }] : []),
+                children: <CodeBlock code={buildPipelineSnippet(summaryParams, platform)} label="Pipeline YAML" />,
+              },
               {
                 key: 'curl',
                 label: <span><CodeOutlined /> curl</span>,
-                children: <CodeBlockWithCopy code={buildCurlSnippet()} label="curl" />,
+                children: <CodeBlock code={buildCurlSnippet(summaryParams)} label="curl" />,
               },
               {
                 key: 'python',
                 label: <span><CodeOutlined /> Python</span>,
-                children: <CodeBlockWithCopy code={buildPythonSnippet()} label="Python" />,
+                children: <CodeBlock code={buildPythonSnippet(summaryParams)} label="Python" />,
               },
               {
                 key: 'js',
                 label: <span><CodeOutlined /> JavaScript</span>,
-                children: <CodeBlockWithCopy code={buildJsSnippet()} label="JavaScript" />,
+                children: <CodeBlock code={buildJsSnippet(summaryParams)} label="JavaScript" />,
+              },
+              {
+                key: 'blast-radius',
+                label: <span><ThunderboltOutlined /> Blast Radius</span>,
+                children: (
+                  <div>
+                    <Alert
+                      type="info"
+                      showIcon
+                      icon={<InfoCircleOutlined />}
+                      message="Pre-deployment risk assessment"
+                      description="Use this endpoint to assess the impact of deploying changes to a service. Returns a risk score (0-100), affected services count, and actionable recommendations."
+                      style={{ marginBottom: 16 }}
+                    />
+                    <Tabs
+                      size="small"
+                      items={[
+                        {
+                          key: 'br-curl',
+                          label: 'curl',
+                          children: <CodeBlock code={buildBlastRadiusCurlSnippet(contextNamespace, contextOwnerName)} label="Blast Radius curl" />,
+                        },
+                        {
+                          key: 'br-pipeline',
+                          label: PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline',
+                          children: <CodeBlock code={buildBlastRadiusPipelineSnippet(platform, contextNamespace, contextOwnerName)} label="Blast Radius Pipeline" />,
+                        },
+                      ]}
+                    />
+                    <div style={{ marginTop: 12 }}>
+                      <Link to="/impact/blast-radius">
+                        <Button type="link" style={{ padding: 0 }}>
+                          <ThunderboltOutlined /> Test blast radius assessments interactively
+                        </Button>
+                      </Link>
+                    </div>
+                  </div>
+                ),
               },
             ]}
           />
@@ -1015,26 +669,24 @@ console.log(\`Found \${affectedRepos.length} affected repos\`);`;
             />
           </Card>
 
-          {(integrationType === 'cicd' || integrationType === 'agent') && (
-            <Card title="How Your AI Agent Uses This Data" size="small" style={{ marginTop: 16 }}>
-              <Paragraph>
-                The <Text code>/dependencies/summary</Text> response groups all dependencies by <Text strong>service category</Text> (database, cache, api, message_broker, etc.).
-                Each dependency includes its Kubernetes <Text strong>annotations</Text> and <Text strong>labels</Text>.
-              </Paragraph>
-              <Paragraph>
-                Your AI agent should:
-              </Paragraph>
-              <ol>
-                <li>Extract <Text code>annotations["git-repo"]</Text> from each downstream service to identify affected repositories</li>
-                <li>Check <Text code>is_critical</Text> flag to prioritize critical dependency changes</li>
-                <li>Use <Text code>service_category</Text> grouping to understand the type of each dependency (database, cache, API, etc.)</li>
-                <li>Examine <Text code>callers</Text> to understand which services call the changed service</li>
-              </ol>
-            </Card>
-          )}
+          <Card title="Understanding the Response" size="small" style={{ marginTop: 16 }}>
+            <Paragraph>
+              The <Text code>/dependencies/summary</Text> response groups all dependencies by <Text strong>service category</Text> (database, cache, api, message_broker, etc.).
+              Each dependency includes its Kubernetes <Text strong>annotations</Text> and <Text strong>labels</Text>.
+            </Paragraph>
+            <Paragraph>
+              Your AI agent or pipeline should:
+            </Paragraph>
+            <ol>
+              <li>Extract <Text code>annotations["git-repo"]</Text> from each downstream service to identify affected repositories</li>
+              <li>Check <Text code>is_critical</Text> flag to prioritize critical dependency changes</li>
+              <li>Use <Text code>service_category</Text> grouping to understand the type of each dependency (database, cache, API, etc.)</li>
+              <li>Examine <Text code>callers</Text> to understand which services call the changed service</li>
+            </ol>
+          </Card>
 
           <div style={{ marginTop: 24 }}>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(summaryData?.success ? 2 : 1)}>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(summaryData?.success ? 1 : 0)}>
               {summaryData?.success ? 'Back to Preview' : 'Back to Configure'}
             </Button>
           </div>
