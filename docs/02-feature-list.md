@@ -1256,9 +1256,13 @@ Range: 0-100
 - Audit events
 
 ### 2.10. AI Integration Hub
-- Guided wizard page for setting up AI agent and CI/CD pipeline integrations with dependency data
-- Support for Azure DevOps, GitHub Actions, Jenkins, and GitLab CI
-- Python and JavaScript snippet generation
+- Three-step guided wizard (Configure → Preview → Integration Code) for dependency data integrations
+- Configure step: analysis selection, service identification method (Annotation, Label, Namespace + Deployment, Pod Name, Advanced), search depth, live test query
+- Preview step: dependency summary with upstream service metadata, downstream/caller statistics, matched services table
+- Integration Code step: tabbed snippet generation (Pipeline YAML, cURL, Python, JavaScript, Blast Radius)
+- Dedicated pipeline platforms with platform-specific templates: Azure DevOps, GitHub Actions, GitLab CI, Jenkins, and Other (Generic)
+- Blast Radius tab: pre-deployment risk assessment snippets with cross-link to Blast Radius Oracle page
+- Theme-aware UI with Ant Design token-based colors for light/dark mode consistency
 
 ---
 ## Phase 3: Enterprise Features

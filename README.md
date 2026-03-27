@@ -101,7 +101,7 @@ Unlike traditional APM tools that require agent installation or service meshes t
 - **Role-Based Access Control** — User and role management with Admin, Viewer, and custom roles with granular permissions
 - **Multi-Tab Dashboard** — Overview, Operations, Security, Network, Changes, and Workloads tabs with real-time metrics
 - **CI/CD Pipeline Integration** — Blast radius checks for Azure DevOps, GitHub Actions, Jenkins, and GitLab CI
-- **AI Integration Hub** — Guided wizard for AI agent and CI/CD pipeline dependency integrations with ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, and JavaScript
+- **AI Integration Hub** — Three-step wizard (Configure → Preview → Integration Code) for dependency data integrations with ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, JavaScript, and cURL — includes a Blast Radius tab for pre-deployment risk assessment pipeline integration
 - **Pod & Deployment Annotations** — Full annotation support including automatic merge of Deployment/StatefulSet annotations into pods, visible across Map, Network Explorer, Application Inventory, Impact Simulation, and AI Integration Hub
 - **API Key Management** — Generate, expire, and revoke API keys for secure programmatic access alongside JWT authentication
 
@@ -251,7 +251,7 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 
 ![API Documentation](docs/screenshots/APIs.png)
 
-**AI Integration Hub** — Guided wizard for setting up AI agent and CI/CD pipeline integrations with dependency data. Select an analysis, configure search parameters, test queries live, and generate ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, and JavaScript:
+**AI Integration Hub** — Three-step wizard for dependency data integrations. Configure analysis scope and service identification method, preview dependency results with upstream/downstream statistics, and generate ready-to-use code snippets (Pipeline YAML, cURL, Python, JavaScript) with a dedicated Blast Radius tab for pre-deployment risk assessment:
 
 ![AI Integration Hub](docs/screenshots/ai-integration-hub.png)
 
@@ -691,11 +691,13 @@ The UI includes a live test runner for ad-hoc assessments: select cluster, analy
 
 Full history of all assessments with assessment ID, timestamp, target, namespace, change type, risk score, risk level, affected count, and pipeline source. Click any entry for detailed JSON view.
 
+The Overview tab also includes a cross-link to the **AI Integration Hub** for users who need dependency data integrations alongside blast radius assessments.
+
 ---
 
 ### AI Integration Hub
 
-The AI Integration Hub provides a **guided wizard** for setting up dependency data integrations with AI code agents and CI/CD pipelines. It enables cross-project impact analysis by exposing Flowfish dependency data through a compact, categorized JSON API.
+The AI Integration Hub provides a **three-step guided wizard** (Configure → Preview → Integration Code) for setting up dependency data integrations with AI code agents and CI/CD pipelines. It enables cross-project impact analysis by exposing Flowfish dependency data through a compact, categorized JSON API. The wizard also includes a Blast Radius tab for generating pre-deployment risk assessment pipeline snippets, with a cross-link to the Blast Radius Oracle page for interactive testing.
 
 #### Use Case: Cross-Project Impact Analysis
 
@@ -705,9 +707,9 @@ When a pull request is opened in Project A, an AI code agent (running as a build
 
 | Step | Description |
 |------|-------------|
-| **Integration Type** | Choose between AI Agent Integration (code analysis tools) or CI/CD Pipeline Integration (build/deploy automation) |
-| **Configure & Test** | Select analysis scope, choose a service identification method (Namespace + Deployment, Namespace + Pod, Annotation key/value), and optionally test the query live |
-| **Review & Setup** | Preview the dependency summary, review matched services and their metadata, and copy the generated integration code |
+| **Configure** | Select one or more analyses, choose a service identification method (Annotation, Label, Namespace + Deployment, Pod Name, or Advanced), configure search depth, and optionally run a live test query to validate results |
+| **Preview & Validate** | View the dependency summary — upstream service metadata, downstream/caller statistics, matched services table with annotations and labels |
+| **Integration Code** | Generate and copy ready-to-use code snippets across tabs: Pipeline (platform-specific YAML), cURL, Python, JavaScript, and Blast Radius (pre-deployment risk assessment integration) |
 
 #### Supported Platforms
 
@@ -717,9 +719,12 @@ When a pull request is opened in Project A, an AI code agent (running as a build
 | **GitHub Actions** | Workflow step with secrets integration |
 | **Jenkins** | Groovy pipeline with `withCredentials` block |
 | **GitLab CI** | YAML job with CI/CD variable integration |
+| **Other (Generic)** | Shell script with `curl` and `--fail` flag |
 | **Python** | `requests` library with proper parameter serialization |
 | **JavaScript** | `fetch` API with error handling |
-| **Generic CI/CD** | `curl` command with `--fail` flag |
+| **cURL** | Command-line snippet for quick testing |
+
+The Integration Code step also includes a **Blast Radius** tab that generates pre-deployment risk assessment snippets (cURL and platform-specific pipeline YAML) for the `/api/v1/blast-radius/assess` endpoint, with a direct link to the Blast Radius Oracle page for interactive testing.
 
 #### Authentication
 
