@@ -231,7 +231,28 @@ class PodDiscovery:
     Runs as a background task, refreshing the cache periodically.
     Designed to fail gracefully - never blocks main event collection.
     """
-    
+
+    _NOISE_ANNOTATION_PREFIXES = (
+        'kubectl.kubernetes.io/',
+        'kubernetes.io/',
+        'openshift.io/',
+        'k8s.v1.cni.cncf.io/',
+        'k8s.ovn.org/',
+        'seccomp.security.alpha.kubernetes.io/',
+    )
+
+    @classmethod
+    def _filter_annotation_dict(cls, raw: dict) -> dict:
+        """Filter out infrastructure/large annotations, keep user-defined ones.
+        Shared by kubectl and gRPC discovery paths for consistency."""
+        if not raw:
+            return {}
+        return {
+            k: v for k, v in raw.items()
+            if not any(k.startswith(p) for p in cls._NOISE_ANNOTATION_PREFIXES)
+            and len(str(v)) < 500
+        }
+
     def __init__(
         self,
         kubeconfig: Optional[str] = None,
@@ -539,9 +560,9 @@ class PodDiscovery:
         """Determine the owning Deployment/StatefulSet name for a pod.
         Strategy:
         1. Standard K8s labels (most reliable)
-        2. For ReplicaSet-owned pods, strip the pod-template-hash suffix
+        2. For Deployment/ReplicaSet-owned pods, strip the pod-template-hash
         3. For StatefulSet/DaemonSet-owned pods, use owner_name directly
-        4. Fallback to owner_name from labels
+        4. Fallback to owner_name
         """
         labels = pod_info.labels or {}
 
@@ -549,13 +570,21 @@ class PodDiscovery:
         if name:
             return name
 
-        if pod_info.owner_kind == 'ReplicaSet' and pod_info.owner_name:
+        if pod_info.owner_kind in ('ReplicaSet', 'Deployment') and pod_info.owner_name:
             template_hash = labels.get('pod-template-hash', '')
-            if template_hash and pod_info.owner_name.endswith(f'-{template_hash}'):
-                return pod_info.owner_name[:-len(f'-{template_hash}')]
-            parts = pod_info.owner_name.rsplit('-', 1)
-            if len(parts) == 2 and len(parts[1]) >= 8 and parts[1].isalnum():
-                return parts[0]
+            if template_hash:
+                suffix = f'-{template_hash}'
+                if pod_info.owner_name.endswith(suffix):
+                    return pod_info.owner_name[:-len(suffix)]
+                marker = f'-{template_hash}-'
+                idx = pod_info.owner_name.find(marker)
+                if idx > 0:
+                    return pod_info.owner_name[:idx]
+            if pod_info.owner_kind == 'ReplicaSet':
+                parts = pod_info.owner_name.rsplit('-', 1)
+                if len(parts) == 2 and len(parts[1]) >= 8 and parts[1].isalnum():
+                    return parts[0]
+            return pod_info.owner_name
 
         if pod_info.owner_kind in ('StatefulSet', 'DaemonSet') and pod_info.owner_name:
             return pod_info.owner_name
@@ -564,7 +593,9 @@ class PodDiscovery:
 
     async def _fetch_owner_annotations_grpc(self) -> Dict[tuple, Dict[str, str]]:
         """Fetch Deployment and StatefulSet annotations via gRPC.
-        Returns {(namespace, name): filtered_annotations}."""
+        Returns {(namespace, name): filtered_annotations}.
+        Applies the same noise-prefix filter as the kubectl path for consistency,
+        even though cluster-manager already filters at the gRPC server level."""
         result: Dict[tuple, Dict[str, str]] = {}
         namespaces_to_query = self._namespaces if self._namespaces else [None]
 
@@ -575,7 +606,9 @@ class PodDiscovery:
                 )
                 dep_resp = await self._grpc_stub.ListDeployments(dep_req, timeout=30)
                 for dep in dep_resp.deployments:
-                    anns = dict(dep.annotations) if dep.annotations else {}
+                    anns = self._filter_annotation_dict(
+                        dict(dep.annotations) if dep.annotations else {}
+                    )
                     if anns:
                         result[(dep.namespace, dep.name)] = anns
             except grpc.RpcError as e:
@@ -588,7 +621,9 @@ class PodDiscovery:
                 )
                 sts_resp = await self._grpc_stub.ListStatefulSets(sts_req, timeout=30)
                 for sts in sts_resp.statefulsets:
-                    anns = dict(sts.annotations) if sts.annotations else {}
+                    anns = self._filter_annotation_dict(
+                        dict(sts.annotations) if sts.annotations else {}
+                    )
                     if anns:
                         result[(sts.namespace, sts.name)] = anns
             except grpc.RpcError as e:
@@ -658,11 +693,10 @@ class PodDiscovery:
                          resource=resource_kind, namespace=namespace, error=str(e))
         return {}
 
-    @staticmethod
-    def _parse_owner_annotations_json(json_str: str) -> Dict[tuple, Dict[str, str]]:
+    @classmethod
+    def _parse_owner_annotations_json(cls, json_str: str) -> Dict[tuple, Dict[str, str]]:
         """Parse kubectl JSON output and extract filtered annotations.
-        Applies the same filtering rules as cluster-manager (skip kubectl.kubernetes.io/,
-        kubernetes.io/, openshift.io/ prefixes and values > 500 chars)."""
+        Applies the same filtering rules as cluster-manager."""
         result: Dict[tuple, Dict[str, str]] = {}
         try:
             data = json.loads(json_str)
@@ -671,13 +705,7 @@ class PodDiscovery:
                 name = metadata.get('name', '')
                 namespace = metadata.get('namespace', '')
                 raw_anns = metadata.get('annotations', {}) or {}
-                filtered = {
-                    k: v for k, v in raw_anns.items()
-                    if not k.startswith('kubectl.kubernetes.io/')
-                    and not k.startswith('kubernetes.io/')
-                    and not k.startswith('openshift.io/')
-                    and len(str(v)) < 500
-                }
+                filtered = cls._filter_annotation_dict(raw_anns)
                 if filtered:
                     result[(namespace, name)] = filtered
         except (json.JSONDecodeError, Exception):
@@ -703,17 +731,31 @@ class PodDiscovery:
                     # Note: PodInfo message has 'ip' field (not 'pod_ip')
                     pod_ip = pod.ip
                     if pod_ip:
-                        # Extract owner info from labels or use defaults
-                        owner_kind = "Unknown"
-                        owner_name = pod.name
-                        
-                        # Try to extract owner from common label patterns
                         labels = dict(pod.labels) if pod.labels else {}
-                        annotations = dict(pod.annotations) if pod.annotations else {}
-                        if 'app.kubernetes.io/name' in labels:
-                            owner_name = labels['app.kubernetes.io/name']
-                        elif 'app' in labels:
-                            owner_name = labels['app']
+                        annotations = self._filter_annotation_dict(
+                            dict(pod.annotations) if pod.annotations else {}
+                        )
+
+                        # Infer owner_kind from well-known Kubernetes labels.
+                        # pod-template-hash is injected exclusively by ReplicaSet
+                        # controllers owned by Deployments.
+                        # controller-revision-hash is injected by StatefulSet and
+                        # DaemonSet controllers.
+                        owner_kind = "Unknown"
+                        if labels.get('pod-template-hash'):
+                            owner_kind = "Deployment"
+                        elif labels.get('controller-revision-hash'):
+                            if labels.get('statefulset.kubernetes.io/pod-name'):
+                                owner_kind = "StatefulSet"
+                            else:
+                                owner_kind = "DaemonSet"
+
+                        # Resolve owner_name: prefer standard labels, fall back to pod name
+                        owner_name = (
+                            labels.get('app.kubernetes.io/name')
+                            or labels.get('app')
+                            or pod.name
+                        )
                         
                         pod_info = PodInfo(
                             name=pod.name,
@@ -836,13 +878,22 @@ class PodDiscovery:
                     if not pod_ip:
                         continue  # Skip pods without IP
                     
-                    # Extract owner reference
+                    # Extract owner reference and resolve to higher-level workload.
+                    # ownerReferences for Deployment pods points to the intermediate
+                    # ReplicaSet.  Resolve it to "Deployment" using the pod-template-hash
+                    # label so the kind/name are consistent with the gRPC path.
                     owner_refs = metadata.get('ownerReferences', [])
                     owner_kind = ''
                     owner_name = ''
                     if owner_refs:
                         owner_kind = owner_refs[0].get('kind', '')
                         owner_name = owner_refs[0].get('name', '')
+                    labels = metadata.get('labels', {}) or {}
+                    if owner_kind == 'ReplicaSet':
+                        owner_kind = 'Deployment'
+                        pth = labels.get('pod-template-hash', '')
+                        if pth and owner_name.endswith(f'-{pth}'):
+                            owner_name = owner_name[:-(len(pth) + 1)]
                     
                     # Extract container info (primary container)
                     containers = spec.get('containers', [])
@@ -860,20 +911,14 @@ class PodDiscovery:
                     
                     # Filter annotations - only keep useful ones, skip large/internal ones
                     raw_annotations = metadata.get('annotations', {}) or {}
-                    annotations = {
-                        k: v for k, v in raw_annotations.items()
-                        if not k.startswith('kubectl.kubernetes.io/')
-                        and not k.startswith('kubernetes.io/')
-                        and not k.startswith('openshift.io/')
-                        and len(str(v)) < 500  # Skip very large values
-                    }
+                    annotations = self._filter_annotation_dict(raw_annotations)
                     
                     pod_info = PodInfo(
                         name=metadata.get('name', ''),
                         namespace=metadata.get('namespace', ''),
                         ip=pod_ip,
                         node=spec.get('nodeName', ''),
-                        labels=metadata.get('labels', {}) or {},
+                        labels=labels,
                         owner_kind=owner_kind,
                         owner_name=owner_name,
                         # Extended metadata

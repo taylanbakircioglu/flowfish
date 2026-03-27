@@ -273,16 +273,23 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
             logger.error("ListDeployments failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListDeploymentsResponse(error=str(e))
     
-    @staticmethod
-    def _filter_annotations(raw_annotations: dict) -> dict:
+    _NOISE_ANNOTATION_PREFIXES = (
+        'kubectl.kubernetes.io/',
+        'kubernetes.io/',
+        'openshift.io/',
+        'k8s.v1.cni.cncf.io/',
+        'k8s.ovn.org/',
+        'seccomp.security.alpha.kubernetes.io/',
+    )
+
+    @classmethod
+    def _filter_annotations(cls, raw_annotations: dict) -> dict:
         """Filter out internal/large annotations, keep user-defined ones"""
         if not raw_annotations:
             return {}
         return {
             k: v for k, v in raw_annotations.items()
-            if not k.startswith('kubectl.kubernetes.io/')
-            and not k.startswith('kubernetes.io/')
-            and not k.startswith('openshift.io/')
+            if not any(k.startswith(p) for p in cls._NOISE_ANNOTATION_PREFIXES)
             and len(str(v)) < 500
         }
 

@@ -1521,6 +1521,8 @@ class GraphQueryEngine:
 
         When multiple pods match (e.g. namespace-wide query), aggregates ALL
         downstream/caller entries (deduplicated) and exposes matched_services.
+        Replica pods belonging to the same Deployment/StatefulSet are collapsed
+        into a single logical workload entry.
         """
         try:
             int_ids = [int(a) for a in analysis_ids]
@@ -1539,6 +1541,66 @@ class GraphQueryEngine:
         upstream = first.get("upstream", {})
         is_multi = len(results) > 1
 
+        def _safe_labels(entry: dict) -> dict:
+            lbl = entry.get("labels") or {}
+            if isinstance(lbl, str):
+                try:
+                    lbl = json.loads(lbl)
+                except (json.JSONDecodeError, TypeError):
+                    lbl = {}
+            return lbl
+
+        def _strip_template_hash(name: str, pth: str) -> str:
+            """Strip pod-template-hash from a name, handling both
+            ReplicaSet names (name-HASH) and pod names (name-HASH-RANDOM)."""
+            if not pth:
+                return name
+            if name.endswith(f"-{pth}"):
+                return name[:-(len(pth) + 1)]
+            marker = f"-{pth}-"
+            idx = name.find(marker)
+            if idx > 0:
+                return name[:idx]
+            return name
+
+        def _workload_name(entry: dict) -> str:
+            """Resolve the logical workload name from the richest source available."""
+            labels = _safe_labels(entry)
+            name = labels.get("app.kubernetes.io/name") or labels.get("app")
+            if name:
+                return name
+
+            pth = labels.get("pod-template-hash", "")
+            owner = entry.get("owner_name") or ""
+            if owner:
+                return _strip_template_hash(owner, pth)
+
+            return _strip_template_hash(entry.get("pod_name", ""), pth)
+
+        def _workload_key(entry: dict) -> str:
+            """Determine a stable identity key that collapses replica pods into
+            their owning Deployment/StatefulSet.
+
+            Resolution order:
+              1. namespace + app.kubernetes.io/name or app label (most reliable)
+              2. namespace + owner_name (stripped of template hash if present)
+              3. namespace + pod name (stripped of template hash if present)
+            """
+            ns = entry.get("namespace", "")
+            labels = _safe_labels(entry)
+
+            name = labels.get("app.kubernetes.io/name") or labels.get("app")
+            if name:
+                return f"{ns}/{name}"
+
+            pth = labels.get("pod-template-hash", "")
+            owner = entry.get("owner_name") or ""
+            if owner:
+                return f"{ns}/{_strip_template_hash(owner, pth)}"
+
+            pod = entry.get("pod_name") or ""
+            return f"{ns}/{_strip_template_hash(pod, pth)}"
+
         def _is_noise_entry(entry: dict) -> bool:
             """Filter out noise: reverse DNS, bare IPs with no metadata, 0.0.0.0."""
             name = entry.get("pod_name") or entry.get("owner_name") or ""
@@ -1556,6 +1618,11 @@ class GraphQueryEngine:
                 return True
             return False
 
+        _KIND_ALIASES = {"ReplicaSet": "Deployment"}
+
+        def _resolve_kind(raw: str) -> str:
+            return _KIND_ALIASES.get(raw, raw)
+
         def _compact_service(entry: dict, direction: str = "downstream") -> dict:
             comm = entry.get("communication") or {}
             svc_type = comm.get("service_type", "unknown")
@@ -1566,9 +1633,9 @@ class GraphQueryEngine:
             if not is_crit:
                 is_crit = self.is_critical_service(svc_type, entry.get("pod_name", ""))
             return {
-                "name": entry.get("owner_name") or entry.get("pod_name", ""),
+                "name": _workload_name(entry),
                 "namespace": entry.get("namespace", ""),
-                "kind": entry.get("owner_kind", ""),
+                "kind": _resolve_kind(entry.get("owner_kind", "")),
                 "annotations": entry.get("annotations", {}),
                 "labels": entry.get("labels", {}),
                 "is_critical": is_crit,
@@ -1578,10 +1645,11 @@ class GraphQueryEngine:
             }
 
         def _dedup_entries(entries: list) -> list:
-            """Deduplicate dependency entries by (owner_name, namespace), collapsing replicas."""
+            """Deduplicate dependency entries by logical workload identity,
+            collapsing replica pods that share the same Deployment/StatefulSet."""
             seen: Dict[str, dict] = {}
             for entry in entries:
-                key = f"{entry.get('namespace', '')}/{entry.get('owner_name') or entry.get('pod_name', '')}"
+                key = _workload_key(entry)
                 if key not in seen:
                     seen[key] = entry
             return list(seen.values())
@@ -1608,26 +1676,34 @@ class GraphQueryEngine:
         if is_multi:
             all_downstream = []
             all_callers = []
-            matched_services = []
-            matched_upstream_keys = set()
+            workload_map: Dict[str, dict] = {}
             for res in results:
                 up = res.get("upstream", {})
                 ds = res.get("downstream", [])
                 cl = res.get("callers", [])
                 all_downstream.extend(ds)
                 all_callers.extend(cl)
-                up_key = f"{up.get('namespace', '')}/{up.get('owner_name') or up.get('pod_name', '')}"
-                if up_key not in matched_upstream_keys:
-                    matched_upstream_keys.add(up_key)
-                    matched_services.append({
-                        "name": up.get("owner_name") or up.get("pod_name", ""),
+                up_key = _workload_key(up)
+                if up_key in workload_map:
+                    workload_map[up_key]["downstream_count"] += len(ds)
+                    workload_map[up_key]["callers_count"] += len(cl)
+                    existing = workload_map[up_key]
+                    resolved = _resolve_kind(up.get("owner_kind", ""))
+                    if (not existing["kind"] or existing["kind"] == "Unknown") and resolved not in ("", "Unknown"):
+                        existing["kind"] = resolved
+                    if not existing["annotations"] and up.get("annotations"):
+                        existing["annotations"] = up["annotations"]
+                else:
+                    workload_map[up_key] = {
+                        "name": _workload_name(up),
                         "namespace": up.get("namespace", ""),
-                        "kind": up.get("owner_kind", ""),
+                        "kind": _resolve_kind(up.get("owner_kind", "")),
                         "annotations": up.get("annotations", {}),
-                        "labels": up.get("labels", {}),
+                        "labels": _safe_labels(up),
                         "downstream_count": len(ds),
                         "callers_count": len(cl),
-                    })
+                    }
+            matched_services = list(workload_map.values())
             all_downstream = _filter_and_dedup(all_downstream)
             all_callers = _filter_and_dedup(all_callers)
             all_namespaces = sorted(set(s["namespace"] for s in matched_services if s["namespace"]))
@@ -1660,9 +1736,9 @@ class GraphQueryEngine:
             "analysis_ids": int_ids,
             "multi_service": False,
             "service": {
-                "name": upstream.get("owner_name") or upstream.get("pod_name", ""),
+                "name": _workload_name(upstream),
                 "namespace": upstream.get("namespace", ""),
-                "kind": upstream.get("owner_kind", ""),
+                "kind": _resolve_kind(upstream.get("owner_kind", "")),
                 "annotations": upstream.get("annotations", {}),
                 "labels": upstream.get("labels", {}),
             },
