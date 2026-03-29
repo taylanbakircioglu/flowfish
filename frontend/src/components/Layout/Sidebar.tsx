@@ -18,7 +18,6 @@ import {
   RadarChartOutlined,
   AlertOutlined,
   RocketOutlined,
-  RobotOutlined,
 } from '@ant-design/icons';
 import FlowfishLogo from '../FlowfishLogo';
 import type { MenuProps } from 'antd';
@@ -98,13 +97,13 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
     },
     {
       key: 'integration',
-      icon: <RobotOutlined />,
-      label: 'AI Integration',
+      icon: <ApiOutlined />,
+      label: 'Integration',
       children: [
         {
-          key: '/integration/ai-hub',
-          label: 'AI Integration Hub',
-          onClick: () => navigate('/integration/ai-hub'),
+          key: '/integration/hub',
+          label: 'Integration Hub',
+          onClick: () => navigate('/integration/hub'),
         },
       ],
     },

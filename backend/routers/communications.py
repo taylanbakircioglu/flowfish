@@ -1351,7 +1351,7 @@ async def _get_neo4j_error_stats(
         )
 
 
-@router.get("/dependencies/stream", tags=["AI Integration"])
+@router.get("/dependencies/stream", tags=["Integration"])
 async def find_pod_dependencies(
     analysis_id: Optional[int] = Query(None, description="Analysis ID for scope"),
     cluster_id: Optional[int] = Query(None, description="Cluster ID for scope"),
@@ -1431,7 +1431,7 @@ async def find_pod_dependencies(
         )
 
 
-@router.post("/dependencies/batch", tags=["AI Integration"])
+@router.post("/dependencies/batch", tags=["Integration"])
 async def batch_find_dependencies(
     request: dict,
     current_user: dict = Depends(get_current_user)
@@ -1452,7 +1452,7 @@ async def batch_find_dependencies(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/dependencies/diff", tags=["AI Integration"])
+@router.get("/dependencies/diff", tags=["Integration"])
 async def diff_dependencies(
     analysis_id_before: str = Query(..., description="Analysis ID before"),
     analysis_id_after: str = Query(..., description="Analysis ID after"),
@@ -1491,7 +1491,7 @@ async def diff_dependencies(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/dependencies/summary", tags=["AI Integration"])
+@router.get("/dependencies/summary", tags=["Integration"])
 async def get_dependency_summary(
     analysis_ids: List[int] = Query(..., description="Analysis IDs (required, at least one)"),
     cluster_id: Optional[int] = Query(None, description="Cluster ID"),
@@ -1549,7 +1549,7 @@ async def get_dependency_summary(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/dependencies/impact", tags=["AI Integration"])
+@router.get("/dependencies/impact", tags=["Integration"])
 async def get_dependency_impact(
     analysis_id: Optional[int] = Query(None, description="Analysis ID"),
     cluster_id: Optional[int] = Query(None, description="Cluster ID"),

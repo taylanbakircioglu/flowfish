@@ -1255,8 +1255,8 @@ Range: 0-100
 - Security events
 - Audit events
 
-### 2.10. AI Integration Hub
-- Three-step guided wizard (Configure → Preview → Integration Code) for dependency data integrations
+### 2.10. Integration Hub
+- Four-step guided wizard (Integration Type → Configure → Preview → Integration Code) with two integration paths: Dependency Analysis and Blast Radius Gate
 - Configure step: analysis selection, service identification method (Annotation, Label, Namespace + Deployment, Pod Name, Advanced), search depth, live test query
 - Preview step: dependency summary with upstream service metadata, downstream/caller statistics, matched services table
 - Integration Code step: tabbed snippet generation (Pipeline YAML, cURL, Python, JavaScript, Blast Radius)
@@ -2105,7 +2105,7 @@ Would you like me to create rollback CR?
 | **Authentication** | ✅ OAuth/SSO, K8s SA | ✅ | ✅ |
 | **API Key Management** | ✅ | ✅ | ✅ |
 | **Pod & Deployment Annotations** | ✅ | ✅ | ✅ |
-| **AI Integration Hub** | ❌ | ✅ | ✅ |
+| **Integration Hub** | ❌ | ✅ | ✅ |
 | **Multi-Cluster** | ❌ | ✅ | ✅ |
 | **Change Detection** | ❌ | ✅ | ✅ |
 | **Anomaly Detection** | ❌ | ✅ LLM | ✅ LLM + ML models |

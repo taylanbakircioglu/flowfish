@@ -29,7 +29,7 @@ Centralized multi-cluster Kubernetes observability platform — real-time depend
    - [Change Detection](#change-detection)
    - [Impact Simulation](#impact-simulation)
    - [Blast Radius Oracle](#blast-radius-oracle)
-   - [AI Integration Hub](#ai-integration-hub)
+   - [Integration Hub](#integration-hub)
    - [Pod & Deployment Annotations](#pod--deployment-annotations)
    - [Activity Monitor](#activity-monitor)
    - [Events Timeline](#events-timeline)
@@ -101,8 +101,8 @@ Unlike traditional APM tools that require agent installation or service meshes t
 - **Role-Based Access Control** — User and role management with Admin, Viewer, and custom roles with granular permissions
 - **Multi-Tab Dashboard** — Overview, Operations, Security, Network, Changes, and Workloads tabs with real-time metrics
 - **CI/CD Pipeline Integration** — Blast radius checks for Azure DevOps, GitHub Actions, Jenkins, and GitLab CI
-- **AI Integration Hub** — Three-step wizard (Configure → Preview → Integration Code) for dependency data integrations with ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, JavaScript, and cURL — includes a Blast Radius tab for pre-deployment risk assessment pipeline integration
-- **Pod & Deployment Annotations** — Full annotation support including automatic merge of Deployment/StatefulSet annotations into pods, visible across Map, Network Explorer, Application Inventory, Impact Simulation, and AI Integration Hub
+- **Integration Hub** — Four-step wizard (Integration Type → Configure → Preview → Integration Code) for dependency data and blast radius gate integrations with ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, JavaScript, and cURL
+- **Pod & Deployment Annotations** — Full annotation support including automatic merge of Deployment/StatefulSet annotations into pods, visible across Map, Network Explorer, Application Inventory, Impact Simulation, and Integration Hub
 - **API Key Management** — Generate, expire, and revoke API keys for secure programmatic access alongside JWT authentication
 
 ---
@@ -251,9 +251,9 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 
 ![API Documentation](docs/screenshots/APIs.png)
 
-**AI Integration Hub** — Three-step wizard for dependency data integrations. Configure analysis scope and service identification method, preview dependency results with upstream/downstream statistics, and generate ready-to-use code snippets (Pipeline YAML, cURL, Python, JavaScript) with a dedicated Blast Radius tab for pre-deployment risk assessment:
+**Integration Hub** — Four-step wizard for dependency data and blast radius gate integrations. Select integration type, configure analysis scope and service identification method, preview dependency results with upstream/downstream statistics, and generate ready-to-use code snippets (Pipeline YAML, cURL, Python, JavaScript):
 
-![AI Integration Hub](docs/screenshots/ai-integration-hub.png)
+![Integration Hub](docs/screenshots/integration-hub.png)
 
 ---
 
@@ -644,7 +644,7 @@ The Blast Radius Oracle provides a **pre-deployment impact assessment API** desi
 ```yaml
 - script: |
     RESULT=$(curl -s -X POST "$(FLOWFISH_URL)/api/v1/blast-radius/assess" \
-      -H "Authorization: Bearer $(FLOWFISH_TOKEN)" \
+      -H "X-API-Key: $(FLOWFISH_API_KEY)" \
       -H "Content-Type: application/json" \
       -d '{"cluster_id": $(CLUSTER_ID), "change": {"type": "image_update", "target": "payment-service", "namespace": "production"}}')
     echo "Risk Score: $(echo $RESULT | jq '.risk_score')"
@@ -657,7 +657,7 @@ The Blast Radius Oracle provides a **pre-deployment impact assessment API** desi
 - name: Blast Radius Check
   run: |
     RESULT=$(curl -s -X POST "${{ secrets.FLOWFISH_URL }}/api/v1/blast-radius/assess" \
-      -H "Authorization: Bearer ${{ secrets.FLOWFISH_TOKEN }}" \
+      -H "X-API-Key: ${{ secrets.FLOWFISH_API_KEY }}" \
       -H "Content-Type: application/json" \
       -d '{"cluster_id": ${{ env.CLUSTER_ID }}, "change": {"type": "image_update", "target": "payment-service", "namespace": "production"}}')
     echo "Risk: $(echo $RESULT | jq -r '.risk_level')"
@@ -671,7 +671,7 @@ stage('Blast Radius Check') {
             def result = httpRequest(
                 url: "${FLOWFISH_URL}/api/v1/blast-radius/assess",
                 httpMode: 'POST',
-                customHeaders: [[name: 'Authorization', value: "Bearer ${FLOWFISH_TOKEN}"]],
+                customHeaders: [[name: 'X-API-Key', value: "${FLOWFISH_API_KEY}"]],
                 requestBody: '{"cluster_id": ' + CLUSTER_ID + ', "change": {"type": "image_update", "target": "payment-service", "namespace": "production"}}'
             )
             def json = readJSON text: result.content
@@ -691,13 +691,13 @@ The UI includes a live test runner for ad-hoc assessments: select cluster, analy
 
 Full history of all assessments with assessment ID, timestamp, target, namespace, change type, risk score, risk level, affected count, and pipeline source. Click any entry for detailed JSON view.
 
-The Overview tab also includes a cross-link to the **AI Integration Hub** for users who need dependency data integrations alongside blast radius assessments.
+The Overview tab also includes a cross-link to the **Integration Hub** for users who need dependency data integrations alongside blast radius assessments.
 
 ---
 
-### AI Integration Hub
+### Integration Hub
 
-The AI Integration Hub provides a **three-step guided wizard** (Configure → Preview → Integration Code) for setting up dependency data integrations with AI code agents and CI/CD pipelines. It enables cross-project impact analysis by exposing Flowfish dependency data through a compact, categorized JSON API. The wizard also includes a Blast Radius tab for generating pre-deployment risk assessment pipeline snippets, with a cross-link to the Blast Radius Oracle page for interactive testing.
+The Integration Hub provides a **four-step guided wizard** (Integration Type → Configure → Preview → Integration Code) for setting up CI/CD pipeline integrations. Users choose between two integration types: **Dependency Analysis** for cross-project impact analysis via categorized dependency data, or **Blast Radius Gate** for pre-deployment risk scoring. The wizard generates ready-to-use pipeline snippets for all major CI/CD platforms with consistent `X-API-Key` authentication.
 
 #### Use Case: Cross-Project Impact Analysis
 
@@ -763,7 +763,7 @@ Annotations are visible across:
 - **Application Inventory** — Searchable annotation column with expandable detail view
 - **Network Explorer** — Metadata column with annotations included in CSV exports
 - **Impact Simulation** — Affected service annotations in results and exports
-- **AI Integration Hub** — Annotations exposed in dependency summary API responses
+- **Integration Hub** — Annotations exposed in dependency summary API responses
 
 Internal Kubernetes annotations (`kubectl.kubernetes.io/`, `kubernetes.io/`, `openshift.io/` prefixes) are filtered during ingestion to reduce noise, and values exceeding 500 characters are excluded.
 
@@ -1556,7 +1556,7 @@ Interactive docs at `http://localhost:8000/api/docs` (Swagger) or `http://localh
 | **Analyses** | `/api/v1/analyses` | Create, start, stop, delete analyses |
 | **Dependencies** | `/api/v1/dependencies` | Graph queries, upstream/downstream |
 | **Communications** | `/api/v1/communications` | Network flow data |
-| **AI Integration** | `/api/v1/communications/dependencies/*` | Dependency summary, stream, batch, diff, and impact for AI agents and CI/CD pipelines |
+| **Integration** | `/api/v1/communications/dependencies/*` | Dependency summary, stream, batch, diff, and impact for CI/CD pipelines |
 | **Changes** | `/api/v1/changes` | Change detection events |
 | **Blast Radius** | `/api/v1/blast-radius` | Pre-deployment assessment |
 | **Simulation** | `/api/v1/simulation` | Impact simulation |

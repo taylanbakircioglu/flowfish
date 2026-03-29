@@ -24,7 +24,7 @@ import Settings from './pages/Settings';
 import UserManagement from './pages/UserManagement';
 import BlastRadiusOracle from './pages/BlastRadiusOracle';
 import APIDocumentation from './pages/APIDocumentation';
-import AIIntegrationHub from './pages/AIIntegrationHub';
+import IntegrationHub from './pages/IntegrationHub';
 
 // Build Timestamp forces unique webpack hash on each build
 const BUILD_TIMESTAMP = process.env.REACT_APP_BUILD_TIMESTAMP || 'dev';
@@ -76,8 +76,9 @@ const App: React.FC = () => {
         <Route path="impact/simulation" element={<ImpactSimulation />} />
         <Route path="impact/blast-radius" element={<BlastRadiusOracle />} />
         
-        {/* AI Integration routes */}
-        <Route path="integration/ai-hub" element={<AIIntegrationHub />} />
+        {/* Integration routes */}
+        <Route path="integration/hub" element={<IntegrationHub />} />
+        <Route path="integration/ai-hub" element={<Navigate to="/integration/hub" replace />} />
         
         {/* Observability routes */}
         <Route path="observability/activity" element={<ActivityMonitor />} />

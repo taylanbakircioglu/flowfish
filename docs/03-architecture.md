@@ -877,7 +877,7 @@ frontend/
 │   │   ├── PolicySimulation.tsx
 │   │   ├── UserManagement.tsx
 │   │   ├── Settings.tsx
-│   │   └── Integrations.tsx
+│   │   └── IntegrationHub.tsx
 │   ├── store/                   # Redux store
 │   │   ├── index.ts
 │   │   ├── slices/
@@ -978,7 +978,7 @@ frontend/
 
 The HTTP API is organized under `/api/v1/` (see the endpoint tree under **Backend API (FastAPI)** above). **Authentication** supports both **JWT** (standard Bearer tokens) and **API keys** supplied via the **`X-API-Key`** header, so automation, agents, and CI/CD can authenticate without an interactive login flow.
 
-**AI Integration** exposes dependency-oriented endpoints for AI agents and CI/CD pipelines (tagged **AI Integration** in the OpenAPI spec), including:
+**Integration** exposes dependency-oriented endpoints for CI/CD pipelines (tagged **Integration** in the OpenAPI spec), including:
 
 | Area | Path (relative to `/api/v1`) |
 |------|------------------------------|

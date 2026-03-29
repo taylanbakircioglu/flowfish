@@ -25,7 +25,8 @@ import {
   theme,
 } from 'antd';
 import {
-  RobotOutlined,
+  ApiOutlined,
+  BranchesOutlined,
   CodeOutlined,
   CheckCircleOutlined,
   ArrowLeftOutlined,
@@ -63,15 +64,39 @@ import {
 const { Text, Title, Paragraph } = Typography;
 const { Option } = Select;
 
-const AIIntegrationHub: React.FC = () => {
+type IntegrationType = 'dependency' | 'blast_radius' | null;
+
+const EXAMPLE_BR_RESPONSE = `{
+  "assessment_id": "br-20260327-abc123",
+  "risk_score": 42,
+  "risk_level": "medium",
+  "blast_radius": {
+    "total_affected": 8,
+    "direct_dependencies": 3,
+    "indirect_dependencies": 5,
+    "critical_services": ["checkout-service"]
+  },
+  "recommendation": "proceed",
+  "suggested_actions": [
+    { "action": "Notify checkout-service team", "priority": "medium" }
+  ],
+  "advisory_only": true
+}`;
+
+const IntegrationHub: React.FC = () => {
   const { token } = theme.useToken();
   const [currentStep, setCurrentStep] = useState(0);
+  const [integrationType, setIntegrationType] = useState<IntegrationType>(null);
   const [form] = Form.useForm();
 
   const [selectedAnalysisIds, setSelectedAnalysisIds] = useState<number[]>([]);
   const [platform, setPlatform] = useState('azure_devops');
   const [idMethod, setIdMethod] = useState('annotation');
   const [depth, setDepth] = useState(1);
+
+  // Blast Radius Gate flow state
+  const [brTargetService, setBrTargetService] = useState('');
+  const [brTargetNamespace, setBrTargetNamespace] = useState('');
 
   const [triggerSummary, { data: rawSummaryData, isFetching: summaryLoading, error: rawSummaryError }] =
     useLazyGetDependencySummaryQuery();
@@ -91,6 +116,8 @@ const AIIntegrationHub: React.FC = () => {
     const urlAnnotationKey = searchParams.get('annotation_key');
     const urlAnnotationValue = searchParams.get('annotation_value');
     if (urlOwner || urlNs || urlAnnotationKey) {
+      setIntegrationType('dependency');
+      setCurrentStep(1);
       if (urlAnnotationKey) setIdMethod('annotation');
       else if (urlOwner || urlNs) setIdMethod('namespace_deployment');
       setTimeout(() => {
@@ -132,7 +159,7 @@ const AIIntegrationHub: React.FC = () => {
     return raw;
   }, [summaryError, summaryData]);
 
-  const canProceedStep0 = selectedAnalysisIds.length > 0;
+  const canProceedConfigure = selectedAnalysisIds.length > 0;
 
   const buildParamsFromForm = useCallback((): DependencySummaryParams | null => {
     const values = form.getFieldsValue();
@@ -180,7 +207,7 @@ const AIIntegrationHub: React.FC = () => {
       return;
     }
     setSummaryParams(params);
-    setCurrentStep(2);
+    setCurrentStep(3);
   }, [selectedAnalysisIds, buildParamsFromForm]);
 
   const responseSize = useMemo(() => {
@@ -191,15 +218,85 @@ const AIIntegrationHub: React.FC = () => {
   const contextNamespace = summaryParams?.namespace;
   const contextOwnerName = summaryParams?.owner_name;
 
+  const handleSelectType = (type: IntegrationType) => {
+    setIntegrationType(type);
+    setCurrentStep(1);
+  };
+
+  const handleBackToTypeSelection = () => {
+    setIntegrationType(null);
+    setCurrentStep(0);
+    setBrTargetService('');
+    setBrTargetNamespace('');
+    resetSummary();
+  };
+
+  const depSteps = [
+    { title: 'Integration Type', icon: <ApiOutlined /> },
+    { title: 'Configure', icon: <ExperimentOutlined /> },
+    { title: 'Preview', icon: <EyeOutlined /> },
+    { title: 'Integration Code', icon: <CodeOutlined /> },
+  ];
+
+  const brSteps = [
+    { title: 'Integration Type', icon: <ApiOutlined /> },
+    { title: 'Configure', icon: <ExperimentOutlined /> },
+    { title: 'Integration Code', icon: <CodeOutlined /> },
+  ];
+
+  const activeSteps = integrationType === 'blast_radius' ? brSteps : depSteps;
+
+  const handleStepClick = (n: number) => {
+    if (n === 0) {
+      handleBackToTypeSelection();
+      return;
+    }
+    if (n < currentStep) {
+      setCurrentStep(n);
+      return;
+    }
+    if (integrationType === 'dependency') {
+      if (n === 2 && summaryData?.success) setCurrentStep(n);
+      else if (n === 3 && (summaryData?.success || summaryParams)) setCurrentStep(n);
+    }
+    if (integrationType === 'blast_radius') {
+      if (n === 2) setCurrentStep(n);
+    }
+  };
+
+  // ─── Shared auth card ───
+  const authCard = (
+    <Card
+      title={<span><KeyOutlined /> Authentication</span>}
+      size="small"
+      style={{ marginTop: 16 }}
+    >
+      <Paragraph>
+        All API calls require authentication via <Text strong>API Key</Text>. Include the header <Text code>X-API-Key: fk_your_key</Text> in every request.
+      </Paragraph>
+      <ol>
+        <li>Go to <Link to="/settings"><Text strong>Settings</Text></Link> and open the <Text strong>API Keys</Text> tab</li>
+        <li>Click <Text strong>Generate New API Key</Text> and give it a descriptive name (e.g. &quot;azure-devops-pipeline&quot;)</li>
+        <li>Copy the generated key (starts with <Text code>fk_</Text>) and store it securely in your CI/CD platform&apos;s secrets/variables</li>
+      </ol>
+      <Alert
+        type="warning"
+        showIcon
+        message="API keys provide full API access. Store them as encrypted secrets in your pipeline platform, never in source code."
+        style={{ marginTop: 8 }}
+      />
+    </Card>
+  );
+
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <Title level={2} style={{ marginBottom: 4 }}>
-            <RobotOutlined /> AI Integration Hub
+            <ApiOutlined /> Integration Hub
           </Title>
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Set up CI/CD pipeline and AI agent integrations with Flowfish dependency and impact data.
+            Set up CI/CD pipeline integrations with Flowfish dependency and impact data.
           </Paragraph>
         </div>
         <Link to="/discovery/map">
@@ -207,24 +304,104 @@ const AIIntegrationHub: React.FC = () => {
         </Link>
       </div>
 
-      <Card style={{ marginBottom: 16 }}>
-        <Steps
-          current={currentStep}
-          onChange={(n) => {
-            if (n < currentStep) setCurrentStep(n);
-            else if (n === 1 && summaryData?.success) setCurrentStep(n);
-            else if (n === 2 && (summaryData?.success || summaryParams)) setCurrentStep(n);
-          }}
-          items={[
-            { title: 'Configure', icon: <ExperimentOutlined /> },
-            { title: 'Preview', icon: <EyeOutlined /> },
-            { title: 'Integration Code', icon: <CodeOutlined /> },
-          ]}
-        />
-      </Card>
+      {integrationType && (
+        <Card style={{ marginBottom: 16 }}>
+          <Steps
+            current={currentStep}
+            onChange={handleStepClick}
+            items={activeSteps}
+          />
+        </Card>
+      )}
 
-      {/* ─── Step 0: Configure ─── */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* Step 0: Integration Type Selection                        */}
+      {/* ═══════════════════════════════════════════════════════════ */}
       {currentStep === 0 && (
+        <Row gutter={24} style={{ marginTop: 8 }}>
+          <Col xs={24} md={12}>
+            <Card
+              hoverable
+              onClick={() => handleSelectType('dependency')}
+              style={{
+                height: '100%',
+                borderColor: token.colorPrimary,
+                cursor: 'pointer',
+                transition: 'box-shadow 0.2s',
+              }}
+              styles={{ body: { padding: 24 } }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                <div style={{
+                  width: 48, height: 48, borderRadius: 12,
+                  background: `${token.colorPrimary}15`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <BranchesOutlined style={{ fontSize: 24, color: token.colorPrimary }} />
+                </div>
+                <div>
+                  <Text strong style={{ fontSize: 16 }}>Dependency Analysis</Text>
+                  <Tag color="blue" style={{ marginLeft: 8 }}>Most Common</Tag>
+                </div>
+              </div>
+              <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                Expose cross-service dependency data to CI/CD pipelines. Identify affected repositories, critical services, and downstream impact chains.
+              </Paragraph>
+              <ul style={{ margin: 0, paddingLeft: 20, color: token.colorTextSecondary, fontSize: 13 }}>
+                <li>Multi-analysis scope with 5 identification methods</li>
+                <li>Live preview with downstream/caller categorization</li>
+                <li>Pipeline YAML, curl, Python, and JavaScript snippets</li>
+                <li>Git-repo annotation extraction for cross-project impact</li>
+              </ul>
+              <div style={{ marginTop: 16 }}>
+                <Button type="primary" icon={<ArrowRightOutlined />}>Get Started</Button>
+              </div>
+            </Card>
+          </Col>
+          <Col xs={24} md={12}>
+            <Card
+              hoverable
+              onClick={() => handleSelectType('blast_radius')}
+              style={{
+                height: '100%',
+                cursor: 'pointer',
+                transition: 'box-shadow 0.2s',
+              }}
+              styles={{ body: { padding: 24 } }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                <div style={{
+                  width: 48, height: 48, borderRadius: 12,
+                  background: `${token.colorWarning}15`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <ThunderboltOutlined style={{ fontSize: 24, color: token.colorWarning }} />
+                </div>
+                <Text strong style={{ fontSize: 16 }}>Blast Radius Gate</Text>
+              </div>
+              <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                Add pre-deployment risk scoring to your CI/CD pipeline. Get automated risk assessments, affected service counts, and actionable recommendations.
+              </Paragraph>
+              <ul style={{ margin: 0, paddingLeft: 20, color: token.colorTextSecondary, fontSize: 13 }}>
+                <li>Risk score (0-100) with level classification</li>
+                <li>Blast radius: direct, indirect, and critical services</li>
+                <li>Advisory-only — Flowfish never blocks deployments</li>
+                <li>Pipeline snippets for all major CI/CD platforms</li>
+              </ul>
+              <div style={{ marginTop: 16 }}>
+                <Button icon={<ArrowRightOutlined />}>Get Started</Button>
+              </div>
+            </Card>
+          </Col>
+        </Row>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* DEPENDENCY ANALYSIS FLOW (Steps 1-3)                      */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+
+      {/* ─── Dep Step 1: Configure ─── */}
+      {integrationType === 'dependency' && currentStep === 1 && (
         <Card title="Analysis Scope & Service Identification">
           <Form.Item label="Analysis (required, multi-select)" required>
             <Select
@@ -376,7 +553,7 @@ const AIIntegrationHub: React.FC = () => {
               icon={<ExperimentOutlined />}
               onClick={onTestQuery}
               loading={summaryLoading}
-              disabled={!canProceedStep0}
+              disabled={!canProceedConfigure}
             >
               Test Query
             </Button>
@@ -407,26 +584,31 @@ const AIIntegrationHub: React.FC = () => {
             />
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginTop: 24, gap: 8 }}>
-            {!summaryData?.success && (
-              <Button onClick={onSkipToSetup} disabled={!canProceedStep0}>
-                Skip to Integration Code <ArrowRightOutlined />
-              </Button>
-            )}
-            <Button
-              type="primary"
-              icon={<ArrowRightOutlined />}
-              disabled={!summaryData?.success}
-              onClick={() => setCurrentStep(1)}
-            >
-              Preview Results
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24 }}>
+            <Button icon={<ArrowLeftOutlined />} onClick={handleBackToTypeSelection}>
+              Back
             </Button>
+            <Space>
+              {!summaryData?.success && (
+                <Button onClick={onSkipToSetup} disabled={!canProceedConfigure}>
+                  Skip to Integration Code <ArrowRightOutlined />
+                </Button>
+              )}
+              <Button
+                type="primary"
+                icon={<ArrowRightOutlined />}
+                disabled={!summaryData?.success}
+                onClick={() => setCurrentStep(2)}
+              >
+                Preview Results
+              </Button>
+            </Space>
           </div>
         </Card>
       )}
 
-      {/* ─── Step 1: Preview & Validate ─── */}
-      {currentStep === 1 && !summaryData?.success && (
+      {/* ─── Dep Step 2: Preview & Validate ─── */}
+      {integrationType === 'dependency' && currentStep === 2 && !summaryData?.success && (
         <Card>
           <Alert
             type="warning"
@@ -434,10 +616,10 @@ const AIIntegrationHub: React.FC = () => {
             message="Preview data is no longer available. Please run Test Query again."
             style={{ marginBottom: 16 }}
           />
-          <Button type="primary" onClick={() => setCurrentStep(0)}>Back to Configure</Button>
+          <Button type="primary" onClick={() => setCurrentStep(1)}>Back to Configure</Button>
         </Card>
       )}
-      {currentStep === 1 && summaryData?.success && (
+      {integrationType === 'dependency' && currentStep === 2 && summaryData?.success && (
         <div>
           <Card size="small" style={{ borderLeft: `3px solid ${token.colorPrimary}`, marginBottom: 16 }}>
             <Row gutter={16} align="middle">
@@ -526,25 +708,18 @@ const AIIntegrationHub: React.FC = () => {
           />
 
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
-            <Button
-              icon={<ArrowLeftOutlined />}
-              onClick={() => setCurrentStep(0)}
-            >
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(1)}>
               Back
             </Button>
-            <Button
-              type="primary"
-              icon={<ArrowRightOutlined />}
-              onClick={() => setCurrentStep(2)}
-            >
+            <Button type="primary" icon={<ArrowRightOutlined />} onClick={() => setCurrentStep(3)}>
               Integration Code
             </Button>
           </div>
         </div>
       )}
 
-      {/* ─── Step 2: Integration Code ─── */}
-      {currentStep === 2 && !summaryData?.success && !summaryParams && (
+      {/* ─── Dep Step 3: Integration Code ─── */}
+      {integrationType === 'dependency' && currentStep === 3 && !summaryData?.success && !summaryParams && (
         <Card>
           <Alert
             type="warning"
@@ -552,10 +727,10 @@ const AIIntegrationHub: React.FC = () => {
             message="Configuration required. Please set up your query in the Configure step."
             style={{ marginBottom: 16 }}
           />
-          <Button type="primary" onClick={() => setCurrentStep(0)}>Back to Configure</Button>
+          <Button type="primary" onClick={() => setCurrentStep(1)}>Back to Configure</Button>
         </Card>
       )}
-      {currentStep === 2 && (summaryData?.success || summaryParams) && (
+      {integrationType === 'dependency' && currentStep === 3 && (summaryData?.success || summaryParams) && (
         <div>
           {!summaryData?.success && (
             <Alert
@@ -572,10 +747,7 @@ const AIIntegrationHub: React.FC = () => {
             style={{ marginBottom: 16 }}
           />
 
-          <Card
-            size="small"
-            style={{ marginBottom: 16 }}
-          >
+          <Card size="small" style={{ marginBottom: 16 }}>
             <Space align="center">
               <Text strong>Pipeline Platform:</Text>
               <Select value={platform} onChange={setPlatform} style={{ width: 200 }}>
@@ -617,7 +789,7 @@ const AIIntegrationHub: React.FC = () => {
                       showIcon
                       icon={<InfoCircleOutlined />}
                       message="Pre-deployment risk assessment"
-                      description="Use this endpoint to assess the impact of deploying changes to a service. Returns a risk score (0-100), affected services count, and actionable recommendations."
+                      description={<>Use this endpoint to assess the impact of deploying changes to a service. You can also <Button type="link" style={{ padding: 0 }} onClick={handleBackToTypeSelection}>set up Blast Radius as a dedicated integration type</Button> from Step 1.</>}
                       style={{ marginBottom: 16 }}
                     />
                     <Tabs
@@ -636,7 +808,7 @@ const AIIntegrationHub: React.FC = () => {
                       ]}
                     />
                     <div style={{ marginTop: 12 }}>
-                      <Link to="/impact/blast-radius">
+                      <Link to="/impact/blast-radius?tab=test">
                         <Button type="link" style={{ padding: 0 }}>
                           <ThunderboltOutlined /> Test blast radius assessments interactively
                         </Button>
@@ -648,26 +820,7 @@ const AIIntegrationHub: React.FC = () => {
             ]}
           />
 
-          <Card
-            title={<span><KeyOutlined /> Authentication</span>}
-            size="small"
-            style={{ marginTop: 16 }}
-          >
-            <Paragraph>
-              All API calls require authentication via <Text strong>API Key</Text>. Include the header <Text code>X-API-Key: fk_your_key</Text> in every request.
-            </Paragraph>
-            <ol>
-              <li>Go to <Link to="/settings"><Text strong>Settings</Text></Link> and open the <Text strong>API Keys</Text> tab</li>
-              <li>Click <Text strong>Generate New API Key</Text> and give it a descriptive name (e.g. "azure-devops-pipeline")</li>
-              <li>Copy the generated key (starts with <Text code>fk_</Text>) and store it securely in your CI/CD platform's secrets/variables</li>
-            </ol>
-            <Alert
-              type="warning"
-              showIcon
-              message="API keys provide full API access. Store them as encrypted secrets in your pipeline platform, never in source code."
-              style={{ marginTop: 8 }}
-            />
-          </Card>
+          {authCard}
 
           <Card title="Understanding the Response" size="small" style={{ marginTop: 16 }}>
             <Paragraph>
@@ -675,10 +828,10 @@ const AIIntegrationHub: React.FC = () => {
               Each dependency includes its Kubernetes <Text strong>annotations</Text> and <Text strong>labels</Text>.
             </Paragraph>
             <Paragraph>
-              Your AI agent or pipeline should:
+              Your pipeline should:
             </Paragraph>
             <ol>
-              <li>Extract <Text code>annotations["git-repo"]</Text> from each downstream service to identify affected repositories</li>
+              <li>Extract <Text code>annotations[&quot;git-repo&quot;]</Text> from each downstream service to identify affected repositories</li>
               <li>Check <Text code>is_critical</Text> flag to prioritize critical dependency changes</li>
               <li>Use <Text code>service_category</Text> grouping to understand the type of each dependency (database, cache, API, etc.)</li>
               <li>Examine <Text code>callers</Text> to understand which services call the changed service</li>
@@ -686,8 +839,138 @@ const AIIntegrationHub: React.FC = () => {
           </Card>
 
           <div style={{ marginTop: 24 }}>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(summaryData?.success ? 1 : 0)}>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(summaryData?.success ? 2 : 1)}>
               {summaryData?.success ? 'Back to Preview' : 'Back to Configure'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* BLAST RADIUS GATE FLOW (Steps 1-2)                        */}
+      {/* ═══════════════════════════════════════════════════════════ */}
+
+      {/* ─── BR Step 1: Configure ─── */}
+      {integrationType === 'blast_radius' && currentStep === 1 && (
+        <Card title="Blast Radius Gate Configuration">
+          <Paragraph type="secondary">
+            Configure your pre-deployment risk assessment integration. The Blast Radius API evaluates the impact of changes
+            and returns a risk score with recommendations — your pipeline decides what to do.
+          </Paragraph>
+
+          <Divider />
+
+          <Form layout="vertical">
+            <Form.Item label="Pipeline Platform" required>
+              <Select value={platform} onChange={setPlatform} style={{ maxWidth: 300 }}>
+                {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
+              </Select>
+            </Form.Item>
+
+            <Row gutter={16}>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  label="Target Service Name"
+                  tooltip="Optional — if left empty, snippets will use a placeholder. You can parameterize this in your pipeline."
+                >
+                  <Input
+                    placeholder="e.g. payment-service"
+                    value={brTargetService}
+                    onChange={e => setBrTargetService(e.target.value)}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  label="Target Namespace"
+                  tooltip="Optional — defaults to 'default' in generated snippets."
+                >
+                  <Input
+                    placeholder="e.g. production"
+                    value={brTargetNamespace}
+                    onChange={e => setBrTargetNamespace(e.target.value)}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+          </Form>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
+            <Button icon={<ArrowLeftOutlined />} onClick={handleBackToTypeSelection}>
+              Back
+            </Button>
+            <Button type="primary" icon={<ArrowRightOutlined />} onClick={() => setCurrentStep(2)}>
+              Generate Integration Code
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* ─── BR Step 2: Integration Code ─── */}
+      {integrationType === 'blast_radius' && currentStep === 2 && (
+        <div>
+          <Alert
+            type="info"
+            showIcon
+            message="All snippets below use your configured parameters. Copy and adapt to your environment."
+            style={{ marginBottom: 16 }}
+          />
+
+          <Card size="small" style={{ marginBottom: 16 }}>
+            <Space align="center">
+              <Text strong>Pipeline Platform:</Text>
+              <Select value={platform} onChange={setPlatform} style={{ width: 200 }}>
+                {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
+              </Select>
+            </Space>
+          </Card>
+
+          <Tabs
+            items={[
+              {
+                key: 'br-pipeline',
+                label: <span><RocketOutlined /> {PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline'}</span>,
+                children: <CodeBlock code={buildBlastRadiusPipelineSnippet(platform, brTargetNamespace || undefined, brTargetService || undefined)} label="Blast Radius Pipeline" />,
+              },
+              {
+                key: 'br-curl',
+                label: <span><CodeOutlined /> curl</span>,
+                children: <CodeBlock code={buildBlastRadiusCurlSnippet(brTargetNamespace || undefined, brTargetService || undefined)} label="Blast Radius curl" />,
+              },
+            ]}
+          />
+
+          <Card title="Example Response" size="small" style={{ marginTop: 16 }}>
+            <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+              The <Text code>POST /api/v1/blast-radius/assess</Text> endpoint returns a risk assessment:
+            </Paragraph>
+            <CodeBlock code={EXAMPLE_BR_RESPONSE} label="Example Response" />
+          </Card>
+
+          <Card title="Response Fields" size="small" style={{ marginTop: 16 }}>
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label={<Text code>risk_score</Text>}>0-100, higher = more risky</Descriptions.Item>
+              <Descriptions.Item label={<Text code>risk_level</Text>}>low / medium / high / critical</Descriptions.Item>
+              <Descriptions.Item label={<Text code>blast_radius.total_affected</Text>}>Total services in impact zone</Descriptions.Item>
+              <Descriptions.Item label={<Text code>blast_radius.critical_services</Text>}>Names of critical downstream services</Descriptions.Item>
+              <Descriptions.Item label={<Text code>recommendation</Text>}>proceed / review_required / delay_suggested</Descriptions.Item>
+              <Descriptions.Item label={<Text code>advisory_only</Text>}>Always true — Flowfish never blocks deployments</Descriptions.Item>
+            </Descriptions>
+          </Card>
+
+          {authCard}
+
+          <div style={{ marginTop: 16 }}>
+            <Link to="/impact/blast-radius?tab=test">
+              <Button type="link" icon={<ThunderboltOutlined />} style={{ padding: 0 }}>
+                Test blast radius assessments interactively
+              </Button>
+            </Link>
+          </div>
+
+          <div style={{ marginTop: 24 }}>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(1)}>
+              Back to Configure
             </Button>
           </div>
         </div>
@@ -696,4 +979,4 @@ const AIIntegrationHub: React.FC = () => {
   );
 };
 
-export default AIIntegrationHub;
+export default IntegrationHub;

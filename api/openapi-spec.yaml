@@ -12,7 +12,7 @@ info:
     - **Real-Time Dependency Map** — Live visualization of service dependency graphs
     - **Anomaly Detection** — Intelligent anomaly detection powered by statistical analysis
     - **Multi-Cluster** — Manage multiple clusters from a single interface
-    - **AI Integration** — Dependency intelligence APIs for AI agents and CI/CD pipeline integration
+    - **Integration** — Dependency intelligence APIs for CI/CD pipeline integration
     - **Pod & Deployment Annotations** — Rich metadata enrichment including annotations merged from owning Deployments/StatefulSets
     - **Import/Export** — Data import and export in multiple formats
     
@@ -57,8 +57,8 @@ tags:
     description: Kubernetes workload inventory (Pod, Deployment, Service, StatefulSet) with labels and annotations
   - name: Communications
     description: Service-to-service communication records and dependency graphs
-  - name: AI Integration
-    description: Dependency intelligence APIs for AI agents and CI/CD pipeline integrations — dependency discovery, impact analysis, and cross-project dependency mapping
+  - name: Integration
+    description: Dependency intelligence APIs for CI/CD pipeline integrations — dependency discovery, impact analysis, and cross-project dependency mapping
   - name: Dependencies
     description: Dependency map and graph queries
   - name: Anomalies
@@ -1231,7 +1231,7 @@ paths:
   /communications/dependencies/stream:
     get:
       tags:
-        - AI Integration
+        - Integration
         - Communications
       summary: Get pod dependencies as upstream/downstream
       description: |
@@ -1340,7 +1340,7 @@ paths:
   /communications/dependencies/batch:
     post:
       tags:
-        - AI Integration
+        - Integration
         - Communications
       summary: Batch query dependencies for multiple services
       requestBody:
@@ -1360,7 +1360,7 @@ paths:
   /communications/dependencies/diff:
     get:
       tags:
-        - AI Integration
+        - Integration
         - Communications
       summary: Get dependency diff between two analyses
       parameters:
@@ -1401,7 +1401,7 @@ paths:
   /communications/dependencies/impact:
     get:
       tags:
-        - AI Integration
+        - Integration
         - Communications
       summary: Dependency impact analysis by change type
       parameters:
@@ -1469,10 +1469,10 @@ paths:
   /communications/dependencies/summary:
     get:
       tags:
-        - AI Integration
-      summary: AI-agent-friendly dependency summary grouped by category
+        - Integration
+      summary: Dependency summary grouped by category for CI/CD integration
       description: |
-        Returns a compact, grouped dependency summary for AI agents and CI/CD pipelines.
+        Returns a compact, grouped dependency summary for CI/CD pipelines and automation.
         Dependencies are grouped by service_category. Annotations and labels are prominently
         exposed for cross-project impact analysis (e.g. git-repo URLs, team info).
         Requires at least one analysis_id and one search parameter.

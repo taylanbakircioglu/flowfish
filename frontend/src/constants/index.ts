@@ -55,5 +55,5 @@ export const ROUTES = {
   ANALYSIS_WIZARD: '/analysis/wizard',
   DEPENDENCY_MAP: '/discovery/map',
   CLUSTER_MANAGEMENT: '/management/clusters',
-  AI_INTEGRATION_HUB: '/integration/ai-hub',
+  INTEGRATION_HUB: '/integration/hub',
 } as const;

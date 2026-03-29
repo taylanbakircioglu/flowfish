@@ -24,18 +24,17 @@ import {
   Alert,
   Tabs,
   Select,
-  Input,
   Form,
   message,
   Badge,
   Progress,
-  Tooltip,
   Divider,
   Empty,
   Spin,
   Modal,
   Timeline,
   List,
+  Descriptions,
   theme,
 } from 'antd';
 import {
@@ -43,7 +42,6 @@ import {
   ApiOutlined,
   HistoryOutlined,
   PlayCircleOutlined,
-  CopyOutlined,
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   WarningOutlined,
@@ -56,16 +54,19 @@ import {
   ReloadOutlined,
   InfoCircleOutlined,
   FileTextOutlined,
-  SettingOutlined,
-  RobotOutlined,
 } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
 import { useGetAnalysesQuery } from '../store/api/analysisApi';
 import { colors } from '../styles/colors';
+import CodeBlock from '../components/integration/CodeBlock';
+import {
+  PIPELINE_PLATFORMS,
+  buildBlastRadiusCurlSnippet,
+  buildBlastRadiusPipelineSnippet,
+} from '../utils/snippetBuilders';
 
 const { Title, Text, Paragraph } = Typography;
-const { TabPane } = Tabs;
 const { Option } = Select;
 const { useToken } = theme;
 
@@ -121,183 +122,14 @@ interface AssessmentResult {
   assessment_duration_ms: number;
 }
 
-// Code snippets for different CI/CD platforms
-const codeSnippets = {
-  azureDevOps: `# Azure DevOps Pipeline - Flowfish Blast Radius Check
-- task: Bash@3
-  displayName: '🐟 Flowfish Blast Radius Check'
-  inputs:
-    targetType: 'inline'
-    script: |
-      #!/bin/bash
-      set -e
-      
-      echo "=========================================="
-      echo "🐟 Flowfish Blast Radius Assessment"
-      echo "=========================================="
-      
-      # Flowfish API çağrısı
-      RESPONSE=$(curl -s -w "\\n%{http_code}" -X POST \\
-        "$(FLOWFISH_URL)/api/v1/blast-radius/assess" \\
-        -H "Authorization: Bearer $(FLOWFISH_TOKEN)" \\
-        -H "Content-Type: application/json" \\
-        -d '{
-          "cluster_id": $(CLUSTER_ID),
-          "change": {
-            "type": "$(Build.Reason)",
-            "target": "$(SERVICE_NAME)",
-            "namespace": "$(NAMESPACE)",
-            "triggered_by": "$(Build.RequestedFor)",
-            "pipeline": "$(Build.DefinitionName)",
-            "commit": "$(Build.SourceVersion)"
-          }
-        }')
-      
-      # Response ve HTTP code ayır
-      HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-      BODY=$(echo "$RESPONSE" | sed '$d')
-      
-      # API erişilemezse devam et
-      if [ "$HTTP_CODE" != "200" ]; then
-        echo "⚠️ Flowfish API unreachable. Continuing..."
-        exit 0
-      fi
-      
-      # Sonuçları göster
-      RISK_SCORE=$(echo "$BODY" | jq -r '.risk_score')
-      RISK_LEVEL=$(echo "$BODY" | jq -r '.risk_level')
-      AFFECTED=$(echo "$BODY" | jq -r '.blast_radius.total_affected')
-      
-      echo "📊 Risk Score: $RISK_SCORE/100"
-      echo "📊 Risk Level: $RISK_LEVEL"
-      echo "📊 Affected Services: $AFFECTED"
-      
-      # Pipeline variable olarak kaydet
-      echo "##vso[task.setvariable variable=RISK_SCORE]$RISK_SCORE"
-      echo "##vso[task.setvariable variable=RISK_LEVEL]$RISK_LEVEL"
-  continueOnError: true  # Flowfish hatası pipeline'ı durdurmaz
-  env:
-    FLOWFISH_URL: $(FLOWFISH_URL)
-    FLOWFISH_TOKEN: $(FLOWFISH_TOKEN)`,
-
-  jenkins: `// Jenkins Pipeline - Flowfish Blast Radius Check
-stage('Blast Radius Check') {
-    steps {
-        script {
-            def response = httpRequest(
-                url: "\${FLOWFISH_URL}/api/v1/blast-radius/assess",
-                httpMode: 'POST',
-                contentType: 'APPLICATION_JSON',
-                customHeaders: [[name: 'Authorization', value: "Bearer \${FLOWFISH_TOKEN}"]],
-                requestBody: """
-                {
-                    "cluster_id": \${CLUSTER_ID},
-                    "change": {
-                        "type": "image_update",
-                        "target": "\${SERVICE_NAME}",
-                        "namespace": "\${NAMESPACE}",
-                        "triggered_by": "\${BUILD_USER}",
-                        "pipeline": "\${JOB_NAME}"
-                    }
-                }
-                """,
-                validResponseCodes: '200:500'
-            )
-            
-            if (response.status == 200) {
-                def result = readJSON(text: response.content)
-                echo "🐟 Risk Score: \${result.risk_score}/100"
-                echo "🐟 Risk Level: \${result.risk_level}"
-                echo "🐟 Affected: \${result.blast_radius.total_affected} services"
-                
-                // Takımın kendi kuralı
-                if (result.risk_score > 80 && env.STRICT_MODE == 'true') {
-                    input message: "High risk! Approve deployment?"
-                }
-            } else {
-                echo "⚠️ Flowfish unavailable, continuing..."
-            }
-        }
-    }
-}`,
-
-  githubActions: `# GitHub Actions - Flowfish Blast Radius Check
-- name: 🐟 Flowfish Blast Radius Check
-  id: blast-radius
-  continue-on-error: true
-  run: |
-    RESPONSE=$(curl -s -X POST \\
-      "\${{ secrets.FLOWFISH_URL }}/api/v1/blast-radius/assess" \\
-      -H "Authorization: Bearer \${{ secrets.FLOWFISH_TOKEN }}" \\
-      -H "Content-Type: application/json" \\
-      -d '{
-        "cluster_id": \${{ vars.CLUSTER_ID }},
-        "change": {
-          "type": "image_update",
-          "target": "\${{ github.event.repository.name }}",
-          "namespace": "\${{ vars.NAMESPACE }}",
-          "triggered_by": "\${{ github.actor }}",
-          "pipeline": "\${{ github.workflow }}",
-          "commit": "\${{ github.sha }}"
-        }
-      }')
-    
-    RISK_SCORE=$(echo "$RESPONSE" | jq -r '.risk_score // 0')
-    RISK_LEVEL=$(echo "$RESPONSE" | jq -r '.risk_level // "unknown"')
-    
-    echo "risk_score=$RISK_SCORE" >> $GITHUB_OUTPUT
-    echo "risk_level=$RISK_LEVEL" >> $GITHUB_OUTPUT
-    echo "🐟 Risk: $RISK_SCORE/100 ($RISK_LEVEL)"
-
-- name: Comment PR with Risk Assessment
-  if: github.event_name == 'pull_request'
-  uses: actions/github-script@v6
-  with:
-    script: |
-      github.rest.issues.createComment({
-        issue_number: context.issue.number,
-        owner: context.repo.owner,
-        repo: context.repo.repo,
-        body: '🐟 **Flowfish Blast Radius**: \${{ steps.blast-radius.outputs.risk_score }}/100 (\${{ steps.blast-radius.outputs.risk_level }})'
-      })`,
-
-  curl: `# Simple cURL Example
-curl -X POST "https://flowfish.your-domain.com/api/v1/blast-radius/assess" \\
-  -H "Authorization: Bearer YOUR_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "cluster_id": 1,
-    "change": {
-      "type": "image_update",
-      "target": "payment-service",
-      "namespace": "production",
-      "triggered_by": "deploy-bot",
-      "pipeline": "main-deploy"
-    }
-  }'
-
-# Response:
-# {
-#   "assessment_id": "br-20260117-abc123",
-#   "risk_score": 72,
-#   "risk_level": "high",
-#   "blast_radius": {
-#     "total_affected": 14,
-#     "direct_dependencies": 3,
-#     "critical_services": ["checkout", "order-service"]
-#   },
-#   "recommendation": "review_required",
-#   "advisory_only": true
-# }`
-};
-
 const BlastRadiusOracle: React.FC = () => {
   const { token } = useToken();
-  const [activeTab, setActiveTab] = useState('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'overview');
   const [assessments, setAssessments] = useState<BlastRadiusAssessment[]>([]);
   const [stats, setStats] = useState<AssessmentStats | null>(null);
   const [loading, setLoading] = useState(false);
-  const [selectedPlatform, setSelectedPlatform] = useState<string>('azureDevOps');
+  const [selectedPlatform, setSelectedPlatform] = useState<string>('azure_devops');
   
   // Test form state
   const [testForm] = Form.useForm();
@@ -389,6 +221,11 @@ const BlastRadiusOracle: React.FC = () => {
     fetchStats();
   }, [fetchAssessments, fetchStats]);
 
+  const handleTabChange = (key: string) => {
+    setActiveTab(key);
+    setSearchParams({ tab: key }, { replace: true });
+  };
+
   // Run test assessment
   const runTestAssessment = async (values: any) => {
     setTesting(true);
@@ -418,7 +255,7 @@ const BlastRadiusOracle: React.FC = () => {
         const result = await response.json();
         setTestResult(result);
         message.success(`Assessment completed: Risk Score ${result.risk_score}/100`);
-        fetchAssessments(); // Refresh history
+        fetchAssessments();
         fetchStats();
       } else {
         const error = await response.json();
@@ -428,15 +265,6 @@ const BlastRadiusOracle: React.FC = () => {
       message.error('Failed to run assessment');
     } finally {
       setTesting(false);
-    }
-  };
-
-  const copyCode = async (code: string) => {
-    try {
-      await navigator.clipboard.writeText(code);
-      message.success('Code copied to clipboard!');
-    } catch {
-      message.error('Clipboard unavailable');
     }
   };
 
@@ -499,7 +327,7 @@ const BlastRadiusOracle: React.FC = () => {
       title: 'Change',
       dataIndex: 'change_type',
       key: 'change_type',
-      render: (type: string) => <Tag>{type.replace('_', ' ')}</Tag>,
+      render: (type: string) => <Tag>{type.replaceAll('_', ' ')}</Tag>,
     },
     {
       title: 'Risk Score',
@@ -547,6 +375,515 @@ const BlastRadiusOracle: React.FC = () => {
     },
   ];
 
+  // ─── Overview tab content ───
+  const overviewContent = (
+    <Row gutter={24}>
+      <Col span={12}>
+        <Alert
+          message="Advisory Only - You Control the Decision"
+          description={
+            <div>
+              <Paragraph style={{ marginBottom: 8 }}>
+                Flowfish Blast Radius Oracle provides risk assessment and recommendations, 
+                but <strong>never blocks deployments</strong>. Your pipeline owns the decision.
+              </Paragraph>
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                <li>Risk score 0-100 with level classification</li>
+                <li>Affected services list (direct &amp; indirect)</li>
+                <li>Actionable recommendations</li>
+                <li>Full history and statistics</li>
+              </ul>
+            </div>
+          }
+          type="info"
+          showIcon
+          icon={<SafetyCertificateOutlined />}
+          style={{ marginBottom: 16 }}
+        />
+        
+        <Card title="How It Works" size="small" bordered>
+          <Timeline
+            items={[
+              {
+                color: 'blue',
+                children: (
+                  <div>
+                    <Text strong>1. Pipeline calls Flowfish API</Text>
+                    <br />
+                    <Text type="secondary" style={{ fontSize: 12 }}>POST /api/v1/blast-radius/assess</Text>
+                  </div>
+                ),
+              },
+              {
+                color: 'cyan',
+                children: (
+                  <div>
+                    <Text strong>2. Flowfish analyzes dependencies</Text>
+                    <br />
+                    <Text type="secondary" style={{ fontSize: 12 }}>Uses existing analysis data and dependency graph</Text>
+                  </div>
+                ),
+              },
+              {
+                color: 'green',
+                children: (
+                  <div>
+                    <Text strong>3. Returns risk score &amp; recommendations</Text>
+                    <br />
+                    <Text type="secondary" style={{ fontSize: 12 }}>JSON response with score, affected services, suggestions</Text>
+                  </div>
+                ),
+              },
+              {
+                color: 'gold',
+                children: (
+                  <div>
+                    <Text strong>4. Pipeline decides what to do</Text>
+                    <br />
+                    <Text type="secondary" style={{ fontSize: 12 }}>Continue, require approval, delay - your rules</Text>
+                  </div>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      </Col>
+      
+      <Col span={12}>
+        <Card 
+          title={<span><ApiOutlined /> API Endpoint</span>} 
+          size="small" 
+          bordered
+          style={{ marginBottom: 16 }}
+        >
+          <div style={{ 
+            background: token.colorBgLayout, 
+            padding: 12, 
+            borderRadius: 6,
+            fontFamily: 'monospace',
+            fontSize: 13,
+          }}>
+            <Text strong style={{ color: colors.status.success }}>POST</Text>
+            <Text> /api/v1/blast-radius/assess</Text>
+          </div>
+          
+          <Divider style={{ margin: '12px 0' }} />
+          
+          <Text strong style={{ display: 'block', marginBottom: 8 }}>Request Body:</Text>
+          <pre style={{ 
+            background: token.colorBgLayout, 
+            padding: 12, 
+            borderRadius: 6,
+            fontSize: 11,
+            overflow: 'auto',
+            maxHeight: 200,
+          }}>
+{`{
+  "cluster_id": 1,
+  "change": {
+    "type": "image_update",
+    "target": "payment-service",
+    "namespace": "production",
+    "triggered_by": "jenkins",
+    "pipeline": "main-deploy"
+  }
+}`}
+          </pre>
+        </Card>
+        
+        <Card 
+          title={<span><FileTextOutlined /> Response Fields</span>} 
+          size="small" 
+          bordered
+        >
+          <List
+            size="small"
+            dataSource={[
+              { field: 'risk_score', desc: '0-100, higher = more risky' },
+              { field: 'risk_level', desc: 'low / medium / high / critical' },
+              { field: 'blast_radius.total_affected', desc: 'Total services in impact zone' },
+              { field: 'recommendation', desc: 'proceed / review_required / delay_suggested' },
+              { field: 'suggested_actions[]', desc: 'Contextual action items' },
+              { field: 'advisory_only', desc: 'Always true - Flowfish never blocks' },
+            ]}
+            renderItem={(item) => (
+              <List.Item style={{ padding: '6px 0' }}>
+                <Text code style={{ fontSize: 11 }}>{item.field}</Text>
+                <Text type="secondary" style={{ marginLeft: 8, fontSize: 11 }}>{item.desc}</Text>
+              </List.Item>
+            )}
+          />
+        </Card>
+
+        <Card size="small" bordered style={{ marginTop: 16 }}>
+          <Space>
+            <ApiOutlined />
+            <div>
+              <Text strong>Need dependency data for CI/CD pipelines?</Text>
+              <br />
+              <Link to="/integration/hub">
+                <Text type="secondary">
+                  Integration Hub &mdash; generate integration snippets for dependency analysis
+                </Text>
+              </Link>
+            </div>
+          </Space>
+        </Card>
+      </Col>
+    </Row>
+  );
+
+  // ─── Integration tab content ───
+  const integrationContent = (
+    <div>
+      <Alert
+        message={
+          <Space>
+            <ApiOutlined />
+            <span>
+              For a complete guided setup wizard with all platforms and authentication docs, visit the{' '}
+              <Link to="/integration/hub"><strong>Integration Hub</strong></Link>.
+            </span>
+          </Space>
+        }
+        type="info"
+        showIcon={false}
+        style={{ marginBottom: 16 }}
+        action={
+          <Link to="/integration/hub">
+            <Button size="small" type="primary">Open Integration Hub</Button>
+          </Link>
+        }
+      />
+
+      <div style={{ marginBottom: 16 }}>
+        <Text strong style={{ marginRight: 12 }}>Platform:</Text>
+        <Select
+          value={selectedPlatform}
+          onChange={setSelectedPlatform}
+          style={{ width: 200 }}
+        >
+          {PIPELINE_PLATFORMS.map(p => (
+            <Option key={p.value} value={p.value}>{p.label}</Option>
+          ))}
+        </Select>
+      </div>
+
+      <Tabs
+        size="small"
+        items={[
+          {
+            key: 'br-pipeline',
+            label: <span><RocketOutlined /> {PIPELINE_PLATFORMS.find(p => p.value === selectedPlatform)?.label || 'Pipeline'}</span>,
+            children: <CodeBlock code={buildBlastRadiusPipelineSnippet(selectedPlatform)} label="Blast Radius Pipeline" />,
+          },
+          {
+            key: 'br-curl',
+            label: <span><CodeOutlined /> curl</span>,
+            children: <CodeBlock code={buildBlastRadiusCurlSnippet()} label="Blast Radius curl" />,
+          },
+        ]}
+      />
+
+      <Card size="small" style={{ marginTop: 16 }}>
+        <Text strong style={{ display: 'block', marginBottom: 12 }}>Required Variables</Text>
+        <Descriptions size="small" column={{ xs: 1, sm: 3 }} bordered>
+          <Descriptions.Item label={<Text code>FLOWFISH_URL</Text>}>
+            <Text type="secondary" style={{ fontSize: 12 }}>Flowfish API base URL</Text>
+          </Descriptions.Item>
+          <Descriptions.Item label={<Text code>FLOWFISH_API_KEY</Text>}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              API Key from <Link to="/settings">Settings &gt; API Keys</Link>
+            </Text>
+          </Descriptions.Item>
+          <Descriptions.Item label={<Text code>CLUSTER_ID</Text>}>
+            <Text type="secondary" style={{ fontSize: 12 }}>Target cluster ID in Flowfish</Text>
+          </Descriptions.Item>
+        </Descriptions>
+      </Card>
+    </div>
+  );
+
+  // ─── Test tab content ───
+  const testContent = (
+    <Row gutter={24}>
+      <Col span={10}>
+        <Card title="Run Test Assessment" bordered size="small">
+          <Form
+            form={testForm}
+            layout="vertical"
+            onFinish={runTestAssessment}
+          >
+            <Form.Item
+              name="cluster_id"
+              label="Cluster"
+              rules={[{ required: true, message: 'Select cluster' }]}
+            >
+              <Select 
+                placeholder="Select cluster"
+                onChange={handleTestClusterChange}
+              >
+                {clusters.map((c: any) => (
+                  <Option key={c.id} value={c.id}>{c.name}</Option>
+                ))}
+              </Select>
+            </Form.Item>
+            
+            <Form.Item
+              name="analysis_id"
+              label="Analysis (optional)"
+              tooltip="Uses latest completed analysis if not selected"
+            >
+              <Select 
+                placeholder={!selectedTestClusterId ? "Select cluster first" : "Latest analysis"} 
+                allowClear
+                disabled={!selectedTestClusterId}
+              >
+                {filteredAnalyses.map((a: any) => (
+                  <Option key={a.id} value={a.id}>
+                    {a.name} ({a.status})
+                  </Option>
+                ))}
+              </Select>
+            </Form.Item>
+            
+            <Form.Item
+              name="target"
+              label="Target Service"
+              rules={[{ required: true, message: 'Select or enter target' }]}
+            >
+              <Select
+                placeholder={!selectedTestClusterId ? "Select cluster first" : "Select target service"}
+                disabled={!selectedTestClusterId}
+                loading={loadingWorkloads}
+                showSearch
+                allowClear
+                optionFilterProp="children"
+                onChange={(value) => {
+                  const selectedWorkload = workloads.find((w: any) => w.name === value);
+                  if (selectedWorkload?.namespace) {
+                    testForm.setFieldsValue({ namespace: selectedWorkload.namespace });
+                  }
+                }}
+              >
+                {workloads
+                  .filter((w: any, index: number, self: any[]) => 
+                    index === self.findIndex((t: any) => t.name === w.name && t.namespace === w.namespace)
+                  )
+                  .map((w: any) => (
+                    <Option key={`${w.namespace}-${w.name}`} value={w.name}>
+                      {w.name} ({w.namespace})
+                    </Option>
+                  ))}
+              </Select>
+            </Form.Item>
+            
+            <Form.Item
+              name="namespace"
+              label="Namespace"
+              tooltip="Auto-filled when you select a target service"
+            >
+              <Select
+                placeholder={!selectedTestClusterId ? "Select cluster first" : "Select namespace"}
+                disabled={!selectedTestClusterId}
+                allowClear
+                showSearch
+              >
+                {Array.from(new Set(workloads.map((w: any) => w.namespace))).filter(Boolean).map((ns: any) => (
+                  <Option key={ns} value={ns}>{ns}</Option>
+                ))}
+              </Select>
+            </Form.Item>
+            
+            <Form.Item
+              name="change_type"
+              label="Change Type"
+              initialValue="image_update"
+            >
+              <Select>
+                <Option value="image_update">Image Update</Option>
+                <Option value="config_change">Config Change</Option>
+                <Option value="scale_change">Scale Change</Option>
+                <Option value="delete">Delete</Option>
+                <Option value="network_policy">Network Policy</Option>
+              </Select>
+            </Form.Item>
+            
+            <Button 
+              type="primary" 
+              htmlType="submit" 
+              loading={testing}
+              icon={<PlayCircleOutlined />}
+              block
+            >
+              Run Assessment
+            </Button>
+          </Form>
+        </Card>
+      </Col>
+      
+      <Col span={14}>
+        <Card 
+          title="Assessment Result" 
+          bordered 
+          size="small"
+          style={{ minHeight: 400 }}
+        >
+          {!testResult && !testing && (
+            <Empty description="Run a test to see results" />
+          )}
+          
+          {testing && (
+            <div style={{ textAlign: 'center', padding: 40 }}>
+              <Spin size="large" />
+              <div style={{ marginTop: 16 }}>
+                <Text>Analyzing dependencies...</Text>
+              </div>
+            </div>
+          )}
+          
+          {testResult && (
+            <div>
+              <div style={{ textAlign: 'center', marginBottom: 24 }}>
+                <Progress
+                  type="dashboard"
+                  percent={testResult.risk_score}
+                  strokeColor={getRiskColor(testResult.risk_level)}
+                  format={(p) => (
+                    <div>
+                      <div style={{ fontSize: 28, fontWeight: 700 }}>{p}</div>
+                      <Tag color={
+                        testResult.risk_level === 'critical' ? 'red' :
+                        testResult.risk_level === 'high' ? 'orange' :
+                        testResult.risk_level === 'medium' ? 'gold' : 'green'
+                      }>
+                        {testResult.risk_level.toUpperCase()}
+                      </Tag>
+                    </div>
+                  )}
+                  width={150}
+                />
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">
+                    Confidence: {Math.round(testResult.confidence * 100)}% | 
+                    Duration: {testResult.assessment_duration_ms}ms
+                  </Text>
+                </div>
+              </div>
+              
+              <Divider />
+              
+              <Row gutter={16} style={{ marginBottom: 16 }}>
+                <Col span={8}>
+                  <Statistic 
+                    title="Total Affected" 
+                    value={testResult.blast_radius.total_affected} 
+                    valueStyle={{ color: colors.primary.main }}
+                  />
+                </Col>
+                <Col span={8}>
+                  <Statistic 
+                    title="Direct" 
+                    value={testResult.blast_radius.direct_dependencies}
+                    valueStyle={{ color: colors.status.error }}
+                  />
+                </Col>
+                <Col span={8}>
+                  <Statistic 
+                    title="Indirect" 
+                    value={testResult.blast_radius.indirect_dependencies}
+                    valueStyle={{ color: colors.status.warning }}
+                  />
+                </Col>
+              </Row>
+              
+              {testResult.blast_radius.critical_services.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <Text strong>Critical Services:</Text>
+                  <div style={{ marginTop: 8 }}>
+                    {testResult.blast_radius.critical_services.map((s, i) => (
+                      <Tag key={i} color="red">{s}</Tag>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              <Alert
+                message={`Recommendation: ${testResult.recommendation.replaceAll('_', ' ').toUpperCase()}`}
+                type={
+                  testResult.recommendation === 'proceed' ? 'success' :
+                  testResult.recommendation === 'review_required' ? 'warning' : 'error'
+                }
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+              
+              <Text strong>Suggested Actions:</Text>
+              <List
+                size="small"
+                dataSource={testResult.suggested_actions}
+                renderItem={(action) => (
+                  <List.Item>
+                    <Space>
+                      {action.priority === 'critical' && <ExclamationCircleOutlined style={{ color: colors.status.error }} />}
+                      {action.priority === 'high' && <WarningOutlined style={{ color: colors.status.warning }} />}
+                      {action.priority === 'medium' && <InfoCircleOutlined style={{ color: colors.status.info }} />}
+                      {action.priority === 'low' && <CheckCircleOutlined style={{ color: colors.status.success }} />}
+                      <div>
+                        <Text>{action.action}</Text>
+                        {action.automatable && <Tag style={{ marginLeft: 8 }} color="blue">Automatable</Tag>}
+                      </div>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+
+              <Divider />
+
+              <Alert
+                message={
+                  <span>
+                    Need deeper analysis with flow diagrams, chaos templates, and network policy generation?{' '}
+                    <Link to={`/impact/simulation${selectedTestClusterId ? `?clusterId=${selectedTestClusterId}` : ''}`}>
+                      <strong>Open Impact Simulation</strong>
+                    </Link>
+                  </span>
+                }
+                type="info"
+                showIcon
+                icon={<ThunderboltOutlined />}
+              />
+            </div>
+          )}
+        </Card>
+      </Col>
+    </Row>
+  );
+
+  // ─── History tab content ───
+  const historyContent = (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <Button 
+          icon={<ReloadOutlined />} 
+          onClick={fetchAssessments}
+          loading={loading}
+        >
+          Refresh
+        </Button>
+      </div>
+      
+      <Table
+        dataSource={assessments}
+        columns={historyColumns}
+        rowKey="assessment_id"
+        loading={loading}
+        pagination={{ pageSize: 15, showSizeChanger: true, pageSizeOptions: ['10', '15', '30', '50'] }}
+        locale={{ emptyText: 'No assessments yet. Run a test or integrate with your pipeline.' }}
+      />
+    </div>
+  );
+
   return (
     <div>
       {/* Header */}
@@ -563,7 +900,7 @@ const BlastRadiusOracle: React.FC = () => {
       </div>
 
       {/* Stats Cards */}
-      {stats && (
+      {stats ? (
         <Row gutter={16} style={{ marginBottom: 24 }}>
           <Col span={6}>
             <Card bordered={false}>
@@ -589,7 +926,7 @@ const BlastRadiusOracle: React.FC = () => {
             <Card bordered={false}>
               <Statistic
                 title="High/Critical Risks"
-                value={stats.risk_distribution.high + stats.risk_distribution.critical}
+                value={(stats.risk_distribution?.high || 0) + (stats.risk_distribution?.critical || 0)}
                 valueStyle={{ color: colors.status.error }}
                 prefix={<ExclamationCircleOutlined />}
               />
@@ -605,545 +942,54 @@ const BlastRadiusOracle: React.FC = () => {
             </Card>
           </Col>
         </Row>
+      ) : (
+        <Card style={{ marginBottom: 24, textAlign: 'center', padding: 16 }}>
+          <ClockCircleOutlined style={{ fontSize: 24, color: token.colorTextSecondary, marginBottom: 8 }} />
+          <br />
+          <Text type="secondary">
+            Run your first assessment or integrate with a CI/CD pipeline to see statistics here.
+          </Text>
+        </Card>
       )}
 
       {/* Main Tabs */}
       <Card bordered={false}>
-        <Tabs activeKey={activeTab} onChange={setActiveTab}>
-          {/* Overview Tab */}
-          <TabPane
-            tab={<span><InfoCircleOutlined /> Overview</span>}
-            key="overview"
-          >
-            <Row gutter={24}>
-              <Col span={12}>
-                <Alert
-                  message="Advisory Only - You Control the Decision"
-                  description={
-                    <div>
-                      <Paragraph style={{ marginBottom: 8 }}>
-                        Flowfish Blast Radius Oracle provides risk assessment and recommendations, 
-                        but <strong>never blocks deployments</strong>. Your pipeline owns the decision.
-                      </Paragraph>
-                      <ul style={{ margin: 0, paddingLeft: 20 }}>
-                        <li>Risk score 0-100 with level classification</li>
-                        <li>Affected services list (direct & indirect)</li>
-                        <li>Actionable recommendations</li>
-                        <li>Full history and statistics</li>
-                      </ul>
-                    </div>
-                  }
-                  type="info"
-                  showIcon
-                  icon={<SafetyCertificateOutlined />}
-                  style={{ marginBottom: 16 }}
-                />
-                
-                <Card title="How It Works" size="small" bordered>
-                  <Timeline
-                    items={[
-                      {
-                        color: 'blue',
-                        children: (
-                          <div>
-                            <Text strong>1. Pipeline calls Flowfish API</Text>
-                            <br />
-                            <Text type="secondary" style={{ fontSize: 12 }}>POST /api/v1/blast-radius/assess</Text>
-                          </div>
-                        ),
-                      },
-                      {
-                        color: 'cyan',
-                        children: (
-                          <div>
-                            <Text strong>2. Flowfish analyzes dependencies</Text>
-                            <br />
-                            <Text type="secondary" style={{ fontSize: 12 }}>Uses existing analysis data and dependency graph</Text>
-                          </div>
-                        ),
-                      },
-                      {
-                        color: 'green',
-                        children: (
-                          <div>
-                            <Text strong>3. Returns risk score & recommendations</Text>
-                            <br />
-                            <Text type="secondary" style={{ fontSize: 12 }}>JSON response with score, affected services, suggestions</Text>
-                          </div>
-                        ),
-                      },
-                      {
-                        color: 'gold',
-                        children: (
-                          <div>
-                            <Text strong>4. Pipeline decides what to do</Text>
-                            <br />
-                            <Text type="secondary" style={{ fontSize: 12 }}>Continue, require approval, delay - your rules</Text>
-                          </div>
-                        ),
-                      },
-                    ]}
-                  />
-                </Card>
-              </Col>
-              
-              <Col span={12}>
-                <Card 
-                  title={<span><ApiOutlined /> API Endpoint</span>} 
-                  size="small" 
-                  bordered
-                  style={{ marginBottom: 16 }}
-                >
-                  <div style={{ 
-                    background: token.colorBgLayout, 
-                    padding: 12, 
-                    borderRadius: 6,
-                    fontFamily: 'monospace',
-                    fontSize: 13,
-                  }}>
-                    <Text strong style={{ color: colors.status.success }}>POST</Text>
-                    <Text> /api/v1/blast-radius/assess</Text>
-                  </div>
-                  
-                  <Divider style={{ margin: '12px 0' }} />
-                  
-                  <Text strong style={{ display: 'block', marginBottom: 8 }}>Request Body:</Text>
-                  <pre style={{ 
-                    background: token.colorBgLayout, 
-                    padding: 12, 
-                    borderRadius: 6,
-                    fontSize: 11,
-                    overflow: 'auto',
-                    maxHeight: 200,
-                  }}>
-{`{
-  "cluster_id": 1,
-  "change": {
-    "type": "image_update",
-    "target": "payment-service",
-    "namespace": "production",
-    "triggered_by": "jenkins",
-    "pipeline": "main-deploy"
-  }
-}`}
-                  </pre>
-                </Card>
-                
-                <Card 
-                  title={<span><FileTextOutlined /> Response Fields</span>} 
-                  size="small" 
-                  bordered
-                >
-                  <List
-                    size="small"
-                    dataSource={[
-                      { field: 'risk_score', desc: '0-100, higher = more risky' },
-                      { field: 'risk_level', desc: 'low / medium / high / critical' },
-                      { field: 'blast_radius.total_affected', desc: 'Total services in impact zone' },
-                      { field: 'recommendation', desc: 'proceed / review_required / delay_suggested' },
-                      { field: 'suggested_actions[]', desc: 'Contextual action items' },
-                      { field: 'advisory_only', desc: 'Always true - Flowfish never blocks' },
-                    ]}
-                    renderItem={(item) => (
-                      <List.Item style={{ padding: '6px 0' }}>
-                        <Text code style={{ fontSize: 11 }}>{item.field}</Text>
-                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 11 }}>{item.desc}</Text>
-                      </List.Item>
-                    )}
-                  />
-                </Card>
-
-                <Card size="small" bordered style={{ marginTop: 16 }}>
-                  <Space>
-                    <RobotOutlined />
-                    <div>
-                      <Text strong>Need dependency data for AI agents?</Text>
-                      <br />
-                      <Link to="/integration/ai-hub">
-                        <Text type="secondary">
-                          AI Integration Hub &mdash; generate integration snippets for dependency analysis
-                        </Text>
-                      </Link>
-                    </div>
-                  </Space>
-                </Card>
-              </Col>
-            </Row>
-          </TabPane>
-
-          {/* Integration Tab */}
-          <TabPane
-            tab={<span><CodeOutlined /> Integration</span>}
-            key="integration"
-          >
-            <div style={{ marginBottom: 16 }}>
-              <Text strong style={{ marginRight: 12 }}>Platform:</Text>
-              <Select
-                value={selectedPlatform}
-                onChange={setSelectedPlatform}
-                style={{ width: 200 }}
-              >
-                <Option value="azureDevOps">
-                  <Space><SettingOutlined /> Azure DevOps</Space>
-                </Option>
-                <Option value="jenkins">
-                  <Space><SettingOutlined /> Jenkins</Space>
-                </Option>
-                <Option value="githubActions">
-                  <Space><SettingOutlined /> GitHub Actions</Space>
-                </Option>
-                <Option value="curl">
-                  <Space><CodeOutlined /> cURL (Generic)</Space>
-                </Option>
-              </Select>
-            </div>
-            
-            <Card 
-              bordered
-              title={
-                <Space>
-                  <CodeOutlined />
-                  <span>
-                    {selectedPlatform === 'azureDevOps' && 'Azure DevOps Pipeline'}
-                    {selectedPlatform === 'jenkins' && 'Jenkins Pipeline'}
-                    {selectedPlatform === 'githubActions' && 'GitHub Actions'}
-                    {selectedPlatform === 'curl' && 'cURL Example'}
-                  </span>
-                </Space>
-              }
-              extra={
-                <Button 
-                  icon={<CopyOutlined />} 
-                  onClick={() => copyCode(codeSnippets[selectedPlatform as keyof typeof codeSnippets])}
-                >
-                  Copy
-                </Button>
-              }
-            >
-              <pre style={{ 
-                background: token.colorBgLayout, 
-                color: token.colorText,
-                padding: 16, 
-                borderRadius: 8,
-                fontSize: 12,
-                overflow: 'auto',
-                maxHeight: 500,
-                margin: 0,
-                border: `1px solid ${token.colorBorderSecondary}`,
-              }}>
-                {codeSnippets[selectedPlatform as keyof typeof codeSnippets]}
-              </pre>
-            </Card>
-            
-            <Alert
-              message="Required Variables"
-              description={
-                <Row gutter={16}>
-                  <Col span={8}>
-                    <Text code>FLOWFISH_URL</Text>
-                    <br />
-                    <Text type="secondary" style={{ fontSize: 11 }}>Flowfish API base URL</Text>
-                  </Col>
-                  <Col span={8}>
-                    <Text code>FLOWFISH_TOKEN</Text>
-                    <br />
-                    <Text type="secondary" style={{ fontSize: 11 }}>JWT authentication token</Text>
-                  </Col>
-                  <Col span={8}>
-                    <Text code>CLUSTER_ID</Text>
-                    <br />
-                    <Text type="secondary" style={{ fontSize: 11 }}>Target cluster ID in Flowfish</Text>
-                  </Col>
-                </Row>
-              }
-              type="warning"
-              showIcon
-              style={{ marginTop: 16 }}
-            />
-          </TabPane>
-
-          {/* Test Tab */}
-          <TabPane
-            tab={<span><PlayCircleOutlined /> Test</span>}
-            key="test"
-          >
-            <Row gutter={24}>
-              <Col span={10}>
-                <Card title="Run Test Assessment" bordered size="small">
-                  <Form
-                    form={testForm}
-                    layout="vertical"
-                    onFinish={runTestAssessment}
-                  >
-                    <Form.Item
-                      name="cluster_id"
-                      label="Cluster"
-                      rules={[{ required: true, message: 'Select cluster' }]}
-                    >
-                      <Select 
-                        placeholder="Select cluster"
-                        onChange={handleTestClusterChange}
-                      >
-                        {clusters.map((c: any) => (
-                          <Option key={c.id} value={c.id}>{c.name}</Option>
-                        ))}
-                      </Select>
-                    </Form.Item>
-                    
-                    <Form.Item
-                      name="analysis_id"
-                      label="Analysis (optional)"
-                      tooltip="Uses latest completed analysis if not selected"
-                    >
-                      <Select 
-                        placeholder={!selectedTestClusterId ? "Select cluster first" : "Latest analysis"} 
-                        allowClear
-                        disabled={!selectedTestClusterId}
-                      >
-                        {filteredAnalyses.map((a: any) => (
-                          <Option key={a.id} value={a.id}>
-                            {a.name} ({a.status})
-                          </Option>
-                        ))}
-                      </Select>
-                    </Form.Item>
-                    
-                    <Form.Item
-                      name="target"
-                      label="Target Service"
-                      rules={[{ required: true, message: 'Select or enter target' }]}
-                    >
-                      <Select
-                        placeholder={!selectedTestClusterId ? "Select cluster first" : "Select target service"}
-                        disabled={!selectedTestClusterId}
-                        loading={loadingWorkloads}
-                        showSearch
-                        allowClear
-                        optionFilterProp="children"
-                        onChange={(value) => {
-                          // Auto-fill namespace when target is selected
-                          const selectedWorkload = workloads.find((w: any) => w.name === value);
-                          if (selectedWorkload?.namespace) {
-                            testForm.setFieldsValue({ namespace: selectedWorkload.namespace });
-                          }
-                        }}
-                      >
-                        {/* Deduplicate workloads by name+namespace */}
-                        {workloads
-                          .filter((w: any, index: number, self: any[]) => 
-                            index === self.findIndex((t: any) => t.name === w.name && t.namespace === w.namespace)
-                          )
-                          .map((w: any) => (
-                            <Option key={`${w.namespace}-${w.name}`} value={w.name}>
-                              {w.name} ({w.namespace})
-                            </Option>
-                          ))}
-                      </Select>
-                    </Form.Item>
-                    
-                    <Form.Item
-                      name="namespace"
-                      label="Namespace"
-                      tooltip="Auto-filled when you select a target service"
-                    >
-                      <Select
-                        placeholder={!selectedTestClusterId ? "Select cluster first" : "Select namespace"}
-                        disabled={!selectedTestClusterId}
-                        allowClear
-                        showSearch
-                      >
-                        {Array.from(new Set(workloads.map((w: any) => w.namespace))).filter(Boolean).map((ns: any) => (
-                          <Option key={ns} value={ns}>{ns}</Option>
-                        ))}
-                      </Select>
-                    </Form.Item>
-                    
-                    <Form.Item
-                      name="change_type"
-                      label="Change Type"
-                      initialValue="image_update"
-                    >
-                      <Select>
-                        <Option value="image_update">Image Update</Option>
-                        <Option value="config_change">Config Change</Option>
-                        <Option value="scale_change">Scale Change</Option>
-                        <Option value="delete">Delete</Option>
-                        <Option value="network_policy">Network Policy</Option>
-                      </Select>
-                    </Form.Item>
-                    
-                    <Button 
-                      type="primary" 
-                      htmlType="submit" 
-                      loading={testing}
-                      icon={<PlayCircleOutlined />}
-                      block
-                    >
-                      Run Assessment
-                    </Button>
-                  </Form>
-                </Card>
-              </Col>
-              
-              <Col span={14}>
-                <Card 
-                  title="Assessment Result" 
-                  bordered 
-                  size="small"
-                  style={{ minHeight: 400 }}
-                >
-                  {!testResult && !testing && (
-                    <Empty description="Run a test to see results" />
+        <Tabs
+          activeKey={activeTab}
+          onChange={handleTabChange}
+          items={[
+            {
+              key: 'overview',
+              label: <span><InfoCircleOutlined /> Overview</span>,
+              children: overviewContent,
+            },
+            {
+              key: 'integration',
+              label: <span><CodeOutlined /> Integration</span>,
+              children: integrationContent,
+            },
+            {
+              key: 'test',
+              label: <span><PlayCircleOutlined /> Test</span>,
+              children: testContent,
+            },
+            {
+              key: 'history',
+              label: (
+                <span>
+                  <HistoryOutlined /> History
+                  {assessments.length > 0 && (
+                    <Badge
+                      count={assessments.length}
+                      style={{ marginLeft: 8, backgroundColor: token.colorPrimary }}
+                    />
                   )}
-                  
-                  {testing && (
-                    <div style={{ textAlign: 'center', padding: 40 }}>
-                      <Spin size="large" />
-                      <div style={{ marginTop: 16 }}>
-                        <Text>Analyzing dependencies...</Text>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {testResult && (
-                    <div>
-                      {/* Risk Score Display */}
-                      <div style={{ textAlign: 'center', marginBottom: 24 }}>
-                        <Progress
-                          type="dashboard"
-                          percent={testResult.risk_score}
-                          strokeColor={getRiskColor(testResult.risk_level)}
-                          format={(p) => (
-                            <div>
-                              <div style={{ fontSize: 28, fontWeight: 700 }}>{p}</div>
-                              <Tag color={
-                                testResult.risk_level === 'critical' ? 'red' :
-                                testResult.risk_level === 'high' ? 'orange' :
-                                testResult.risk_level === 'medium' ? 'gold' : 'green'
-                              }>
-                                {testResult.risk_level.toUpperCase()}
-                              </Tag>
-                            </div>
-                          )}
-                          width={150}
-                        />
-                        <div style={{ marginTop: 8 }}>
-                          <Text type="secondary">
-                            Confidence: {Math.round(testResult.confidence * 100)}% | 
-                            Duration: {testResult.assessment_duration_ms}ms
-                          </Text>
-                        </div>
-                      </div>
-                      
-                      <Divider />
-                      
-                      {/* Blast Radius */}
-                      <Row gutter={16} style={{ marginBottom: 16 }}>
-                        <Col span={8}>
-                          <Statistic 
-                            title="Total Affected" 
-                            value={testResult.blast_radius.total_affected} 
-                            valueStyle={{ color: colors.primary.main }}
-                          />
-                        </Col>
-                        <Col span={8}>
-                          <Statistic 
-                            title="Direct" 
-                            value={testResult.blast_radius.direct_dependencies}
-                            valueStyle={{ color: colors.status.error }}
-                          />
-                        </Col>
-                        <Col span={8}>
-                          <Statistic 
-                            title="Indirect" 
-                            value={testResult.blast_radius.indirect_dependencies}
-                            valueStyle={{ color: colors.status.warning }}
-                          />
-                        </Col>
-                      </Row>
-                      
-                      {/* Critical Services */}
-                      {testResult.blast_radius.critical_services.length > 0 && (
-                        <div style={{ marginBottom: 16 }}>
-                          <Text strong>Critical Services:</Text>
-                          <div style={{ marginTop: 8 }}>
-                            {testResult.blast_radius.critical_services.map((s, i) => (
-                              <Tag key={i} color="red">{s}</Tag>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      
-                      {/* Recommendation */}
-                      <Alert
-                        message={`Recommendation: ${testResult.recommendation.replace('_', ' ').toUpperCase()}`}
-                        type={
-                          testResult.recommendation === 'proceed' ? 'success' :
-                          testResult.recommendation === 'review_required' ? 'warning' : 'error'
-                        }
-                        showIcon
-                        style={{ marginBottom: 16 }}
-                      />
-                      
-                      {/* Suggested Actions */}
-                      <Text strong>Suggested Actions:</Text>
-                      <List
-                        size="small"
-                        dataSource={testResult.suggested_actions}
-                        renderItem={(action) => (
-                          <List.Item>
-                            <Space>
-                              {action.priority === 'critical' && <ExclamationCircleOutlined style={{ color: colors.status.error }} />}
-                              {action.priority === 'high' && <WarningOutlined style={{ color: colors.status.warning }} />}
-                              {action.priority === 'medium' && <InfoCircleOutlined style={{ color: colors.status.info }} />}
-                              {action.priority === 'low' && <CheckCircleOutlined style={{ color: colors.status.success }} />}
-                              <div>
-                                <Text>{action.action}</Text>
-                                {action.automatable && <Tag style={{ marginLeft: 8 }} color="blue">Automatable</Tag>}
-                              </div>
-                            </Space>
-                          </List.Item>
-                        )}
-                      />
-                    </div>
-                  )}
-                </Card>
-              </Col>
-            </Row>
-          </TabPane>
-
-          {/* History Tab */}
-          <TabPane
-            tab={
-              <span>
-                <HistoryOutlined /> History
-                {assessments.length > 0 && (
-                  <Badge count={assessments.length} style={{ marginLeft: 8 }} />
-                )}
-              </span>
-            }
-            key="history"
-          >
-            <div style={{ marginBottom: 16 }}>
-              <Button 
-                icon={<ReloadOutlined />} 
-                onClick={fetchAssessments}
-                loading={loading}
-              >
-                Refresh
-              </Button>
-            </div>
-            
-            <Table
-              dataSource={assessments}
-              columns={historyColumns}
-              rowKey="assessment_id"
-              loading={loading}
-              pagination={{ pageSize: 15 }}
-              locale={{ emptyText: 'No assessments yet. Run a test or integrate with your pipeline.' }}
-            />
-          </TabPane>
-        </Tabs>
+                </span>
+              ),
+              children: historyContent,
+            },
+          ]}
+        />
       </Card>
 
       {/* Assessment Detail Modal */}

@@ -200,7 +200,7 @@ openapi_tags = [
     {"name": "Analyses", "description": "Traffic analysis creation, lifecycle, and run management"},
     {"name": "Workloads", "description": "Kubernetes workload inventory and metadata"},
     {"name": "Communications", "description": "Service-to-service communication graph, dependency map, and topology"},
-    {"name": "AI Integration", "description": "AI agent and CI/CD pipeline integration endpoints for dependency discovery, impact analysis, and cross-project dependency mapping"},
+    {"name": "Integration", "description": "CI/CD pipeline integration endpoints for dependency discovery, impact analysis, and cross-project dependency mapping"},
     {"name": "Impact Analysis", "description": "Blast radius assessment, impact simulation, and pre-deployment risk evaluation"},
     {"name": "Events", "description": "eBPF event statistics, queries, and timeline"},
     {"name": "Changes", "description": "Change detection and infrastructure drift tracking"},

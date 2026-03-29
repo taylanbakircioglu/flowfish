@@ -85,7 +85,6 @@ import {
   BarChartOutlined,
   CheckCircleOutlined,
   AlertOutlined,
-  RobotOutlined,
   CopyOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -7673,25 +7672,25 @@ const MapInner: React.FC = () => {
                 })() : null,
               },
               {
-                key: 'ai-hub',
-                label: <span><RobotOutlined /> AI Hub</span>,
-                children: drawerTab === 'ai-hub' ? (
+                key: 'integration',
+                label: <span><ApiOutlined /> Integration</span>,
+                children: drawerTab === 'integration' ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <Typography.Text type="secondary">
-                      Analyze this service's dependencies, impact radius, and generate integration snippets for AI Agents and CI/CD pipelines.
+                      Analyze this service's dependencies, impact radius, and generate integration snippets for CI/CD pipelines.
                     </Typography.Text>
                     <Button
                       type="primary"
-                      icon={<RobotOutlined />}
+                      icon={<ApiOutlined />}
                       onClick={() => {
                         const node = selectedNode as any;
                         const params = new URLSearchParams();
                         if (node?.name) params.set('owner_name', node.owner_name || node.name);
                         if (node?.namespace && node.namespace !== 'external') params.set('namespace', node.namespace);
-                        navigate(`/integration/ai-hub?${params.toString()}`);
+                        navigate(`/integration/hub?${params.toString()}`);
                       }}
                     >
-                      Open AI Integration Hub
+                      Open Integration Hub
                     </Button>
                   </div>
                 ) : null,
