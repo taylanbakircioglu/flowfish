@@ -484,9 +484,9 @@ const IntegrationHub: React.FC = () => {
                     <Form.Item
                       name="annotation_key"
                       label="Annotation Key"
-                      tooltip="Use custom annotations set during deployment. Supports * wildcard for prefix matching (e.g. example.com/* matches all keys starting with example.com/)."
+                      tooltip="Use custom annotations set during deployment. Supports * wildcard for prefix matching (e.g. mycompany.com/* matches all keys starting with mycompany.com/)."
                     >
-                      <Input placeholder="e.g. git-repo, example.com/project-link, example.com/*" />
+                      <Input placeholder="e.g. git-repo, mycompany.com/project-link, mycompany.com/*" />
                     </Form.Item>
                   </Col>
                   <Col xs={24} sm={12}>

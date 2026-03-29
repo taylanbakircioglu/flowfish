@@ -36,7 +36,7 @@ for manifest in *.yaml; do
         sed -i -e "s|env-flowfish|${DEPLOYMENT_ENV}-flowfish|g" $manifest
         
         # Company placeholders
-        sed -i -e "s|company\.example\.com|${COMPANY_DOMAIN}|g" $manifest
+        sed -i -e "s|company\.com\.tr|${COMPANY_NAME}.com.tr|g" $manifest
         
         # Database hosts
         sed -i -e "s|{{POSTGRES_HOST}}|${POSTGRES_HOST}|g" $manifest

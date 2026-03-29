@@ -823,7 +823,7 @@ class Neo4jService:
         both nodes and edges by matching the VID prefix.
         
         VID Format: {analysis_id}:{cluster_id}:{namespace}:{workload}
-        Example: "26:1:prod-payments:payments-pod-xyz"
+        Example: "26:1:prod-cardapi:cardapi-pod-xyz"
         
         Deletion is done by:
         1. Matching all nodes where n.id STARTS WITH '{analysis_id}:'

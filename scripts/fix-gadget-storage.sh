@@ -23,9 +23,9 @@
 #   - cluster-admin privileges (for DaemonSet modification)
 #
 # Examples:
-#   ./fix-gadget-storage.sh prod-flowfish                       # emptyDir (default)
-#   ./fix-gadget-storage.sh prod-flowfish standard-rwo          # PVC with StorageClass
-#   ./fix-gadget-storage.sh staging-flowfish standard           # PVC with StorageClass
+#   ./fix-gadget-storage.sh prod-flowfish                    # emptyDir (default)
+#   ./fix-gadget-storage.sh prod-flowfish ibm02-csi-rwo      # PVC with StorageClass
+#   ./fix-gadget-storage.sh bmprod-flowfish standard            # PVC with StorageClass
 #
 
 set -e

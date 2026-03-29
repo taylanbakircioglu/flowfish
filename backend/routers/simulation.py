@@ -344,7 +344,7 @@ def classify_endpoint_kind(name: str, namespace: str, original_kind: str) -> str
     Returns:
         - "Pod" for actual Kubernetes pods (e.g., backend-7686dccc6b-x8bqm)
         - "Service" for Kubernetes services
-        - "ExternalIP" for external IP addresses (10.x.x.x, 192.168.x.x)
+        - "ExternalIP" for external IP addresses (10.180.x.x, 192.168.x.x)
         - "ClusterIP" for cluster-internal IPs (10.128.x.x, 10.129.x.x, 10.130.x.x, 10.131.x.x)
         - "ExternalDNS" for external DNS names (*.bank, api.*, etc.)
         - "ClusterService" for internal cluster services (*.svc.cluster.local)
@@ -607,7 +607,7 @@ def deduplicate_services(services: list) -> list:
         """Extract the base service name for deduplication"""
         import re
         
-        # Handle DNS-style names like 10-128-22-163.harbor-core.prod-registry.svc.cluster.local
+        # Handle DNS-style names like 10-128-22-163.harbor-core.prod-harbor-ha.svc.cluster.local
         if '.svc.cluster.local' in name:
             parts = name.split('.')
             if len(parts) >= 2:

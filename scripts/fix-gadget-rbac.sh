@@ -27,7 +27,7 @@
 #   - cluster-admin privileges (for ClusterRole modification)
 #
 # Examples:
-#   ./fix-gadget-rbac.sh staging-flowfish
+#   ./fix-gadget-rbac.sh bmprod-flowfish
 #   ./fix-gadget-rbac.sh flowfish
 #
 

@@ -23,7 +23,7 @@ Bu dizindeki RBAC kaynakları **cluster admin** tarafından manuel olarak uygula
 NS=flowfish
 
 # Tüm RBAC'ı uygula
-cat <<'EOF' | sed "s/flowfish/$NS/g" | oc apply -f -
+cat <<'EOF' | sed "s/namespace: flowfish/namespace: $NS/g" | oc apply -f -
 # ============================================
 # 1. Inspektor Gadget ClusterRole
 # ============================================

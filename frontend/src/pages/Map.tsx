@@ -455,7 +455,7 @@ const isInternalTraffic = (node: DependencyNode): boolean => {
 const isDomainName = (name: string): boolean => {
   if (!name) return false;
   // Domain pattern: contains dot, has letters, doesn't start/end with dot
-  // Examples: amazon.com, api.azure.com, srv-prod-01.company.local
+  // Examples: amazon.com, api.azure.com, mail01.company.local
   const domainPattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/;
   // Must have at least one letter (to distinguish from IP)
   const hasLetter = /[a-zA-Z]/.test(name);
@@ -463,7 +463,7 @@ const isDomainName = (name: string): boolean => {
 };
 
 // Check if name is a server hostname (datacenter server, not domain)
-// Examples: srv-prod-01, build-server-02, db-server-01
+// Examples: srv-prod-01, web-staging-02, db-server-01
 const isServerHostname = (name: string): boolean => {
   if (!name) return false;
   // Server hostname patterns:
@@ -578,7 +578,7 @@ const isPublicEndpoint = (node: DependencyNode): boolean => {
   
   // 2. CRITICAL: If IP is PRIVATE, this CANNOT be a public endpoint!
   //    Trust IP classification over domain name - private IP = internal network
-  //    Example: name="api.example.local", ip="10.194.30.5" → NOT PUBLIC (private IP!)
+  //    Example: name="api.internal.local", ip="10.194.30.5" → NOT PUBLIC (private IP!)
   //    This prevents .bank gTLD domains with private IPs from being classified as public
   if (ip && isPrivateIP(ip)) return false;
   

@@ -1263,7 +1263,7 @@ paths:
             type: string
         - name: annotation_key
           in: query
-          description: "Annotation key to match. Supports * wildcard (e.g. example.com/*)"
+          description: "Annotation key to match. Supports * wildcard (e.g. mycompany.com/*)"
           schema:
             type: string
         - name: annotation_value
