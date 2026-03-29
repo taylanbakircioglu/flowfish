@@ -15,6 +15,7 @@ Centralized multi-cluster Kubernetes observability platform — real-time depend
    - [Analysis](#analysis)
    - [Discovery](#discovery)
    - [Impact](#impact)
+   - [Integration](#integration)
    - [Observability](#observability)
    - [Security](#security)
    - [Reports](#reports)
@@ -145,15 +146,17 @@ The dashboard provides a centralized overview of all your connected clusters' he
 
 The analysis wizard guides you through creating a new eBPF data collection session.
 
-**New Analysis — Scope & Gadget Selection**:
+**New Analysis — Basic Information & Scope Selection** — Name the analysis, enable change detection with strategy selection (Baseline, Rolling Window, Run Comparison), and choose between Single Cluster or Multi-Cluster mode:
 
-![New Analysis Wizard](docs/screenshots/new-analysis-1.png)
+![New Analysis - Basic Info](docs/screenshots/analysis-new-1.png)
 
-**Event Type Selection** — Choose which eBPF gadgets to activate (network, DNS, process, file, security, TLS/SNI, OOM, socket):
+**Scope Configuration & System Noise Filter** — Select scope type (Entire Cluster, Namespaces, Deployments, Pods, Label Selector), configure system noise filtering with quick presets (OpenShift System, Kubernetes Infra, Network Plugins, Monitoring) and customizable namespace/pod exclusion patterns:
 
-![Analysis Event Types 1](docs/screenshots/analysis-event-types-1.png)
+![New Analysis - Scope & Noise Filter](docs/screenshots/analysis-new-2.png)
 
-![Analysis Event Types 2](docs/screenshots/analysis-event-types-2.png)
+**Gadget Modules** — Choose which eBPF gadgets to activate (network, DNS, process, file, security, TLS/SNI, OOM, socket):
+
+![Analysis Gadget Modules](docs/screenshots/analysis-event-types-2.png)
 
 **Time & Sizing** — Configure duration, data limits, continuous vs. timed mode:
 
@@ -193,17 +196,45 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 
 ![Impact Simulation 2](docs/screenshots/impact-simulation-2.png)
 
-**Blast Radius Oracle** — Pre-deployment impact assessment with CI/CD integration, assessment history, and live test runner:
+**Blast Radius Oracle — Integration** — Pre-deployment impact assessment API with CI/CD pipeline snippets (Azure DevOps, GitHub Actions, Jenkins, GitLab CI), assessment statistics, and cross-link to Integration Hub:
 
-![Blast Radius Oracle 1](docs/screenshots/blast-radius-1.png)
+![Blast Radius Oracle - Integration](docs/screenshots/blast-radius-1.png)
 
-![Blast Radius Oracle 2](docs/screenshots/blast-radius-2.png)
+**Blast Radius Oracle — Test Runner** — Interactive risk assessment with cluster, analysis, service, and change type selection. Real-time results showing risk score, confidence, affected services, and suggested actions:
+
+![Blast Radius Oracle - Test](docs/screenshots/blast-radius-2.png)
 
 **Change Detection** — Timeline and table views of detected infrastructure changes with risk levels, type categorization, and export:
 
 ![Change Detection 1](docs/screenshots/change-detection-1.png)
 
 ![Change Detection 2](docs/screenshots/change-detection-2.png)
+
+---
+
+### Integration
+
+**Integration Hub — Integration Type Selection** — Choose between Dependency Analysis (cross-service dependency data for CI/CD pipelines) or Blast Radius Gate (pre-deployment risk scoring):
+
+![Integration Hub - Type Selection](docs/screenshots/integration-hub-1.png)
+
+**Configure** — Select analyses, choose a service identification method (Annotation, Label, Namespace + Deployment, Pod Name, Advanced), set traversal depth, and run a live test query to validate results:
+
+![Integration Hub - Configure](docs/screenshots/integration-hub-2.png)
+
+**Preview** — View the dependency summary with matched upstream services, downstream dependencies grouped by category, callers, and raw JSON:
+
+![Integration Hub - Preview](docs/screenshots/integration-hub-3.png)
+
+**Integration Code — Dependency Analysis** — Ready-to-use code snippets across tabs (Pipeline, cURL, Python, JavaScript, Blast Radius) with authentication guide and response documentation:
+
+![Integration Hub - Code (cURL)](docs/screenshots/integration-hub-4.png)
+
+**Integration Code — Blast Radius Gate** — Pre-deployment risk assessment snippets with example request, response fields, and a link to interactive testing:
+
+![Integration Hub - Blast Radius Code](docs/screenshots/integration-hub-5.png)
+
+![Integration Hub - Blast Radius Response](docs/screenshots/integration-hub-6.png)
 
 ---
 
@@ -250,10 +281,6 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 **API Documentation** — Interactive Swagger/OpenAPI documentation:
 
 ![API Documentation](docs/screenshots/APIs.png)
-
-**Integration Hub** — Four-step wizard for dependency data and blast radius gate integrations. Select integration type, configure analysis scope and service identification method, preview dependency results with upstream/downstream statistics, and generate ready-to-use code snippets (Pipeline YAML, cURL, Python, JavaScript):
-
-![Integration Hub](docs/screenshots/integration-hub.png)
 
 ---
 
