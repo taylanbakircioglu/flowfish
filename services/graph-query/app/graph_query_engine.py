@@ -1685,7 +1685,7 @@ class GraphQueryEngine:
             return {
                 "name": _workload_name(entry),
                 "namespace": entry.get("namespace", ""),
-                "kind": _resolve_kind(entry.get("owner_kind", ""), labels),
+                "kind": _resolve_kind(entry.get("owner_kind") or "", labels),
                 "annotations": _filter_summary_annotations(entry.get("annotations", {})),
                 "labels": labels,
                 "is_critical": is_crit,
@@ -1739,7 +1739,7 @@ class GraphQueryEngine:
                     workload_map[up_key]["downstream_count"] += len(ds)
                     workload_map[up_key]["callers_count"] += len(cl)
                     existing = workload_map[up_key]
-                    resolved = _resolve_kind(up.get("owner_kind", ""), up_labels)
+                    resolved = _resolve_kind(up.get("owner_kind") or "", up_labels)
                     if (not existing["kind"] or existing["kind"] == "Unknown") and resolved not in ("", "Unknown"):
                         existing["kind"] = resolved
                     if not existing["annotations"] and up.get("annotations"):
@@ -1748,7 +1748,7 @@ class GraphQueryEngine:
                     workload_map[up_key] = {
                         "name": _workload_name(up),
                         "namespace": up.get("namespace", ""),
-                        "kind": _resolve_kind(up.get("owner_kind", ""), up_labels),
+                        "kind": _resolve_kind(up.get("owner_kind") or "", up_labels),
                         "annotations": _filter_summary_annotations(up.get("annotations", {})),
                         "labels": up_labels,
                         "downstream_count": len(ds),
@@ -1789,7 +1789,7 @@ class GraphQueryEngine:
             "service": {
                 "name": _workload_name(upstream),
                 "namespace": upstream.get("namespace", ""),
-                "kind": _resolve_kind(upstream.get("owner_kind", ""), _safe_labels(upstream)),
+                "kind": _resolve_kind(upstream.get("owner_kind") or "", _safe_labels(upstream)),
                 "annotations": _filter_summary_annotations(upstream.get("annotations", {})),
                 "labels": _safe_labels(upstream),
             },
