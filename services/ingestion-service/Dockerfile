@@ -15,8 +15,10 @@ RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
 
 RUN set -e && \
     PROTOC_VERSION="23.4" && \
-    PROTOC_URL="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" && \
-    PROTOC_FILE="protoc-${PROTOC_VERSION}-linux-x86_64.zip" && \
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then PROTOC_ARCH="linux-aarch_64"; else PROTOC_ARCH="linux-x86_64"; fi && \
+    PROTOC_URL="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip" && \
+    PROTOC_FILE="protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip" && \
     attempt=1 && \
     max_attempts=5 && \
     wait_time=10 && \
@@ -85,8 +87,10 @@ RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
 # kubectl v1.32.11 (Dec 16, 2025) includes golang.org/x/net v0.33.0+ with CVE-2024-45338 fix
 ARG KUBECTL_VERSION=v1.32.11
 RUN set -e && \
-    KUBECTL_URL_PRIMARY="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" && \
-    KUBECTL_URL_MIRROR="https://storage.googleapis.com/kubernetes-release/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" && \
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then K8S_ARCH="arm64"; else K8S_ARCH="amd64"; fi && \
+    KUBECTL_URL_PRIMARY="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${K8S_ARCH}/kubectl" && \
+    KUBECTL_URL_MIRROR="https://storage.googleapis.com/kubernetes-release/release/${KUBECTL_VERSION}/bin/linux/${K8S_ARCH}/kubectl" && \
     download_kubectl() { \
         local url="$1"; \
         local attempt=1; \
@@ -122,8 +126,10 @@ RUN set -e && \
 # v0.48.0 includes latest security patches
 ARG GADGET_VERSION=v0.48.0
 RUN set -e && \
-    GADGET_URL="https://github.com/inspektor-gadget/inspektor-gadget/releases/download/${GADGET_VERSION}/kubectl-gadget-linux-amd64-${GADGET_VERSION}.tar.gz" && \
-    GADGET_FILE="kubectl-gadget-linux-amd64-${GADGET_VERSION}.tar.gz" && \
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then GADGET_ARCH="arm64"; else GADGET_ARCH="amd64"; fi && \
+    GADGET_URL="https://github.com/inspektor-gadget/inspektor-gadget/releases/download/${GADGET_VERSION}/kubectl-gadget-linux-${GADGET_ARCH}-${GADGET_VERSION}.tar.gz" && \
+    GADGET_FILE="kubectl-gadget-linux-${GADGET_ARCH}-${GADGET_VERSION}.tar.gz" && \
     attempt=1 && \
     max_attempts=5 && \
     wait_time=10 && \

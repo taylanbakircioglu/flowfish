@@ -14,9 +14,11 @@ RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
     && rm -rf /var/lib/apt/lists/*
 
 RUN PROTOC_VERSION="23.4" && \
-    curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" && \
-    unzip protoc-${PROTOC_VERSION}-linux-x86_64.zip -d /usr/local && \
-    rm protoc-${PROTOC_VERSION}-linux-x86_64.zip
+    ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then PROTOC_ARCH="linux-aarch_64"; else PROTOC_ARCH="linux-x86_64"; fi && \
+    curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip" && \
+    unzip protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip -d /usr/local && \
+    rm protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip
 
 # Install grpcio-tools (version 1.60.x for protobuf 5.x compatibility)
 RUN pip install --no-cache-dir 'grpcio-tools<1.61' 'grpcio<1.61'
