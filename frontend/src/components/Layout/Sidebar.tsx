@@ -21,6 +21,7 @@ import {
 } from '@ant-design/icons';
 import FlowfishLogo from '../FlowfishLogo';
 import type { MenuProps } from 'antd';
+import { APP_VERSION } from '../../version';
 
 const { Sider } = Layout;
 
@@ -218,6 +219,8 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
         left: 0,
         top: 0,
         bottom: 0,
+        display: 'flex',
+        flexDirection: 'column',
       }}
     >
       {/* Logo */}
@@ -257,9 +260,24 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
         items={menuItems}
         style={{
           borderRight: 0,
+          flex: 1,
         }}
       />
-      
+
+      <div
+        style={{
+          padding: collapsed ? '8px 0' : '8px 16px',
+          textAlign: 'center',
+          fontSize: 11,
+          color: 'rgba(255,255,255,0.25)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          flexShrink: 0,
+        }}
+      >
+        {collapsed ? `v${APP_VERSION}` : `Flowfish v${APP_VERSION}`}
+      </div>
+
       {/* Fix for text wrapping issue on smaller screens */}
       <style>{`
         .ant-menu-item,
