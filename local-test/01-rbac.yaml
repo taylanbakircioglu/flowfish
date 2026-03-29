@@ -1,0 +1,46 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-cluster-manager
+  namespace: flowfish-local
+  labels:
+    app: cluster-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flowfish-cluster-reader
+  labels:
+    app: cluster-manager
+rules:
+  - apiGroups: [""]
+    resources: [nodes, namespaces, pods, pods/log, services, events, configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: ["apps"]
+    resources: [deployments, daemonsets, statefulsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: ["batch"]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: ["gadget.kinvolk.io"]
+    resources: [traces]
+    verbs: [get, list, watch, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flowfish-cluster-reader-binding
+  labels:
+    app: cluster-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flowfish-cluster-reader
+subjects:
+  - kind: ServiceAccount
+    name: flowfish-cluster-manager
+    namespace: flowfish-local

@@ -1,0 +1,132 @@
+# Inspektor Gadget Monitoring and Alerting
+# 
+# This file contains:
+# 1. PrometheusRule for disk pressure alerts (prevent core dump disk fill)
+# 2. ServiceMonitor for Inspektor Gadget metrics
+#
+# Prerequisites:
+# - Prometheus Operator installed (comes with OpenShift by default)
+# - openshift-monitoring namespace or similar
+#
+# Apply with:
+#   oc apply -f 19-inspektor-gadget-monitoring.yaml
+#
+---
+# PrometheusRule for Node Disk Pressure Alerts
+# Monitors disk usage to prevent core dump files from filling disks
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: inspektor-gadget-alerts
+  namespace: flowfish
+  labels:
+    app: inspektor-gadget
+    prometheus: k8s
+    role: alert-rules
+spec:
+  groups:
+  - name: inspektor-gadget.rules
+    rules:
+    # Alert when node disk usage exceeds 80%
+    - alert: NodeDiskPressureWarning
+      expr: |
+        (1 - (node_filesystem_avail_bytes{mountpoint="/", fstype!="rootfs"} / node_filesystem_size_bytes{mountpoint="/", fstype!="rootfs"})) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        component: inspektor-gadget
+      annotations:
+        summary: "Node {{ $labels.instance }} disk usage above 80%"
+        description: "Node {{ $labels.instance }} has disk usage of {{ $value | humanizePercentage }}. Check for core dump files (core-ocihookgadget-*) if Inspektor Gadget is running."
+        runbook_url: "https://github.com/flowfish/docs/blob/main/runbooks/node-disk-pressure.md"
+
+    # Alert when node disk usage exceeds 90% (critical)
+    - alert: NodeDiskPressureCritical
+      expr: |
+        (1 - (node_filesystem_avail_bytes{mountpoint="/", fstype!="rootfs"} / node_filesystem_size_bytes{mountpoint="/", fstype!="rootfs"})) > 0.9
+      for: 2m
+      labels:
+        severity: critical
+        component: inspektor-gadget
+      annotations:
+        summary: "CRITICAL: Node {{ $labels.instance }} disk usage above 90%"
+        description: "Node {{ $labels.instance }} has disk usage of {{ $value | humanizePercentage }}. Immediate action required. Check for core dump files: find /var -name 'core-ocihookgadget*' -type f"
+        runbook_url: "https://github.com/flowfish/docs/blob/main/runbooks/node-disk-pressure.md"
+
+    # Alert when /var partition specifically is running low (where core dumps are stored)
+    - alert: VarPartitionLowSpace
+      expr: |
+        (1 - (node_filesystem_avail_bytes{mountpoint="/var", fstype!="rootfs"} / node_filesystem_size_bytes{mountpoint="/var", fstype!="rootfs"})) > 0.75
+      for: 5m
+      labels:
+        severity: warning
+        component: inspektor-gadget
+      annotations:
+        summary: "Node {{ $labels.instance }} /var partition usage above 75%"
+        description: "/var partition on {{ $labels.instance }} is {{ $value | humanizePercentage }} full. Core dump files from Inspektor Gadget may be accumulating."
+
+    # Alert when Inspektor Gadget pods are not ready
+    - alert: InspektorGadgetPodsNotReady
+      expr: |
+        kube_daemonset_status_number_ready{daemonset="inspektor-gadget"} < kube_daemonset_status_desired_number_scheduled{daemonset="inspektor-gadget"}
+      for: 10m
+      labels:
+        severity: warning
+        component: inspektor-gadget
+      annotations:
+        summary: "Inspektor Gadget pods not fully ready"
+        description: "Only {{ $value }} Inspektor Gadget pods are ready. Check pod logs for RBAC errors or crashes."
+
+    # Alert when Inspektor Gadget pods are restarting frequently (potential crash loop)
+    - alert: InspektorGadgetPodCrashLooping
+      expr: |
+        increase(kube_pod_container_status_restarts_total{container="gadget"}[1h]) > 3
+      for: 5m
+      labels:
+        severity: warning
+        component: inspektor-gadget
+      annotations:
+        summary: "Inspektor Gadget container restarting frequently"
+        description: "Gadget container in pod {{ $labels.pod }} has restarted {{ $value }} times in the last hour. Check for RBAC permission errors."
+
+---
+# ServiceMonitor for Inspektor Gadget metrics
+# Scrapes metrics from gadget pods on port 2223
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: inspektor-gadget
+  namespace: flowfish
+  labels:
+    app: inspektor-gadget
+spec:
+  selector:
+    matchLabels:
+      app: inspektor-gadget
+  namespaceSelector:
+    matchNames:
+    - flowfish
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    scheme: http
+---
+# Service for metrics endpoint (if not already exists)
+# Note: Main service is in 10-inspektor-gadget.yaml, this adds metrics port
+apiVersion: v1
+kind: Service
+metadata:
+  name: inspektor-gadget-metrics
+  namespace: flowfish
+  labels:
+    app: inspektor-gadget
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 2223
+    targetPort: 2223
+    protocol: TCP
+  selector:
+    app: inspektor-gadget

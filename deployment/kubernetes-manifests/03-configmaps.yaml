@@ -1,0 +1,263 @@
+---
+# Backend Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: flowfish
+  labels:
+    app: backend
+data:
+  # Database URLs (non-sensitive)
+  REDIS_URL: "redis://redis:6379/0"
+  CLICKHOUSE_URL: "http://clickhouse:8123"
+  NEO4J_BOLT_URI: "bolt://neo4j:7687"
+  NEO4J_HTTP_URI: "http://neo4j:7474"
+  
+  # Application settings
+  LOG_LEVEL: "INFO"
+  CORS_ORIGINS: "http://localhost:3000,http://frontend:3000"
+  JWT_EXPIRATION_HOURS: "1"
+  
+  # Feature flags
+  ENABLE_LLM_ANALYSIS: "false"
+  ENABLE_ANOMALY_DETECTION: "true"
+  ENABLE_CHANGE_DETECTION: "true"
+  
+  # Data collection settings
+  DEFAULT_COLLECTION_INTERVAL_SECONDS: "5"
+  MAX_CONCURRENT_ANALYSES: "5"
+  DATA_RETENTION_DAYS: "30"
+  
+  # Inspektor Gadget settings
+  GADGET_NAMESPACE: "flowfish"
+  GADGET_IMAGE: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.48.0"
+  # IMPORTANT: Gadget image version MUST match the deployed Inspektor Gadget DaemonSet version
+  # Using 'latest' causes CO-RE compatibility issues between gadget eBPF programs and the kernel modules
+  # Current DaemonSet version: v0.48.0 (see 10-inspektor-gadget.yaml)
+  GADGET_IMAGE_VERSION: "v0.48.0"  # CVE-2024-24790 fix
+  # Empty GADGET_REGISTRY = use official ghcr.io/inspektor-gadget/gadget images
+  # Set to a custom registry prefix only if you have mirrored images with multi-arch support
+  GADGET_REGISTRY: ""
+  GADGET_IMAGE_PREFIX: ""
+  
+  # gRPC Service Endpoints
+  CLUSTER_MANAGER_GRPC: "cluster-manager:5001"
+  ANALYSIS_ORCHESTRATOR_GRPC: "analysis-orchestrator:5002"
+  INGESTION_SERVICE_GRPC: "ingestion-service:5000"
+  
+  # HTTP Service Endpoints
+  GRAPH_QUERY_URL: "http://graph-query:8001"
+  TIMESERIES_QUERY_URL: "http://timeseries-query:8002"
+  
+  # Performance tuning
+  DATABASE_POOL_SIZE: "10"
+  DATABASE_POOL_TIMEOUT: "30"
+  REDIS_POOL_SIZE: "10"
+---
+# Frontend Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: flowfish
+  labels:
+    app: frontend
+data:
+  # API endpoint (internal service)
+  REACT_APP_API_URL: "http://backend:8000"
+  
+  # Feature flags
+  REACT_APP_ENABLE_DARK_MODE: "true"
+  REACT_APP_ENABLE_ANOMALY_DETECTION: "true"
+  REACT_APP_ENABLE_CHANGE_DETECTION: "true"
+  REACT_APP_ENABLE_POLICY_SIMULATION: "false"
+  REACT_APP_ENABLE_MULTI_CLUSTER: "true"
+  
+  # UI settings
+  REACT_APP_DEFAULT_REFRESH_INTERVAL: "5000"
+  REACT_APP_MAX_GRAPH_NODES: "1000"
+  REACT_APP_MAX_GRAPH_EDGES: "2000"
+---
+# ClickHouse Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: flowfish
+  labels:
+    app: clickhouse
+data:
+  config.xml: |
+    <?xml version="1.0"?>
+    <clickhouse>
+        <logger>
+            <level>information</level>
+            <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+            <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+            <size>1000M</size>
+            <count>10</count>
+        </logger>
+        
+        <http_port>8123</http_port>
+        <tcp_port>9000</tcp_port>
+        <mysql_port>9004</mysql_port>
+        <postgresql_port>9005</postgresql_port>
+        
+        <listen_host>0.0.0.0</listen_host>
+        
+        <max_connections>200</max_connections>
+        <keep_alive_timeout>3</keep_alive_timeout>
+        <max_concurrent_queries>50</max_concurrent_queries>
+        <uncompressed_cache_size>8589934592</uncompressed_cache_size>
+        <mark_cache_size>5368709120</mark_cache_size>
+        
+        <path>/var/lib/clickhouse/</path>
+        <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+        <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+        <access_control_path>/var/lib/clickhouse/access/</access_control_path>
+        
+        <users_config>users.xml</users_config>
+        <default_profile>default</default_profile>
+        <default_database>flowfish</default_database>
+        
+        <timezone>UTC</timezone>
+        <mlock_executable>false</mlock_executable>
+        
+        <compression>
+            <case>
+                <method>lz4</method>
+            </case>
+        </compression>
+    </clickhouse>
+  
+  users.xml: |
+    <?xml version="1.0"?>
+    <clickhouse>
+        <profiles>
+            <default>
+                <max_memory_usage>10000000000</max_memory_usage>
+                <use_uncompressed_cache>0</use_uncompressed_cache>
+                <load_balancing>random</load_balancing>
+            </default>
+        </profiles>
+        
+        <users>
+            <default>
+                <password></password>
+                <networks incl="networks_config"/>
+                <profile>default</profile>
+                <quota>default</quota>
+            </default>
+            
+            <flowfish>
+                <password>flowfish123</password>
+                <networks>
+                    <ip>::/0</ip>
+                </networks>
+                <profile>default</profile>
+                <quota>default</quota>
+            </flowfish>
+        </users>
+        
+        <quotas>
+            <default>
+                <interval>
+                    <duration>3600</duration>
+                    <queries>0</queries>
+                    <errors>0</errors>
+                    <result_rows>0</result_rows>
+                    <read_rows>0</read_rows>
+                    <execution_time>0</execution_time>
+                </interval>
+            </default>
+        </quotas>
+    </clickhouse>
+---
+# PostgreSQL Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: flowfish
+  labels:
+    app: postgresql
+data:
+  postgresql.conf: |
+    # Connection settings
+    listen_addresses = '*'
+    port = 5432
+    max_connections = 100
+    
+    # Memory settings (adjusted for local dev)
+    shared_buffers = 256MB
+    effective_cache_size = 512MB
+    work_mem = 4MB
+    maintenance_work_mem = 64MB
+    
+    # WAL settings
+    wal_level = replica
+    max_wal_senders = 3
+    
+    # Logging
+    log_destination = 'stderr'
+    logging_collector = on
+    log_directory = '/var/log/postgresql'
+    log_filename = 'postgresql.log'
+    log_statement = 'none'
+    log_min_duration_statement = 1000
+    
+    # Performance
+    checkpoint_completion_target = 0.9
+    wal_buffers = 16MB
+    default_statistics_target = 100
+  
+  pg_hba.conf: |
+    # TYPE  DATABASE        USER            ADDRESS                 METHOD
+    local   all             all                                     trust
+    host    all             all             127.0.0.1/32            md5
+    host    all             all             ::1/128                 md5
+    host    all             all             0.0.0.0/0               md5
+---
+# Redis Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: flowfish
+  labels:
+    app: redis
+data:
+  redis.conf: |
+    # Network
+    bind 0.0.0.0
+    port 6379
+    timeout 0
+    
+    # General
+    daemonize no
+    supervised no
+    pidfile /var/run/redis_6379.pid
+    loglevel notice
+    
+    # Snapshotting
+    save 900 1
+    save 300 10
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    dir /data
+    
+    # Memory management
+    maxmemory 512mb
+    maxmemory-policy allkeys-lru
+    
+    # Append only file
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    
+    # Security (basic for local dev)
+    # requirepass will be set via secret

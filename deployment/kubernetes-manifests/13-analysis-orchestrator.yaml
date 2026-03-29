@@ -1,0 +1,139 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analysis-orchestrator
+  namespace: flowfish
+  labels:
+    app: analysis-orchestrator
+    component: analysis-orchestrator
+    tier: microservices
+spec:
+  selector:
+    app: analysis-orchestrator
+  ports:
+    - name: grpc
+      port: 5002
+      targetPort: 5002
+      protocol: TCP
+      appProtocol: grpc
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analysis-orchestrator
+  namespace: flowfish
+  labels:
+    app: analysis-orchestrator
+    component: analysis-orchestrator
+    tier: microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analysis-orchestrator
+  template:
+    metadata:
+      labels:
+        app: analysis-orchestrator
+        component: analysis-orchestrator
+        tier: microservices
+    spec:
+      serviceAccountName: flowfish
+      containers:
+        - name: analysis-orchestrator
+          image: taylanbakircioglu/flowfish:analysis-orchestrator-latest
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 5002
+              protocol: TCP
+          env:
+            - name: SERVICE_NAME
+              value: "analysis-orchestrator"
+            - name: GRPC_PORT
+              value: "5002"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: POSTGRES_HOST
+              value: "postgresql"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: postgres-password
+            - name: POSTGRES_DATABASE
+              value: "flowfish"
+            - name: NEO4J_BOLT_URI
+              value: "bolt://neo4j:7687"
+            - name: NEO4J_HTTP_URI
+              value: "http://neo4j:7474"
+            - name: NEO4J_USER
+              value: "neo4j"
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: NEO4J_PASSWORD
+            - name: NEO4J_DATABASE
+              value: "neo4j"
+            - name: CLICKHOUSE_HOST
+              value: "clickhouse"
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: clickhouse-user
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: clickhouse-password
+            - name: CLICKHOUSE_DATABASE
+              value: "flowfish"
+            - name: CLUSTER_MANAGER_HOST
+              value: "cluster-manager"
+            - name: CLUSTER_MANAGER_PORT
+              value: "5001"
+            # Query Services (use microservices instead of direct DB access)
+            - name: TIMESERIES_QUERY_URL
+              value: "http://timeseries-query:8002"
+            - name: GRAPH_QUERY_URL
+              value: "http://graph-query:8001"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; channel = grpc.insecure_channel('localhost:5002'); channel.close()"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; channel = grpc.insecure_channel('localhost:5002'); channel.close()"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      securityContext:
+        runAsNonRoot: false
+

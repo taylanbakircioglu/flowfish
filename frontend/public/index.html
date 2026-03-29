@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%2322d3ee'/><stop offset='100%25' stop-color='%230891b2'/></linearGradient></defs><path d='M 54 32 C 54 23 45 16 33 16 C 24 16 17 20 14 26 L 6 18 Q 9 25 10 32 Q 9 39 6 46 L 14 38 C 17 44 24 48 33 48 C 45 48 54 41 54 32 Z' fill='url(%23g)'/><circle cx='46' cy='28' r='4' fill='white' opacity='0.95'/><circle cx='46.5' cy='28' r='2.5' fill='%23164e63'/></svg>" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#1890ff" />
+    <meta name="description" content="Flowfish - eBPF-based Kubernetes Application Communication and Dependency Mapping Platform" />
+    
+    <title>Flowfish Platform</title>
+    
+    <!-- Preconnect to API -->
+    <link rel="preconnect" href="http://localhost:8000" />
+    
+    <!-- Open Graph meta tags -->
+    <meta property="og:title" content="Flowfish Platform" />
+    <meta property="og:description" content="eBPF-based Kubernetes Application Communication and Dependency Mapping" />
+    <meta property="og:type" content="website" />
+    
+    <!-- Prevent FOUC (Flash of Unstyled Content) -->
+    <style>
+      #root { 
+        opacity: 0; 
+        transition: opacity 0.3s ease-in-out;
+      }
+      #root.loaded { 
+        opacity: 1; 
+      }
+      
+      /* Loading spinner */
+      .loading-container {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      
+      .loading-spinner {
+        width: 24px;
+        height: 24px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #1890ff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run Flowfish Platform.</noscript>
+    
+    <!-- Loading indicator -->
+    <div id="loading" class="loading-container">
+      <svg viewBox="0 0 64 64" width="36" height="36" style="flex-shrink:0">
+        <defs>
+          <linearGradient id="loadGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#22d3ee"/>
+            <stop offset="100%" stop-color="#0891b2"/>
+          </linearGradient>
+        </defs>
+        <path d="M 54 32 C 54 23 45 16 33 16 C 24 16 17 20 14 26 L 6 18 Q 9 25 10 32 Q 9 39 6 46 L 14 38 C 17 44 24 48 33 48 C 45 48 54 41 54 32 Z" fill="url(#loadGrad)"/>
+        <circle cx="46" cy="28" r="4" fill="white" opacity="0.95"/>
+        <circle cx="46.5" cy="28" r="2.5" fill="#164e63"/>
+        <circle cx="47.5" cy="27" r="1" fill="rgba(255,255,255,0.8)"/>
+      </svg>
+      <span style="color:#0891b2;font-weight:500">Loading Flowfish...</span>
+    </div>
+    
+    <div id="root"></div>
+    
+    <!-- Hide loading indicator when React loads -->
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        // Hide loading after a short delay to ensure React has mounted
+        setTimeout(() => {
+          const loading = document.getElementById('loading');
+          const root = document.getElementById('root');
+          
+          if (loading) loading.style.display = 'none';
+          if (root) root.classList.add('loaded');
+        }, 1000);
+      });
+    </script>
+  </body>
+</html>

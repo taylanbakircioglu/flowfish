@@ -1,0 +1,279 @@
+---
+# ============================================================================
+# Change Detection Worker - Standalone Scalable Worker
+# ============================================================================
+#
+# This manifest deploys the Change Detection Worker as a separate service.
+# The worker periodically detects infrastructure changes and records them.
+#
+# Features:
+# - Horizontally scalable (use replicas with leader election)
+# - Independent from backend
+# - Health checks and metrics
+# - Circuit breaker pattern
+#
+# Scaling:
+# - Single replica: Set LEADER_ELECTION_ENABLED=false (default)
+# - Multiple replicas: Set LEADER_ELECTION_ENABLED=true (requires Redis)
+#
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: change-detection-worker
+  namespace: flowfish
+  labels:
+    app: change-detection-worker
+    component: worker
+    tier: microservices
+spec:
+  replicas: 1  # Scale up with leader election enabled
+  selector:
+    matchLabels:
+      app: change-detection-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: change-detection-worker
+        component: worker
+        tier: microservices
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: flowfish-backend
+      securityContext:
+        runAsNonRoot: true
+      
+      # Wait for dependencies
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for PostgreSQL..."
+          until nc -z postgresql 5432; do
+            echo "PostgreSQL is unavailable - sleeping"
+            sleep 2
+          done
+          echo "PostgreSQL is up!"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
+      containers:
+      - name: worker
+        image: taylanbakircioglu/flowfish:change-worker-latest
+        imagePullPolicy: Always
+        
+        ports:
+        - name: http
+          containerPort: 8001
+          protocol: TCP
+        
+        # Environment variables
+        env:
+        # Worker configuration
+        - name: CHANGE_DETECTION_ENABLED
+          value: "true"
+        - name: CHANGE_DETECTION_INTERVAL
+          value: "60"
+        - name: CHANGE_DETECTION_LOOKBACK_MINUTES
+          value: "5"
+        - name: LEADER_ELECTION_ENABLED
+          value: "false"  # Set to "true" when scaling replicas > 1
+        
+        # Instance identification
+        - name: WORKER_INSTANCE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        
+        # PostgreSQL (POSTGRES_PASSWORD must be defined before DATABASE_URL for substitution)
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: postgres-password
+        - name: DATABASE_URL
+          value: "postgresql://flowfish:$(POSTGRES_PASSWORD)@postgresql:5432/flowfish"
+        
+        # Neo4j (both formats needed - NEO4J_URI for worker, NEO4J_BOLT_URI for backend config)
+        - name: NEO4J_URI
+          value: "bolt://neo4j:7687"
+        - name: NEO4J_BOLT_URI
+          value: "bolt://neo4j:7687"
+        - name: NEO4J_USER
+          value: "neo4j"
+        - name: NEO4J_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: NEO4J_PASSWORD
+        
+        # ClickHouse (required by backend config)
+        - name: CLICKHOUSE_URL
+          value: "http://clickhouse:8123"
+        - name: CLICKHOUSE_USER
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: clickhouse-user
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: clickhouse-password
+        
+        # Redis (for leader election)
+        - name: REDIS_URL
+          value: "redis://redis:6379/1"
+        
+        # Security (required by backend config)
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: jwt-secret
+        
+        # Backend URL for WebSocket notifications
+        - name: BACKEND_INTERNAL_URL
+          value: "http://backend:8000"
+        
+        # RabbitMQ (for publishing to ClickHouse - ONLY storage for change events)
+        - name: RABBITMQ_HOST
+          value: "rabbitmq"
+        - name: RABBITMQ_PORT
+          value: "5672"
+        - name: RABBITMQ_USER
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-user
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: rabbitmq-password
+        
+        # NOTE: PostgreSQL change_events table removed. Events only go to ClickHouse via RabbitMQ.
+        
+        # Circuit breaker
+        - name: CHANGE_DETECTION_CIRCUIT_BREAKER_THRESHOLD
+          value: "3"
+        - name: CHANGE_DETECTION_CIRCUIT_BREAKER_RESET
+          value: "300"
+        
+        # Encryption key for credential decryption (same as backend)
+        - name: FLOWFISH_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: flowfish-secrets
+              key: FLOWFISH_ENCRYPTION_KEY
+        
+        # cluster-manager gRPC service URL (used for K8s API gateway)
+        - name: CLUSTER_MANAGER_GRPC_URL
+          value: "cluster-manager:5001"
+        
+        # Logging
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: ENVIRONMENT
+          value: "production"
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Resources
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+---
+# Service for worker (for metrics scraping and manual triggers)
+apiVersion: v1
+kind: Service
+metadata:
+  name: change-detection-worker
+  namespace: flowfish
+  labels:
+    app: change-detection-worker
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8001"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8001
+    targetPort: 8001
+    protocol: TCP
+  selector:
+    app: change-detection-worker
+
+---
+# HorizontalPodAutoscaler for automatic scaling
+# Uncomment when using leader election with multiple replicas
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: change-detection-worker-hpa
+#   namespace: flowfish
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: change-detection-worker
+#   minReplicas: 1
+#   maxReplicas: 3
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 70
+#   - type: Resource
+#     resource:
+#       name: memory
+#       target:
+#         type: Utilization
+#         averageUtilization: 80
+

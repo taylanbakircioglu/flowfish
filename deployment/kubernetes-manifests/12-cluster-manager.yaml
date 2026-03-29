@@ -1,0 +1,131 @@
+---
+# ServiceAccount for cluster-manager with ClusterRole binding
+# ClusterRole 'flowfish-cluster-reader' must be created manually (see docs/architecture/ARCHITECTURE_IMPROVEMENTS.md)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-cluster-manager
+  namespace: flowfish
+  labels:
+    app: cluster-manager
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/component: cluster-manager
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cluster-manager
+  namespace: flowfish
+  labels:
+    app: cluster-manager
+    tier: microservices
+spec:
+  selector:
+    app: cluster-manager
+  ports:
+    - name: grpc
+      port: 5001
+      targetPort: 5001
+      protocol: TCP
+      appProtocol: grpc
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-manager
+  namespace: flowfish
+  labels:
+    app: cluster-manager
+    tier: microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-manager
+  template:
+    metadata:
+      labels:
+        app: cluster-manager
+        tier: microservices
+    spec:
+      # Uses dedicated ServiceAccount with ClusterRole for cluster-wide access
+      serviceAccountName: flowfish-cluster-manager
+      containers:
+        - name: cluster-manager
+          image: taylanbakircioglu/flowfish:cluster-manager-latest
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 5001
+              protocol: TCP
+          env:
+            - name: SERVICE_NAME
+              value: "cluster-manager"
+            - name: GRPC_PORT
+              value: "5001"
+            - name: LOG_LEVEL
+              value: "INFO"
+            # POSTGRES_PASSWORD must be defined BEFORE DATABASE_URL for $(POSTGRES_PASSWORD) expansion
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: postgres-password
+            - name: DATABASE_URL
+              value: "postgresql://flowfish:$(POSTGRES_PASSWORD)@postgresql:5432/flowfish"
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: IN_CLUSTER_CONFIG
+              value: "true"
+            # Encryption key for cluster credentials
+            - name: FLOWFISH_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: FLOWFISH_ENCRYPTION_KEY
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+              - ALL
+          volumeMounts:
+            # Temp directory for Kubernetes client CA cert files
+            # Required because readOnlyRootFilesystem blocks writes to /tmp
+            - name: tmp-volume
+              mountPath: /tmp
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; channel = grpc.insecure_channel('localhost:5001'); channel.close()"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; channel = grpc.insecure_channel('localhost:5001'); channel.close()"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        # emptyDir for temporary files (CA certs, kubeconfig)
+        # Allows write access while keeping readOnlyRootFilesystem
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 10Mi
+      # imagePullSecrets removed for public deployment (use default registry)

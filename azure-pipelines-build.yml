@@ -1,0 +1,286 @@
+# Flowfish Platform - Build Pipeline
+# Trigger: pilot branch
+# Multi-stage parallel build for all microservices
+# Agent version: Compatible with 3.232.1+
+
+trigger:
+  branches:
+    include:
+      - flow-ert
+  paths:
+    exclude:
+      - docs/**
+      - README.md
+      - '*.md'
+
+pr: none
+
+pool:
+  name: BuildServers
+
+variables:
+  - group: FlowfishVaultENV
+  - group: FlowfishCompanyVariable
+  # environment will be set from CompanyVariable.DEPLOYMENT_ENV
+  - name: registry
+    value: $(HARBOR_REGISTRY)
+  - name: project
+    value: flowfish
+  - name: buildId
+    value: $(Build.BuildId)
+  # Inspektor Gadget version - must match constants.py
+  - name: GADGET_VERSION
+    value: 'v0.48.0'
+
+stages:
+  - stage: Build
+    displayName: 'Build & Push Images'
+    jobs:
+      # Backend Build Job
+      - job: BuildBackend
+        displayName: 'Build Backend'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-backend.sh
+              ./pipelines/scripts/build-backend.sh
+            displayName: 'Build Backend Image'
+            name: BackendBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Frontend Build Job
+      - job: BuildFrontend
+        displayName: 'Build Frontend'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-frontend.sh
+              ./pipelines/scripts/build-frontend.sh
+            displayName: 'Build Frontend Image'
+            name: FrontendBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+              REACT_APP_API_URL: $(API_BASE_URL)
+
+      # API Gateway Build Job
+      - job: BuildApiGateway
+        displayName: 'Build API Gateway'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-api-gateway.sh
+              ./pipelines/scripts/build-api-gateway.sh
+            displayName: 'Build API Gateway Image'
+            name: ApiGatewayBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Cluster Manager Build Job
+      - job: BuildClusterManager
+        displayName: 'Build Cluster Manager'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-cluster-manager.sh
+              ./pipelines/scripts/build-cluster-manager.sh
+            displayName: 'Build Cluster Manager Image'
+            name: ClusterManagerBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Analysis Orchestrator Build Job
+      - job: BuildAnalysisOrchestrator
+        displayName: 'Build Analysis Orchestrator'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-analysis-orchestrator.sh
+              ./pipelines/scripts/build-analysis-orchestrator.sh
+            displayName: 'Build Analysis Orchestrator Image'
+            name: AnalysisOrchestratorBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Graph Writer Build Job
+      - job: BuildGraphWriter
+        displayName: 'Build Graph Writer'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-graph-writer.sh
+              ./pipelines/scripts/build-graph-writer.sh
+            displayName: 'Build Graph Writer Image'
+            name: GraphWriterBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Graph Query Build Job
+      - job: BuildGraphQuery
+        displayName: 'Build Graph Query'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-graph-query.sh
+              ./pipelines/scripts/build-graph-query.sh
+            displayName: 'Build Graph Query Image'
+            name: GraphQueryBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Timeseries Writer Build Job
+      - job: BuildTimeseriesWriter
+        displayName: 'Build Timeseries Writer'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-timeseries-writer.sh
+              ./pipelines/scripts/build-timeseries-writer.sh
+            displayName: 'Build Timeseries Writer Image'
+            name: TimeseriesWriterBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Ingestion Service Build Job
+      - job: BuildIngestionService
+        displayName: 'Build Ingestion Service'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 2
+          
+          - bash: |
+              chmod +x pipelines/scripts/build-ingestion-service.sh
+              ./pipelines/scripts/build-ingestion-service.sh
+            displayName: 'Build Ingestion Service Image'
+            name: IngestionServiceBuild
+            env:
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              BUILD_ALL: $(build-all)
+              SYSTEM_TEAMPROJECT: $(System.TeamProject)
+              BUILD_BUILDID: $(Build.BuildId)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+
+      # Mirror Inspektor Gadget Images to Local Registry
+      - job: MirrorGadgetImages
+        displayName: 'Mirror Gadget Images'
+        pool:
+          name: BuildServers
+        steps:
+          - checkout: self
+            fetchDepth: 1
+          
+          - bash: |
+              chmod +x pipelines/scripts/push-gadget-images.sh
+              ./pipelines/scripts/push-gadget-images.sh
+            displayName: 'Mirror Gadget Images to Harbor'
+            env:
+              HARBOR_REGISTRY: $(HARBOR_REGISTRY)
+              HARBOR_PROJECT: flowfish
+              HARBOR_USER: $(HARBOR_USER)
+              HARBOR_PASSWORD: $(HARBOR_PASSWORD)
+              GADGET_VERSION: $(GADGET_VERSION)
+
+      # Summary Job
+      - job: BuildSummary
+        displayName: 'Build Summary'
+        dependsOn:
+          - BuildBackend
+          - BuildFrontend
+          - BuildApiGateway
+          - BuildClusterManager
+          - BuildAnalysisOrchestrator
+          - BuildGraphWriter
+          - BuildGraphQuery
+          - BuildTimeseriesWriter
+          - BuildIngestionService
+          - MirrorGadgetImages
+        pool:
+          name: BuildServers
+        steps:
+          - bash: |
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🎉 BUILD SUMMARY"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "📦 Build ID: $(Build.BuildId)"
+              echo "🏷️  Image Tag: $(imageTag)"
+              echo "🌿 Branch: $(Build.SourceBranchName)"
+              echo "📝 Commit: $(Build.SourceVersion)"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "✅ All builds completed successfully!"
+            displayName: 'Build Summary'
+

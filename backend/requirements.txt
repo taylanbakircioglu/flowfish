@@ -1,0 +1,93 @@
+# FastAPI and core dependencies
+fastapi>=0.121.0
+starlette>=0.49.1  # CVE-2025-62727 fix - explicit pin required
+uvicorn[standard]>=0.24.0
+pydantic>=2.7.0  # Required by FastAPI 0.121+
+pydantic-settings>=2.3.0  # Compatible with pydantic 2.7+
+email-validator>=2.1.0  # Required for Pydantic EmailStr
+
+# Database dependencies
+sqlalchemy==2.0.23
+alembic==1.12.1
+# databases[postgresql]==0.8.0  # Deprecated, using SQLAlchemy 2.0 async
+asyncpg==0.29.0  # PostgreSQL async driver
+psycopg2-binary==2.9.9  # PostgreSQL sync driver (for migrations)
+
+# ClickHouse
+clickhouse-driver==0.2.6
+clickhouse-connect==0.6.23
+
+# Neo4j
+neo4j==5.15.0
+
+# Redis
+redis[hiredis]==5.0.1
+# aioredis==2.0.1  # Disabled for MVP, using sync redis
+
+# RabbitMQ (for Change Detection dual-write)
+pika==1.3.2
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+cryptography>=42.0.4  # CVE-2024-26130, CVE-2023-50782 fix
+passlib==1.7.4
+bcrypt==4.0.1  # Pin bcrypt version for passlib compatibility
+python-multipart>=0.0.18  # CVE-2024-24762 fix
+authlib>=1.6.5  # CVE-2024-37568, CVE-2025-59420, CVE-2025-61920 fix
+PyJWT==2.8.0  # For simple auth
+
+# Kubernetes client
+kubernetes>=31.0.0  # CVE-2024-37891 urllib3 fix
+kubernetes-asyncio>=31.0.0
+urllib3>=2.6.0  # CVE-2025-66418, CVE-2025-66471 fix
+
+# HTTP clients
+httpx==0.25.2
+aiohttp>=3.10.11  # CVE-2024-52303, CVE-2024-52304 fix
+
+# gRPC for Inspektor Gadget
+grpcio>=1.62.0  # protobuf 5.x compatibility
+grpcio-tools>=1.62.0
+
+# Data processing (disabled for MVP local testing)
+# pandas==2.1.3
+# numpy==1.25.2
+
+# Background jobs (disabled for MVP)
+# celery==5.3.4
+# redis==5.0.1  # For Celery broker
+
+# Monitoring and logging
+prometheus-client==0.19.0
+structlog==23.2.0
+python-json-logger==2.0.7
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.25.2  # For testing
+faker==20.1.0
+
+# Code quality
+black==23.11.0
+flake8==6.1.0
+mypy==1.7.1
+isort==5.12.0
+
+# Development
+python-dotenv==1.0.0
+watchfiles==0.21.0
+
+# LLM Integration (optional, disabled for MVP)
+# openai==1.3.7
+# anthropic==0.7.7
+
+# PDF Generation
+reportlab==4.0.8
+svglib==1.5.1  # SVG support for reportlab
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+typing-extensions>=4.10.0  # Required by starlette>=0.49.1

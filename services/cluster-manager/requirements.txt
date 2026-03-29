@@ -1,0 +1,27 @@
+# gRPC - use compatible versions
+grpcio>=1.62.0,<2.0.0  # protobuf 5.x compatibility
+grpcio-tools>=1.62.0,<2.0.0
+protobuf>=5.29.2  # Security update
+
+# Kubernetes client
+kubernetes>=31.0.0  # CVE-2024-37891 urllib3 fix
+
+# HTTP Client - explicit pin for CVE-2025-66471, CVE-2025-66418 fix
+urllib3>=2.6.0
+
+# Database
+asyncpg>=0.29.0
+sqlalchemy>=2.0.25
+
+# Logging & Config
+structlog>=24.1.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.1
+
+# Encryption
+cryptography>=42.0.4  # CVE-2024-26130, CVE-2023-50782 fix
+
+# HTTP & Cache
+httpx>=0.26.0
+redis>=5.0.1

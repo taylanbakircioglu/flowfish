@@ -1,0 +1,1063 @@
+openapi: 3.0.3
+info:
+  title: Flowfish Platform API
+  description: |
+    # Flowfish Platform API
+    
+    eBPF tabanlı Kubernetes/OpenShift uygulama iletişimi ve bağımlılık haritalama platformu REST API dokümantasyonu.
+    
+    ## Özellikler
+    
+    - **Otomatik Keşif**: Pod'lar arası iletişimi eBPF ile otomatik tespit
+    - **Gerçek Zamanlı Harita**: Bağımlılık haritalarını canlı görüntüleme
+    - **Anomali Tespiti**: LLM destekli akıllı anomali algılama
+    - **Multi-Cluster**: Birden fazla cluster'ı tek arayüzden yönetim
+    - **Import/Export**: Veri içe/dışa aktarma
+    
+    ## Kimlik Doğrulama
+    
+    API, JWT (JSON Web Token) tabanlı kimlik doğrulama kullanır.
+    
+    1. `/api/v1/auth/login` endpoint'ine kullanıcı adı ve şifre ile POST request gönderin
+    2. Response'da dönen `access_token`'ı alın
+    3. Sonraki tüm isteklerde `Authorization: Bearer <token>` header'ı kullanın
+    
+    ## Rate Limiting
+    
+    - **Authenticated Users**: 1000 requests/hour
+    - **Unauthenticated**: 100 requests/hour
+    
+  version: 1.0.0
+  contact:
+    name: Flowfish Team
+    email: support@flowfish.io
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.flowfish.io/api/v1
+    description: Production server
+  - url: https://staging.flowfish.io/api/v1
+    description: Staging server
+  - url: http://localhost:8000/api/v1
+    description: Development server
+
+tags:
+  - name: Authentication
+    description: Kullanıcı kimlik doğrulama işlemleri
+  - name: Users
+    description: Kullanıcı yönetimi
+  - name: Clusters
+    description: Kubernetes/OpenShift cluster yönetimi
+  - name: Analyses
+    description: Analiz wizard ve çalıştırma
+  - name: Workloads
+    description: Kubernetes workload'ları (Pod, Deployment, Service, StatefulSet)
+  - name: Communications
+    description: Workload'lar arası iletişim kayıtları
+  - name: Dependencies
+    description: Bağımlılık haritası ve graph sorguları
+  - name: Anomalies
+    description: Tespit edilen anomaliler
+  - name: Changes
+    description: Değişim tespiti
+  - name: Baselines
+    description: Trafik baseline profilleri
+  - name: Import/Export
+    description: Veri içe ve dışa aktarma
+  - name: Settings
+    description: Sistem ayarları
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token authorization header using the Bearer scheme
+  
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          example: "UNAUTHORIZED"
+        message:
+          type: string
+          example: "Invalid or expired token"
+        details:
+          type: object
+          nullable: true
+    
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          minimum: 1
+          default: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        total_items:
+          type: integer
+        total_pages:
+          type: integer
+    
+    User:
+      type: object
+      required:
+        - id
+        - username
+        - email
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        is_active:
+          type: boolean
+        roles:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    
+    Cluster:
+      type: object
+      required:
+        - id
+        - name
+        - cluster_type
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        cluster_type:
+          type: string
+          enum: [kubernetes, openshift]
+        api_url:
+          type: string
+          format: uri
+        is_active:
+          type: boolean
+        is_default:
+          type: boolean
+        kubernetes_version:
+          type: string
+          nullable: true
+        node_count:
+          type: integer
+          nullable: true
+        pod_count:
+          type: integer
+          nullable: true
+        namespace_count:
+          type: integer
+          nullable: true
+        health_status:
+          type: string
+          enum: [healthy, degraded, unhealthy, unknown]
+        last_sync_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    
+    Namespace:
+      type: object
+      properties:
+        id:
+          type: integer
+        cluster_id:
+          type: integer
+        name:
+          type: string
+        uid:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    
+    Workload:
+      type: object
+      properties:
+        id:
+          type: integer
+        cluster_id:
+          type: integer
+        namespace_id:
+          type: integer
+        workload_type:
+          type: string
+          enum: [pod, deployment, statefulset, service]
+        name:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        ip_address:
+          type: string
+          format: ipv4
+          nullable: true
+        ports:
+          type: array
+          items:
+            type: object
+            properties:
+              port:
+                type: integer
+              protocol:
+                type: string
+        status:
+          type: string
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        is_active:
+          type: boolean
+    
+    Communication:
+      type: object
+      properties:
+        id:
+          type: integer
+        cluster_id:
+          type: integer
+        source_namespace:
+          type: string
+        source_workload:
+          type: string
+        source_workload_type:
+          type: string
+        destination_namespace:
+          type: string
+        destination_workload:
+          type: string
+        destination_workload_type:
+          type: string
+        destination_ip:
+          type: string
+        destination_port:
+          type: integer
+        protocol:
+          type: string
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        request_count:
+          type: integer
+        request_rate_per_second:
+          type: number
+          format: float
+        avg_latency_ms:
+          type: number
+          format: float
+        risk_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+        is_cross_namespace:
+          type: boolean
+        is_external:
+          type: boolean
+        is_active:
+          type: boolean
+    
+    Analysis:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        cluster_id:
+          type: integer
+        scope_type:
+          type: string
+          enum: [cluster, namespace, deployment, pod, label]
+        scope_config:
+          type: object
+        gadget_modules:
+          type: array
+          items:
+            type: string
+        time_config:
+          type: object
+        output_config:
+          type: object
+        status:
+          type: string
+          enum: [draft, running, stopped, completed, failed]
+        created_at:
+          type: string
+          format: date-time
+    
+    Anomaly:
+      type: object
+      properties:
+        id:
+          type: integer
+        cluster_id:
+          type: integer
+        anomaly_type:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        anomaly_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+        title:
+          type: string
+        description:
+          type: string
+        affected_workloads:
+          type: array
+          items:
+            type: object
+        recommended_action:
+          type: string
+        status:
+          type: string
+          enum: [new, investigating, resolved, false_positive]
+        detected_at:
+          type: string
+          format: date-time
+    
+    GraphData:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              type:
+                type: string
+              name:
+                type: string
+              namespace:
+                type: string
+              labels:
+                type: object
+              metadata:
+                type: object
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              source:
+                type: string
+              target:
+                type: string
+              port:
+                type: integer
+              protocol:
+                type: string
+              metrics:
+                type: object
+
+security:
+  - BearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Kullanıcı girişi
+      description: Kullanıcı adı ve şifre ile JWT token alınır
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                  format: password
+            examples:
+              example1:
+                summary: Admin kullanıcı
+                value:
+                  username: "admin"
+                  password: "admin123"
+      responses:
+        '200':
+          description: Giriş başarılı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    example: "bearer"
+                  expires_in:
+                    type: integer
+                    example: 3600
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: Geçersiz kullanıcı adı veya şifre
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /auth/me:
+    get:
+      tags:
+        - Authentication
+      summary: Mevcut kullanıcı bilgilerini getir
+      description: Token'dan kullanıcı bilgilerini döndürür
+      responses:
+        '200':
+          description: Kullanıcı bilgileri
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          description: Geçersiz veya eksik token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /clusters:
+    get:
+      tags:
+        - Clusters
+      summary: Cluster listesini getir
+      description: Kullanıcının erişim yetkisi olan tüm cluster'ları listeler
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Cluster listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Cluster'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+    
+    post:
+      tags:
+        - Clusters
+      summary: Yeni cluster ekle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - cluster_type
+                - api_url
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                cluster_type:
+                  type: string
+                  enum: [kubernetes, openshift]
+                api_url:
+                  type: string
+                  format: uri
+                kubeconfig:
+                  type: string
+                  description: Base64 encoded kubeconfig
+      responses:
+        '201':
+          description: Cluster başarıyla oluşturuldu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '400':
+          description: Geçersiz istek
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /clusters/{cluster_id}:
+    get:
+      tags:
+        - Clusters
+      summary: Cluster detaylarını getir
+      parameters:
+        - name: cluster_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Cluster detayları
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '404':
+          description: Cluster bulunamadı
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    
+    put:
+      tags:
+        - Clusters
+      summary: Cluster güncelle
+      parameters:
+        - name: cluster_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Cluster güncellendi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+    
+    delete:
+      tags:
+        - Clusters
+      summary: Cluster sil
+      parameters:
+        - name: cluster_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Cluster silindi
+        '404':
+          description: Cluster bulunamadı
+  
+  /analyses:
+    get:
+      tags:
+        - Analyses
+      summary: Analiz listesini getir
+      parameters:
+        - name: cluster_id
+          in: query
+          schema:
+            type: integer
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, running, stopped, completed, failed]
+      responses:
+        '200':
+          description: Analiz listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Analysis'
+    
+    post:
+      tags:
+        - Analyses
+      summary: Yeni analiz oluştur
+      description: Wizard'dan gelen yapılandırma ile yeni analiz tanımlar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - cluster_id
+                - scope_type
+                - scope_config
+                - gadget_modules
+                - time_config
+                - output_config
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                cluster_id:
+                  type: integer
+                scope_type:
+                  type: string
+                  enum: [cluster, namespace, deployment, pod, label]
+                scope_config:
+                  type: object
+                gadget_modules:
+                  type: array
+                  items:
+                    type: string
+                time_config:
+                  type: object
+                  properties:
+                    mode:
+                      type: string
+                      enum: [continuous, time_bound, scheduled, baseline]
+                    duration_minutes:
+                      type: integer
+                    schedule:
+                      type: string
+                output_config:
+                  type: object
+                  properties:
+                    dashboards:
+                      type: array
+                      items:
+                        type: string
+                    llm_enabled:
+                      type: boolean
+                    alerts_enabled:
+                      type: boolean
+      responses:
+        '201':
+          description: Analiz oluşturuldu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Analysis'
+  
+  /analyses/{analysis_id}/start:
+    post:
+      tags:
+        - Analyses
+      summary: Analizi başlat
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Analiz başlatıldı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  run_id:
+                    type: integer
+  
+  /analyses/{analysis_id}/stop:
+    post:
+      tags:
+        - Analyses
+      summary: Analizi durdur
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Analiz durduruldu
+  
+  /workloads:
+    get:
+      tags:
+        - Workloads
+      summary: Workload listesini getir
+      parameters:
+        - name: cluster_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: workload_type
+          in: query
+          schema:
+            type: string
+            enum: [pod, deployment, statefulset, service]
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Workload listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workload'
+  
+  /communications:
+    get:
+      tags:
+        - Communications
+      summary: İletişim kayıtlarını getir
+      parameters:
+        - name: cluster_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: source_workload
+          in: query
+          schema:
+            type: string
+        - name: destination_workload
+          in: query
+          schema:
+            type: string
+        - name: risk_level
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high, critical]
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - name: from_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: İletişim kayıtları
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Communication'
+                  total_count:
+                    type: integer
+  
+  /dependencies/graph:
+    get:
+      tags:
+        - Dependencies
+      summary: Bağımlılık haritasını getir
+      description: Graph formatında node ve edge'lerle bağımlılık haritasını döndürür
+      parameters:
+        - name: cluster_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: layout
+          in: query
+          schema:
+            type: string
+            enum: [hierarchical, force_directed, circular]
+            default: hierarchical
+        - name: include_external
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Graph verisi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphData'
+  
+  /dependencies/upstream/{workload_id}:
+    get:
+      tags:
+        - Dependencies
+      summary: Upstream bağımlılıkları getir
+      description: Belirtilen workload'a bağlanan tüm upstream workload'ları döndürür
+      parameters:
+        - name: workload_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 2
+      responses:
+        '200':
+          description: Upstream workload listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workloads:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workload'
+  
+  /anomalies:
+    get:
+      tags:
+        - Anomalies
+      summary: Anomali listesini getir
+      parameters:
+        - name: cluster_id
+          in: query
+          schema:
+            type: integer
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high, critical]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [new, investigating, resolved, false_positive]
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Anomali listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Anomaly'
+  
+  /export/csv:
+    get:
+      tags:
+        - Import/Export
+      summary: CSV formatında export
+      parameters:
+        - name: cluster_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: from_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: CSV dosyası
+          content:
+            text/csv:
+              schema:
+                type: string
+  
+  /export/graph-json:
+    get:
+      tags:
+        - Import/Export
+      summary: Graph JSON formatında export
+      parameters:
+        - name: cluster_id
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Graph JSON dosyası
+          content:
+            application/json:
+              schema:
+                type: object
+  
+  /import:
+    post:
+      tags:
+        - Import/Export
+      summary: Veri import et
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - cluster_id
+                - import_mode
+              properties:
+                file:
+                  type: string
+                  format: binary
+                cluster_id:
+                  type: integer
+                import_mode:
+                  type: string
+                  enum: [merge, overwrite, snapshot]
+      responses:
+        '202':
+          description: Import işlemi başlatıldı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: integer
+                  message:
+                    type: string
+

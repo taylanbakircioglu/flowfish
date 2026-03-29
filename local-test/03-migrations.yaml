@@ -1,0 +1,1138 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flowfish-migrations
+  namespace: flowfish-local
+spec:
+  template:
+    metadata:
+      labels:
+        app: migrations
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL..."
+              until nc -z postgresql 5432; do sleep 2; done
+              echo "PostgreSQL is ready!"
+        - name: wait-for-clickhouse
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for ClickHouse..."
+              until nc -z clickhouse 8123; do sleep 2; done
+              echo "ClickHouse is ready!"
+        - name: wait-for-neo4j
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Neo4j HTTP..."
+              until nc -z neo4j 7474; do sleep 3; done
+              sleep 10
+              echo "Neo4j is ready!"
+        - name: wait-for-rabbitmq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for RabbitMQ..."
+              until nc -z rabbitmq 5672; do sleep 2; done
+              until nc -z rabbitmq 15672; do sleep 2; done
+              sleep 5
+              echo "RabbitMQ is ready!"
+      containers:
+        # --- PostgreSQL Migrations ---
+        - name: postgres-migrations
+          image: postgres:15-alpine
+          env:
+            - name: PGPASSWORD
+              value: flowfish123
+            - name: PG
+              value: "postgresql"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "========================================="
+              echo "PostgreSQL Migrations Starting"
+              echo "========================================="
+
+              run_pg() { psql -h postgresql -U flowfish -d flowfish -c "$1"; }
+
+              psql -h postgresql -U flowfish -d flowfish << 'EOSQL'
+
+              -- Migration tracking
+              CREATE TABLE IF NOT EXISTS schema_migrations (
+                  version INTEGER PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              -- Clusters
+              CREATE TABLE IF NOT EXISTS clusters (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL UNIQUE,
+                  description TEXT,
+                  environment VARCHAR(50) NOT NULL DEFAULT 'production',
+                  provider VARCHAR(50) NOT NULL DEFAULT 'openshift',
+                  region VARCHAR(100),
+                  tags JSONB DEFAULT '{}',
+                  connection_type VARCHAR(50) NOT NULL DEFAULT 'in-cluster',
+                  api_server_url VARCHAR(500) NOT NULL DEFAULT 'https://kubernetes.default.svc',
+                  kubeconfig_encrypted TEXT,
+                  ca_cert_encrypted TEXT,
+                  token_encrypted TEXT,
+                  skip_tls_verify BOOLEAN DEFAULT FALSE,
+                  gadget_endpoint VARCHAR(500),
+                  gadget_namespace VARCHAR(255) NOT NULL DEFAULT 'flowfish-local',
+                  gadget_protocol VARCHAR(50) DEFAULT 'kubectl',
+                  gadget_auto_detect BOOLEAN DEFAULT TRUE,
+                  gadget_version VARCHAR(50),
+                  gadget_capabilities JSONB DEFAULT '[]',
+                  gadget_health_status VARCHAR(50) DEFAULT 'unknown',
+                  gadget_last_check TIMESTAMP WITH TIME ZONE,
+                  status VARCHAR(50) DEFAULT 'active',
+                  validation_status JSONB,
+                  last_sync TIMESTAMP WITH TIME ZONE,
+                  error_message TEXT,
+                  total_namespaces INTEGER DEFAULT 0,
+                  total_pods INTEGER DEFAULT 0,
+                  total_nodes INTEGER DEFAULT 0,
+                  k8s_version VARCHAR(50),
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  created_by INTEGER,
+                  updated_by INTEGER
+              );
+              CREATE INDEX IF NOT EXISTS idx_clusters_environment ON clusters(environment);
+              CREATE INDEX IF NOT EXISTS idx_clusters_status ON clusters(status);
+              CREATE INDEX IF NOT EXISTS idx_clusters_name ON clusters(name);
+
+              -- Analysis Event Types
+              CREATE TABLE IF NOT EXISTS analysis_event_types (
+                  id SERIAL PRIMARY KEY,
+                  analysis_id INTEGER NOT NULL,
+                  event_type_id VARCHAR(50) NOT NULL,
+                  enabled BOOLEAN DEFAULT TRUE,
+                  sampling_rate INTEGER DEFAULT 100,
+                  filters JSONB DEFAULT '[]',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(analysis_id, event_type_id)
+              );
+              CREATE INDEX IF NOT EXISTS idx_analysis_event_types_analysis_id ON analysis_event_types(analysis_id);
+
+              -- Namespaces
+              CREATE TABLE IF NOT EXISTS namespaces (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  name VARCHAR(255) NOT NULL,
+                  uid VARCHAR(255),
+                  labels JSONB DEFAULT '{}',
+                  annotations JSONB DEFAULT '{}',
+                  status VARCHAR(50) DEFAULT 'Active',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(cluster_id, name)
+              );
+              CREATE INDEX IF NOT EXISTS idx_namespaces_cluster ON namespaces(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_namespaces_name ON namespaces(name);
+              CREATE INDEX IF NOT EXISTS idx_namespaces_labels ON namespaces USING gin(labels);
+
+              -- Workloads
+              CREATE TABLE IF NOT EXISTS workloads (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  namespace_id INTEGER NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+                  name VARCHAR(255) NOT NULL,
+                  workload_type VARCHAR(50) NOT NULL,
+                  uid VARCHAR(255),
+                  labels JSONB DEFAULT '{}',
+                  annotations JSONB DEFAULT '{}',
+                  replicas INTEGER,
+                  available_replicas INTEGER,
+                  image VARCHAR(500),
+                  status VARCHAR(50) DEFAULT 'Unknown',
+                  is_active BOOLEAN DEFAULT TRUE,
+                  owner_kind VARCHAR(100),
+                  owner_name VARCHAR(255),
+                  owner_uid VARCHAR(255),
+                  ip_address INET,
+                  ports JSONB DEFAULT '[]',
+                  containers JSONB DEFAULT '[]',
+                  node_name VARCHAR(255),
+                  first_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  last_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  metadata JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(cluster_id, namespace_id, workload_type, name)
+              );
+              CREATE INDEX IF NOT EXISTS idx_workloads_cluster ON workloads(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_workloads_namespace ON workloads(namespace_id);
+              CREATE INDEX IF NOT EXISTS idx_workloads_type ON workloads(workload_type);
+              CREATE INDEX IF NOT EXISTS idx_workloads_labels ON workloads USING gin(labels);
+              CREATE INDEX IF NOT EXISTS idx_workloads_ip ON workloads(ip_address);
+              CREATE INDEX IF NOT EXISTS idx_workloads_is_active ON workloads(is_active);
+
+              -- Communications
+              CREATE TABLE IF NOT EXISTS communications (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  source_namespace_id INTEGER REFERENCES namespaces(id) ON DELETE SET NULL,
+                  source_workload_id INTEGER REFERENCES workloads(id) ON DELETE SET NULL,
+                  source_ip INET,
+                  source_port INTEGER,
+                  destination_namespace_id INTEGER REFERENCES namespaces(id) ON DELETE SET NULL,
+                  destination_workload_id INTEGER REFERENCES workloads(id) ON DELETE SET NULL,
+                  destination_ip INET NOT NULL,
+                  destination_port INTEGER NOT NULL,
+                  protocol VARCHAR(50) NOT NULL,
+                  first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  last_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  request_count BIGINT DEFAULT 0,
+                  request_rate_per_second VARCHAR(10),
+                  bytes_transferred BIGINT DEFAULT 0,
+                  avg_latency_ms VARCHAR(10),
+                  p50_latency_ms VARCHAR(10),
+                  p95_latency_ms VARCHAR(10),
+                  p99_latency_ms VARCHAR(10),
+                  error_count BIGINT DEFAULT 0,
+                  error_rate VARCHAR(5),
+                  risk_score INTEGER DEFAULT 0,
+                  risk_level VARCHAR(20) DEFAULT 'low',
+                  importance_score INTEGER DEFAULT 0,
+                  is_cross_namespace BOOLEAN DEFAULT FALSE,
+                  is_external BOOLEAN DEFAULT FALSE,
+                  is_active BOOLEAN DEFAULT TRUE,
+                  metadata JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_communications_cluster ON communications(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_communications_source_workload ON communications(source_workload_id);
+              CREATE INDEX IF NOT EXISTS idx_communications_dest_workload ON communications(destination_workload_id);
+              CREATE INDEX IF NOT EXISTS idx_communications_dest_ip ON communications(destination_ip);
+              CREATE INDEX IF NOT EXISTS idx_communications_protocol ON communications(protocol);
+              CREATE INDEX IF NOT EXISTS idx_communications_risk_level ON communications(risk_level);
+              CREATE INDEX IF NOT EXISTS idx_communications_is_active ON communications(is_active);
+
+              -- Analyses
+              CREATE TABLE IF NOT EXISTS analyses (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  description TEXT,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  cluster_ids JSONB DEFAULT '[]',
+                  is_multi_cluster BOOLEAN DEFAULT FALSE,
+                  status VARCHAR(50) DEFAULT 'draft',
+                  scope_type VARCHAR(50) NOT NULL DEFAULT 'cluster',
+                  scope_config JSONB DEFAULT '{}',
+                  gadget_config JSONB DEFAULT '{}',
+                  gadget_modules JSONB DEFAULT '[]',
+                  time_config JSONB DEFAULT '{}',
+                  output_config JSONB DEFAULT '{}',
+                  is_active BOOLEAN DEFAULT TRUE,
+                  metadata JSONB DEFAULT '{}',
+                  namespaces JSONB,
+                  change_detection_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                  change_detection_strategy VARCHAR(50) DEFAULT 'baseline',
+                  change_detection_types JSONB DEFAULT '["all"]'::jsonb,
+                  is_baseline BOOLEAN DEFAULT false,
+                  baseline_marked_at TIMESTAMP WITH TIME ZONE,
+                  baseline_marked_by VARCHAR(255),
+                  started_at TIMESTAMP WITH TIME ZONE,
+                  stopped_at TIMESTAMP WITH TIME ZONE,
+                  created_by INTEGER,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_analyses_cluster ON analyses(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_analyses_status ON analyses(status);
+              CREATE INDEX IF NOT EXISTS idx_analyses_is_active ON analyses(is_active);
+              CREATE INDEX IF NOT EXISTS idx_analyses_is_multi_cluster ON analyses(is_multi_cluster);
+              CREATE INDEX IF NOT EXISTS idx_analyses_cluster_ids ON analyses USING GIN(cluster_ids);
+              CREATE INDEX IF NOT EXISTS idx_analyses_namespaces ON analyses USING GIN(namespaces);
+              CREATE INDEX IF NOT EXISTS idx_analyses_is_baseline ON analyses(is_baseline) WHERE is_baseline = true;
+              CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at);
+
+              -- Analysis Runs
+              CREATE TABLE IF NOT EXISTS analysis_runs (
+                  id SERIAL PRIMARY KEY,
+                  analysis_id INTEGER NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
+                  run_number INTEGER NOT NULL DEFAULT 1,
+                  status VARCHAR(50) DEFAULT 'running',
+                  start_time TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  end_time TIMESTAMP WITH TIME ZONE,
+                  duration_seconds INTEGER,
+                  events_collected BIGINT DEFAULT 0,
+                  workloads_discovered INTEGER DEFAULT 0,
+                  communications_discovered INTEGER DEFAULT 0,
+                  anomalies_detected INTEGER DEFAULT 0,
+                  changes_detected INTEGER DEFAULT 0,
+                  error_message TEXT,
+                  logs JSONB DEFAULT '[]',
+                  metadata JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_analysis_runs_analysis ON analysis_runs(analysis_id);
+              CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status);
+              CREATE INDEX IF NOT EXISTS idx_analysis_runs_start_time ON analysis_runs(start_time);
+
+              -- Cluster Sync Status
+              CREATE TABLE IF NOT EXISTS cluster_sync_status (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  last_sync_at TIMESTAMP WITH TIME ZONE,
+                  sync_status VARCHAR(50) DEFAULT 'pending',
+                  namespaces_count INTEGER DEFAULT 0,
+                  deployments_count INTEGER DEFAULT 0,
+                  pods_count INTEGER DEFAULT 0,
+                  services_count INTEGER DEFAULT 0,
+                  error_message TEXT,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(cluster_id)
+              );
+              CREATE INDEX IF NOT EXISTS idx_cluster_sync_status_cluster ON cluster_sync_status(cluster_id);
+
+              -- Cached Pods
+              CREATE TABLE IF NOT EXISTS cached_pods (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  namespace VARCHAR(255) NOT NULL,
+                  name VARCHAR(255) NOT NULL,
+                  uid VARCHAR(255),
+                  status VARCHAR(50),
+                  node_name VARCHAR(255),
+                  ip VARCHAR(50),
+                  labels JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(cluster_id, namespace, name)
+              );
+              CREATE INDEX IF NOT EXISTS idx_cached_pods_cluster ON cached_pods(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_cached_pods_namespace ON cached_pods(namespace);
+              CREATE INDEX IF NOT EXISTS idx_cached_pods_labels ON cached_pods USING gin(labels);
+
+              -- Cached Services
+              CREATE TABLE IF NOT EXISTS cached_services (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  namespace VARCHAR(255) NOT NULL,
+                  name VARCHAR(255) NOT NULL,
+                  uid VARCHAR(255),
+                  service_type VARCHAR(50),
+                  cluster_ip VARCHAR(50),
+                  ports JSONB DEFAULT '[]',
+                  selector JSONB DEFAULT '{}',
+                  labels JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(cluster_id, namespace, name)
+              );
+              CREATE INDEX IF NOT EXISTS idx_cached_services_cluster ON cached_services(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_cached_services_namespace ON cached_services(namespace);
+
+              -- Users
+              CREATE TABLE IF NOT EXISTS users (
+                  id SERIAL PRIMARY KEY,
+                  username VARCHAR(100) NOT NULL UNIQUE,
+                  email VARCHAR(255) NOT NULL UNIQUE,
+                  password_hash VARCHAR(255),
+                  full_name VARCHAR(255),
+                  first_name VARCHAR(100),
+                  last_name VARCHAR(100),
+                  role VARCHAR(50) DEFAULT 'viewer',
+                  is_active BOOLEAN DEFAULT TRUE,
+                  is_locked BOOLEAN DEFAULT FALSE,
+                  email_verified BOOLEAN DEFAULT FALSE,
+                  avatar_url TEXT,
+                  timezone VARCHAR(50) DEFAULT 'UTC',
+                  language VARCHAR(10) DEFAULT 'en',
+                  last_login TIMESTAMP WITH TIME ZONE,
+                  last_login_at TIMESTAMP WITH TIME ZONE,
+                  last_login_ip VARCHAR(45),
+                  two_factor_enabled BOOLEAN DEFAULT FALSE,
+                  created_by INTEGER,
+                  metadata JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+              CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+              CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+              CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+
+              INSERT INTO users (username, email, password_hash, full_name, first_name, role)
+              VALUES ('admin', 'admin@flowfish.local',
+                  '$2b$12$t.gxj5CSj1Bcrf7VyZEQqO0PNUJnwKvwiY5W1xQ0hFMDrjpVYN3.u',
+                  'System Administrator', 'Admin', 'admin')
+              ON CONFLICT (username) DO NOTHING;
+
+              -- Roles
+              CREATE TABLE IF NOT EXISTS roles (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(100) NOT NULL UNIQUE,
+                  description TEXT,
+                  is_system_role BOOLEAN DEFAULT FALSE,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              -- Permissions
+              CREATE TABLE IF NOT EXISTS permissions (
+                  id SERIAL PRIMARY KEY,
+                  resource VARCHAR(100) NOT NULL,
+                  action VARCHAR(50) NOT NULL,
+                  description TEXT,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(resource, action)
+              );
+
+              CREATE TABLE IF NOT EXISTS role_permissions (
+                  id SERIAL PRIMARY KEY,
+                  role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                  permission_id INTEGER NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(role_id, permission_id)
+              );
+
+              CREATE TABLE IF NOT EXISTS user_roles (
+                  id SERIAL PRIMARY KEY,
+                  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(user_id, role_id)
+              );
+
+              -- OAuth
+              CREATE TABLE IF NOT EXISTS oauth_providers (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(100) NOT NULL UNIQUE,
+                  display_name VARCHAR(100) NOT NULL,
+                  client_id VARCHAR(255) NOT NULL,
+                  client_secret_encrypted TEXT NOT NULL,
+                  authorization_url TEXT NOT NULL,
+                  token_url TEXT NOT NULL,
+                  user_info_url TEXT,
+                  scope VARCHAR(500) DEFAULT 'openid profile email',
+                  is_enabled BOOLEAN DEFAULT TRUE,
+                  metadata JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+
+              CREATE TABLE IF NOT EXISTS user_oauth_connections (
+                  id SERIAL PRIMARY KEY,
+                  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  provider_id INTEGER NOT NULL REFERENCES oauth_providers(id) ON DELETE CASCADE,
+                  provider_user_id VARCHAR(255) NOT NULL,
+                  access_token_encrypted TEXT,
+                  refresh_token_encrypted TEXT,
+                  expires_at TIMESTAMP WITH TIME ZONE,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(user_id, provider_id)
+              );
+
+              CREATE INDEX IF NOT EXISTS idx_roles_name ON roles(name);
+              CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role_id);
+              CREATE INDEX IF NOT EXISTS idx_role_permissions_permission ON role_permissions(permission_id);
+              CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);
+              CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_id);
+              CREATE INDEX IF NOT EXISTS idx_user_oauth_connections_user ON user_oauth_connections(user_id);
+
+              INSERT INTO roles (name, description, is_system_role) VALUES
+                  ('admin', 'Full system access', TRUE),
+                  ('viewer', 'Read-only access', TRUE),
+                  ('operator', 'Read and operate clusters', TRUE),
+                  ('analyst', 'Access to analysis features', TRUE)
+              ON CONFLICT (name) DO NOTHING;
+
+              -- System Settings
+              CREATE TABLE IF NOT EXISTS system_settings (
+                  key VARCHAR(100) PRIMARY KEY,
+                  value JSONB NOT NULL DEFAULT '{}',
+                  description TEXT,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_by INTEGER
+              );
+              INSERT INTO system_settings (key, value, description) VALUES
+              ('analysis_limits',
+               '{"continuous_auto_stop_enabled": true, "default_continuous_duration_minutes": 10, "max_allowed_duration_minutes": 1440, "warning_before_minutes": 2}',
+               'Global analysis time and size limits')
+              ON CONFLICT (key) DO NOTHING;
+
+              -- Notification Hooks
+              CREATE TABLE IF NOT EXISTS notification_hooks (
+                  id SERIAL PRIMARY KEY,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                  name VARCHAR(100) NOT NULL,
+                  hook_type VARCHAR(50) NOT NULL,
+                  config JSONB NOT NULL DEFAULT '{}',
+                  is_enabled BOOLEAN DEFAULT true,
+                  trigger_on_critical BOOLEAN DEFAULT true,
+                  trigger_on_high BOOLEAN DEFAULT true,
+                  trigger_on_medium BOOLEAN DEFAULT false,
+                  trigger_on_low BOOLEAN DEFAULT false,
+                  trigger_change_types TEXT[],
+                  rate_limit_per_hour INTEGER DEFAULT 100,
+                  last_triggered_at TIMESTAMP WITH TIME ZONE,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                  created_by VARCHAR(255),
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                  CONSTRAINT chk_hook_type CHECK (hook_type IN ('slack', 'teams', 'email', 'webhook'))
+              );
+              CREATE INDEX IF NOT EXISTS idx_notification_hooks_enabled ON notification_hooks(cluster_id, is_enabled) WHERE is_enabled = true;
+              CREATE INDEX IF NOT EXISTS idx_notification_hooks_cluster ON notification_hooks(cluster_id);
+
+              -- Scheduled Reports
+              CREATE TABLE IF NOT EXISTS scheduled_reports (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  report_type JSONB DEFAULT '[]',
+                  format VARCHAR(20) NOT NULL DEFAULT 'csv',
+                  schedule VARCHAR(20) NOT NULL DEFAULT 'daily',
+                  time VARCHAR(10),
+                  email VARCHAR(255),
+                  enabled BOOLEAN DEFAULT TRUE,
+                  filters JSONB DEFAULT '{}',
+                  recipients JSONB DEFAULT '[]',
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+                  analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL,
+                  namespace VARCHAR(255),
+                  last_run TIMESTAMP WITH TIME ZONE,
+                  next_run TIMESTAMP WITH TIME ZONE,
+                  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS time VARCHAR(10);
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL;
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL;
+              ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS namespace VARCHAR(255);
+              CREATE INDEX IF NOT EXISTS idx_scheduled_reports_enabled ON scheduled_reports(enabled);
+              CREATE INDEX IF NOT EXISTS idx_scheduled_reports_next_run ON scheduled_reports(next_run);
+
+              -- Generated Reports
+              CREATE TABLE IF NOT EXISTS generated_reports (
+                  id SERIAL PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  report_type VARCHAR(50) NOT NULL,
+                  format VARCHAR(20) NOT NULL DEFAULT 'csv',
+                  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                  file_size BIGINT,
+                  file_path TEXT,
+                  filters JSONB DEFAULT '{}',
+                  error_message TEXT,
+                  scheduled_report_id INTEGER REFERENCES scheduled_reports(id) ON DELETE SET NULL,
+                  generated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                  cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+                  analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL,
+                  namespace VARCHAR(255),
+                  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                  started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                  completed_at TIMESTAMP WITH TIME ZONE,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_generated_reports_status ON generated_reports(status);
+              CREATE INDEX IF NOT EXISTS idx_generated_reports_type ON generated_reports(report_type);
+              CREATE INDEX IF NOT EXISTS idx_generated_reports_created ON generated_reports(created_at);
+
+              -- Activity Logs
+              CREATE TABLE IF NOT EXISTS activity_logs (
+                  id SERIAL PRIMARY KEY,
+                  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                  username VARCHAR(255) NOT NULL,
+                  action VARCHAR(100) NOT NULL,
+                  resource_type VARCHAR(50) NOT NULL,
+                  resource_id VARCHAR(100),
+                  resource_name VARCHAR(255),
+                  details JSONB DEFAULT '{}',
+                  ip_address VARCHAR(45),
+                  user_agent TEXT,
+                  status VARCHAR(20) DEFAULT 'success',
+                  error_message TEXT,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id);
+              CREATE INDEX IF NOT EXISTS idx_activity_logs_action ON activity_logs(action);
+              CREATE INDEX IF NOT EXISTS idx_activity_logs_resource ON activity_logs(resource_type, resource_id);
+              CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC);
+              CREATE INDEX IF NOT EXISTS idx_activity_logs_username ON activity_logs(username);
+
+              -- Two Factor Codes
+              CREATE TABLE IF NOT EXISTS two_factor_codes (
+                  id SERIAL PRIMARY KEY,
+                  user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                  code VARCHAR(10) NOT NULL,
+                  expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                  attempts INTEGER DEFAULT 0,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_two_factor_codes_expires_at ON two_factor_codes(expires_at);
+
+              -- Blast Radius Assessments
+              CREATE TABLE IF NOT EXISTS blast_radius_assessments (
+                  id SERIAL PRIMARY KEY,
+                  assessment_id VARCHAR(50) UNIQUE NOT NULL,
+                  cluster_id INTEGER NOT NULL REFERENCES clusters(id),
+                  analysis_id INTEGER REFERENCES analyses(id),
+                  target VARCHAR(255) NOT NULL,
+                  namespace VARCHAR(255) NOT NULL DEFAULT 'default',
+                  change_type VARCHAR(50) NOT NULL,
+                  risk_score INTEGER NOT NULL CHECK (risk_score >= 0 AND risk_score <= 100),
+                  risk_level VARCHAR(20) NOT NULL,
+                  affected_count INTEGER NOT NULL DEFAULT 0,
+                  triggered_by VARCHAR(255),
+                  pipeline VARCHAR(255),
+                  commit_sha VARCHAR(100),
+                  assessment_data JSONB DEFAULT '{}',
+                  recommendations JSONB DEFAULT '[]',
+                  response_json JSONB,
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              ALTER TABLE blast_radius_assessments ADD COLUMN IF NOT EXISTS response_json JSONB;
+              CREATE INDEX IF NOT EXISTS idx_blast_radius_cluster ON blast_radius_assessments(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_blast_radius_analysis ON blast_radius_assessments(analysis_id);
+              CREATE INDEX IF NOT EXISTS idx_blast_radius_created ON blast_radius_assessments(created_at DESC);
+              CREATE INDEX IF NOT EXISTS idx_blast_radius_risk ON blast_radius_assessments(risk_level);
+              CREATE INDEX IF NOT EXISTS idx_blast_radius_target ON blast_radius_assessments(target, namespace);
+
+              -- Scheduled Simulations (used by simulation worker)
+              CREATE TABLE IF NOT EXISTS scheduled_simulations (
+                  id VARCHAR(50) PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  description TEXT,
+                  cluster_id VARCHAR(50) NOT NULL,
+                  analysis_id VARCHAR(50),
+                  target_name VARCHAR(255) NOT NULL,
+                  target_namespace VARCHAR(255) NOT NULL,
+                  target_kind VARCHAR(50) DEFAULT 'Deployment',
+                  change_type VARCHAR(50) NOT NULL,
+                  schedule_type VARCHAR(20) DEFAULT 'once',
+                  scheduled_time TIMESTAMP NOT NULL,
+                  notify_before_minutes INT DEFAULT 15,
+                  auto_rollback BOOLEAN DEFAULT FALSE,
+                  rollback_on_failure BOOLEAN DEFAULT TRUE,
+                  status VARCHAR(20) DEFAULT 'scheduled',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  created_by VARCHAR(100),
+                  last_run_at TIMESTAMP,
+                  last_run_result TEXT
+              );
+
+              -- API Keys
+              CREATE TABLE IF NOT EXISTS api_keys (
+                  id SERIAL PRIMARY KEY,
+                  key_id VARCHAR(50) UNIQUE NOT NULL,
+                  key_hash VARCHAR(255) NOT NULL,
+                  key_prefix VARCHAR(12) NOT NULL,
+                  name VARCHAR(255) NOT NULL,
+                  description TEXT,
+                  user_id INTEGER NOT NULL REFERENCES users(id),
+                  scopes TEXT[] DEFAULT ARRAY['blast-radius'],
+                  cluster_ids INTEGER[],
+                  is_active BOOLEAN DEFAULT TRUE,
+                  expires_at TIMESTAMP,
+                  last_used_at TIMESTAMP,
+                  last_used_ip VARCHAR(45),
+                  usage_count INTEGER DEFAULT 0,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  revoked_at TIMESTAMP,
+                  revoked_by INTEGER REFERENCES users(id),
+                  revoke_reason TEXT,
+                  metadata JSONB DEFAULT '{}'::jsonb
+              );
+              CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_is_active ON api_keys(is_active);
+              CREATE INDEX IF NOT EXISTS idx_api_keys_expires ON api_keys(expires_at) WHERE expires_at IS NOT NULL;
+
+              -- Simulation History
+              CREATE TABLE IF NOT EXISTS simulation_history (
+                  id VARCHAR(50) PRIMARY KEY,
+                  simulation_id VARCHAR(50),
+                  cluster_id VARCHAR(50) NOT NULL,
+                  analysis_id VARCHAR(50),
+                  target_name VARCHAR(255) NOT NULL,
+                  target_namespace VARCHAR(255) NOT NULL,
+                  target_kind VARCHAR(50) DEFAULT 'Deployment',
+                  change_type VARCHAR(50) NOT NULL,
+                  total_affected INTEGER DEFAULT 0,
+                  high_impact INTEGER DEFAULT 0,
+                  medium_impact INTEGER DEFAULT 0,
+                  low_impact INTEGER DEFAULT 0,
+                  blast_radius FLOAT DEFAULT 0,
+                  confidence_score FLOAT DEFAULT 0,
+                  status VARCHAR(20) DEFAULT 'completed',
+                  created_by VARCHAR(100),
+                  duration_ms INTEGER DEFAULT 0,
+                  result_summary JSONB DEFAULT '{}',
+                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+              );
+              CREATE INDEX IF NOT EXISTS idx_simulation_history_cluster ON simulation_history(cluster_id);
+              CREATE INDEX IF NOT EXISTS idx_simulation_history_created ON simulation_history(created_at DESC);
+
+              -- API Tokens
+              CREATE TABLE IF NOT EXISTS api_tokens (
+                  id VARCHAR(50) PRIMARY KEY,
+                  name VARCHAR(100) NOT NULL,
+                  token_hash VARCHAR(255) NOT NULL,
+                  scopes TEXT[] DEFAULT '{}',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  expires_at TIMESTAMP,
+                  last_used_at TIMESTAMP,
+                  is_active BOOLEAN DEFAULT TRUE,
+                  created_by VARCHAR(100),
+                  user_id INT
+              );
+
+              -- System Backups
+              CREATE TABLE IF NOT EXISTS system_backups (
+                  id VARCHAR(50) PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  type VARCHAR(20) NOT NULL,
+                  size VARCHAR(50),
+                  status VARCHAR(20) DEFAULT 'in_progress',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  created_by VARCHAR(100),
+                  file_path VARCHAR(500)
+              );
+
+              -- Default permissions seed
+              INSERT INTO permissions (resource, action, description) VALUES
+                  ('dashboard', 'view', 'View dashboard'),
+                  ('dashboard', 'stats', 'View statistics'),
+                  ('analysis', 'view', 'View analyses'),
+                  ('analysis', 'create', 'Create analysis'),
+                  ('analysis', 'start', 'Start/stop analysis'),
+                  ('analysis', 'delete', 'Delete analysis'),
+                  ('clusters', 'view', 'View clusters'),
+                  ('clusters', 'create', 'Add clusters'),
+                  ('clusters', 'edit', 'Edit clusters'),
+                  ('clusters', 'delete', 'Delete clusters'),
+                  ('events', 'view', 'View events'),
+                  ('events', 'export', 'Export events'),
+                  ('reports', 'view', 'View reports'),
+                  ('reports', 'generate', 'Generate reports'),
+                  ('reports', 'schedule', 'Schedule reports'),
+                  ('reports', 'history', 'View report history'),
+                  ('security', 'view', 'View security events'),
+                  ('security', 'manage', 'Manage security settings'),
+                  ('users', 'view', 'View users'),
+                  ('users', 'create', 'Create users'),
+                  ('users', 'edit', 'Edit users'),
+                  ('users', 'delete', 'Delete users'),
+                  ('roles', 'view', 'View roles'),
+                  ('roles', 'create', 'Create roles'),
+                  ('roles', 'edit', 'Edit roles'),
+                  ('roles', 'delete', 'Delete roles'),
+                  ('settings', 'view', 'View settings'),
+                  ('settings', 'edit', 'Edit settings'),
+                  ('api_keys', 'view', 'View API keys'),
+                  ('api_keys', 'create', 'Create new API keys'),
+                  ('api_keys', 'revoke', 'Revoke API keys')
+              ON CONFLICT (resource, action) DO NOTHING;
+
+              INSERT INTO role_permissions (role_id, permission_id)
+              SELECT r.id, p.id FROM roles r, permissions p WHERE r.name = 'admin'
+              ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+              INSERT INTO role_permissions (role_id, permission_id)
+              SELECT r.id, p.id FROM roles r, permissions p WHERE r.name = 'viewer' AND p.action = 'view'
+              ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+              INSERT INTO role_permissions (role_id, permission_id)
+              SELECT r.id, p.id FROM roles r, permissions p
+              WHERE r.name = 'analyst' AND (p.action = 'view' OR
+                  (p.resource IN ('analysis','events','reports') AND p.action IN ('create','export','generate')))
+              ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+              INSERT INTO role_permissions (role_id, permission_id)
+              SELECT r.id, p.id FROM roles r, permissions p
+              WHERE r.name = 'operator' AND (p.action = 'view' OR
+                  (p.resource IN ('clusters','analysis') AND p.action IN ('create','edit','start')))
+              ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+              INSERT INTO user_roles (user_id, role_id)
+              SELECT u.id, r.id FROM users u, roles r WHERE u.username = 'admin' AND r.name = 'admin'
+              ON CONFLICT (user_id, role_id) DO NOTHING;
+
+              EOSQL
+
+              echo "PostgreSQL migrations completed!"
+
+        # --- ClickHouse Migrations (separate container with clickhouse-client) ---
+        - name: clickhouse-migrations
+          image: clickhouse/clickhouse-server:23.8
+          command:
+            - sh
+            - -c
+            - |
+              echo "========================================="
+              echo "ClickHouse Migrations Starting"
+              echo "========================================="
+
+              ch() {
+                clickhouse-client --host clickhouse --user flowfish --password flowfish123 "$@"
+              }
+
+              ch --query "CREATE DATABASE IF NOT EXISTS flowfish"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS network_flows (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  source_namespace String, source_pod String, source_container String, source_node String,
+                  source_ip String, source_port UInt16,
+                  dest_namespace String, dest_pod String, dest_container String,
+                  dest_ip String, dest_port UInt16, dest_hostname String,
+                  protocol String DEFAULT 'TCP', direction String DEFAULT 'outbound', connection_state String,
+                  bytes_sent UInt64, bytes_received UInt64, packets_sent UInt32, packets_received UInt32,
+                  duration_ms UInt32, latency_ms Float32, error_count UInt16, retransmit_count UInt16,
+                  error_type String DEFAULT '', source_labels Map(String, String),
+                  dest_labels Map(String, String), event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, source_pod, dest_pod, dest_port)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS dns_queries (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  source_namespace String, source_pod String, source_container String, source_ip String,
+                  query_name String, query_type String DEFAULT 'A', query_class String DEFAULT 'IN',
+                  response_code String DEFAULT 'NOERROR', response_ips Array(String), response_cnames Array(String),
+                  response_ttl UInt32, latency_ms Float32, dns_server_ip String, dns_server_port UInt16 DEFAULT 53,
+                  labels Map(String, String), event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, source_pod, query_name)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS process_events (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, pod String, container String, node String,
+                  pid UInt32, ppid UInt32, uid UInt32, gid UInt32, comm String, exe String,
+                  args Array(String), cwd String, event_type String DEFAULT 'exec',
+                  exit_code Int32, signal Int32, labels Map(String, String), event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, namespace, pod, pid)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS workload_metadata (
+                  timestamp DateTime64(3) DEFAULT now64(3), cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, workload_name String, workload_type String, pod_name String, pod_uid String,
+                  container_name String, container_id String, node_name String, pod_ip String,
+                  labels Map(String, String), annotations Map(String, String),
+                  owner_kind String, owner_name String, first_seen DateTime64(3), last_seen DateTime64(3),
+                  event_count UInt64 DEFAULT 1
+              ) ENGINE = ReplacingMergeTree(last_seen) PARTITION BY toYYYYMM(timestamp)
+              ORDER BY (analysis_id, cluster_id, namespace, pod_name)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS communication_edges (
+                  timestamp DateTime64(3) DEFAULT now64(3), cluster_id String, analysis_id String,
+                  source_namespace String, source_workload String, source_pod String,
+                  dest_namespace String, dest_workload String, dest_pod String, dest_service String,
+                  dest_port UInt16, protocol String, total_bytes UInt64, total_packets UInt64,
+                  request_count UInt64, avg_latency_ms Float32, p99_latency_ms Float32, error_count UInt64,
+                  first_seen DateTime64(3), last_seen DateTime64(3)
+              ) ENGINE = SummingMergeTree() PARTITION BY toYYYYMM(timestamp)
+              ORDER BY (analysis_id, cluster_id, source_namespace, source_workload, dest_namespace, dest_workload, dest_port)"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS tcp_lifecycle (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  source_ip String, source_port UInt16, dest_ip String, dest_port UInt16,
+                  old_state String DEFAULT 'CLOSED', new_state String DEFAULT 'ESTABLISHED',
+                  source_namespace String, source_pod String, source_container String, event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, source_ip, dest_ip, dest_port)
+              TTL toDateTime(timestamp) + INTERVAL 30 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS file_operations (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, pod String, container String, operation String DEFAULT 'open',
+                  file_path String, file_flags String, file_mode UInt32, pid UInt32, comm String,
+                  uid UInt32, gid UInt32, bytes UInt64, duration_us UInt32, error_code Int32, event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, namespace, pod, file_path)
+              TTL toDateTime(timestamp) + INTERVAL 30 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS capability_checks (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, pod String, container String, capability String, syscall String,
+                  pid UInt32, comm String, uid UInt32, gid UInt32, verdict String DEFAULT 'allowed', event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, namespace, pod, capability)
+              TTL toDateTime(timestamp) + INTERVAL 30 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS oom_kills (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, pod String, container String, node String,
+                  pid UInt32, comm String, memory_limit UInt64, memory_usage UInt64,
+                  memory_pages_total UInt64, memory_pages_free UInt64, cgroup_path String, event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, namespace, pod)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS bind_events (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, pod String, container String, node String,
+                  bind_addr String, bind_port UInt16, protocol String DEFAULT 'TCP', interface String,
+                  error_code Int32 DEFAULT 0, pid UInt32, comm String, uid UInt32, event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, namespace, pod, bind_port)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS sni_events (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, pod String, container String, sni_name String,
+                  src_ip String, src_port UInt16, dst_ip String, dst_port UInt16,
+                  tls_version String, cipher_suite String, pid UInt32, comm String, event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, namespace, sni_name, dst_ip)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS mount_events (
+                  timestamp DateTime64(3) DEFAULT now64(3), event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  namespace String, pod String, container String, node String,
+                  operation String DEFAULT 'mount', source String, target String, fs_type String,
+                  flags String, options String, error_code Int32 DEFAULT 0,
+                  pid UInt32, comm String, event_data_json String
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (timestamp, cluster_id, namespace, pod, target)
+              TTL toDateTime(timestamp) + INTERVAL 90 DAY"
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS change_events (
+                  timestamp DateTime64(3) DEFAULT now64(3), detected_at DateTime64(3),
+                  event_id UUID DEFAULT generateUUIDv4(), cluster_id UInt32, cluster_name String DEFAULT '',
+                  analysis_id String, run_id UInt32 DEFAULT 0, run_number UInt16 DEFAULT 1,
+                  change_type LowCardinality(String), risk_level LowCardinality(String) DEFAULT 'medium',
+                  target_name String DEFAULT '', target_namespace String DEFAULT '',
+                  target_type LowCardinality(String) DEFAULT 'workload', entity_id UInt64 DEFAULT 0,
+                  namespace_id Nullable(UInt32), before_state String DEFAULT '{}', after_state String DEFAULT '{}',
+                  affected_services UInt16 DEFAULT 0, blast_radius UInt16 DEFAULT 0,
+                  changed_by String DEFAULT 'auto-discovery', details String DEFAULT '', metadata String DEFAULT '{}'
+              ) ENGINE = ReplacingMergeTree(timestamp) PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (analysis_id, run_id, timestamp, event_id) SETTINGS index_granularity = 8192"
+
+              ch --database flowfish --query "
+              CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_hourly_mv
+              ENGINE = SummingMergeTree() PARTITION BY toYYYYMMDD(hour)
+              ORDER BY (analysis_id, run_id, hour, change_type, risk_level)
+              AS SELECT analysis_id, run_id, cluster_id, toStartOfHour(timestamp) AS hour,
+                  change_type, risk_level, count() AS change_count,
+                  uniq(target_name) AS unique_targets, sum(affected_services) AS total_affected
+              FROM change_events GROUP BY analysis_id, run_id, cluster_id, hour, change_type, risk_level"
+
+              ch --database flowfish --query "
+              CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_run_stats_mv
+              ENGINE = SummingMergeTree() ORDER BY (analysis_id, run_id)
+              AS SELECT analysis_id, run_id, anyLast(run_number) AS run_number, cluster_id,
+                  count() AS total_changes,
+                  countIf(risk_level='critical') AS critical_count, countIf(risk_level='high') AS high_count,
+                  countIf(risk_level='medium') AS medium_count, countIf(risk_level='low') AS low_count,
+                  countIf(change_type='workload_added') AS workloads_added, countIf(change_type='workload_removed') AS workloads_removed,
+                  countIf(change_type='replica_changed') AS replicas_changed, countIf(change_type='config_changed') AS configs_changed,
+                  countIf(change_type='image_changed') AS images_changed, countIf(change_type='label_changed') AS labels_changed,
+                  countIf(change_type='resource_changed') AS resources_changed, countIf(change_type='env_changed') AS envs_changed,
+                  countIf(change_type='spec_changed') AS specs_changed,
+                  countIf(change_type='service_added') AS services_added, countIf(change_type='service_removed') AS services_removed,
+                  countIf(change_type='service_port_changed') AS service_ports_changed,
+                  countIf(change_type='service_selector_changed') AS service_selectors_changed,
+                  countIf(change_type='service_type_changed') AS service_types_changed,
+                  countIf(change_type IN ('network_policy_added','network_policy_removed','network_policy_changed')) AS network_policy_changes,
+                  countIf(change_type IN ('ingress_added','ingress_removed','ingress_changed')) AS ingress_changes,
+                  countIf(change_type IN ('route_added','route_removed','route_changed')) AS route_changes,
+                  countIf(change_type='connection_added') AS connections_added, countIf(change_type='connection_removed') AS connections_removed,
+                  countIf(change_type='port_changed') AS ports_changed,
+                  countIf(change_type IN ('traffic_anomaly','dns_anomaly','process_anomaly','error_anomaly')) AS anomalies_total,
+                  countIf(change_type='namespace_changed') AS namespaces_changed,
+                  min(timestamp) AS first_change_at, max(timestamp) AS last_change_at
+              FROM change_events GROUP BY analysis_id, run_id, cluster_id"
+
+              ch --database flowfish --query "
+              CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_daily_mv
+              ENGINE = SummingMergeTree() PARTITION BY toYYYYMM(day)
+              ORDER BY (analysis_id, day, cluster_id)
+              AS SELECT analysis_id, cluster_id, toDate(timestamp) AS day,
+                  count() AS total_changes, countIf(risk_level='critical') AS critical_count,
+                  countIf(risk_level='high') AS high_count, uniq(target_name) AS unique_targets,
+                  uniq(target_namespace) AS unique_namespaces, uniq(run_id) AS runs_count
+              FROM change_events GROUP BY analysis_id, cluster_id, day"
+
+              for tbl in network_flows dns_queries process_events tcp_lifecycle file_operations capability_checks oom_kills bind_events sni_events mount_events workload_metadata; do
+                ch --database flowfish --query "ALTER TABLE $tbl ADD INDEX IF NOT EXISTS idx_analysis_id analysis_id TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+                ch --database flowfish --query "ALTER TABLE $tbl ADD INDEX IF NOT EXISTS idx_cluster_id cluster_id TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+              done
+
+              ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_run_id run_id TYPE minmax GRANULARITY 4" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_change_type change_type TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_risk_level risk_level TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_name target_name TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_namespace target_namespace TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_cluster_id cluster_id TYPE minmax GRANULARITY 4" 2>/dev/null || true
+
+              echo "========================================="
+              echo "ClickHouse Migrations Complete!"
+              echo "========================================="
+
+        # --- Neo4j Schema (separate container with cypher-shell) ---
+        - name: neo4j-init
+          image: neo4j:5.15-community
+          env:
+            - name: NEO4J_URI
+              value: "bolt://neo4j:7687"
+            - name: HOME
+              value: "/tmp"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "========================================="
+              echo "Neo4j Schema Initialization"
+              echo "========================================="
+
+              MAX_RETRIES=15
+              RETRY=0
+              until cypher-shell -a "$NEO4J_URI" -u neo4j -p flowfish123 --format plain "RETURN 1;" 2>/dev/null; do
+                RETRY=$((RETRY+1))
+                if [ $RETRY -ge $MAX_RETRIES ]; then
+                  echo "ERROR: Cannot connect to Neo4j after $MAX_RETRIES attempts"
+                  exit 1
+                fi
+                echo "Neo4j not ready (attempt $RETRY/$MAX_RETRIES)..."
+                sleep 5
+              done
+
+              cypher-shell -a "$NEO4J_URI" -u neo4j -p flowfish123 --format plain << 'CYPHER'
+              CREATE CONSTRAINT workload_id IF NOT EXISTS FOR (w:Workload) REQUIRE w.id IS UNIQUE;
+              CREATE CONSTRAINT namespace_name IF NOT EXISTS FOR (n:Namespace) REQUIRE n.name IS UNIQUE;
+              CREATE CONSTRAINT cluster_name IF NOT EXISTS FOR (c:Cluster) REQUIRE c.name IS UNIQUE;
+              CREATE INDEX workload_name IF NOT EXISTS FOR (w:Workload) ON (w.name);
+              CREATE INDEX workload_namespace IF NOT EXISTS FOR (w:Workload) ON (w.namespace);
+              CREATE INDEX workload_kind IF NOT EXISTS FOR (w:Workload) ON (w.kind);
+              CREATE INDEX workload_cluster_id IF NOT EXISTS FOR (w:Workload) ON (w.cluster_id);
+              CREATE INDEX workload_analysis_id IF NOT EXISTS FOR (w:Workload) ON (w.analysis_id);
+              CREATE INDEX workload_is_active IF NOT EXISTS FOR (w:Workload) ON (w.is_active);
+              CREATE INDEX namespace_cluster IF NOT EXISTS FOR (n:Namespace) ON (n.cluster);
+              CYPHER
+
+              echo "========================================="
+              echo "Neo4j Schema Complete!"
+              echo "========================================="
+
+        # --- RabbitMQ Init (exchanges, queues, bindings) ---
+        - name: rabbitmq-init
+          image: curlimages/curl:8.5.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "========================================="
+              echo "RabbitMQ Init Starting"
+              echo "========================================="
+
+              RABBITMQ_HOST="rabbitmq"
+              RABBITMQ_PORT="15672"
+              RABBITMQ_USER="flowfish"
+              RABBITMQ_PASS="flowfish123"
+
+              until curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/overview > /dev/null; do
+                echo "RabbitMQ API not ready, waiting..."
+                sleep 5
+              done
+
+              echo "Creating exchanges..."
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.network_flows \
+                -H "content-type:application/json" \
+                -d '{"type":"topic","durable":true}'
+
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.dns_queries \
+                -H "content-type:application/json" \
+                -d '{"type":"topic","durable":true}'
+
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/flowfish.tcp_connections \
+                -H "content-type:application/json" \
+                -d '{"type":"topic","durable":true}'
+
+              echo "Creating queues..."
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/network_flows.clickhouse \
+                -H "content-type:application/json" \
+                -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
+
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/dns_queries.clickhouse \
+                -H "content-type:application/json" \
+                -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
+
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/tcp_connections.clickhouse \
+                -H "content-type:application/json" \
+                -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000}}'
+
+              echo "Creating bindings..."
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.network_flows/q/network_flows.clickhouse \
+                -H "content-type:application/json" \
+                -d '{"routing_key":"#"}'
+
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.dns_queries/q/dns_queries.clickhouse \
+                -H "content-type:application/json" \
+                -d '{"routing_key":"#"}'
+
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.tcp_connections/q/tcp_connections.clickhouse \
+                -H "content-type:application/json" \
+                -d '{"routing_key":"#"}'
+
+              echo "========================================="
+              echo "RabbitMQ Init Complete!"
+              echo "========================================="

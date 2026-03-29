@@ -1,0 +1,69 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graph-writer
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: graph-writer
+  template:
+    metadata:
+      labels:
+        app: graph-writer
+    spec:
+      containers:
+        - name: graph-writer
+          image: taylanbakircioglu/flowfish:graph-writer-latest
+          imagePullPolicy: Always
+          env:
+            - name: SERVICE_NAME
+              value: graph-writer
+            - name: LOG_LEVEL
+              value: INFO
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: flowfish
+            - name: RABBITMQ_PASSWORD
+              value: flowfish123
+            - name: RABBITMQ_VHOST
+              value: /
+            - name: NEO4J_BOLT_URI
+              value: bolt://neo4j:7687
+            - name: NEO4J_HTTP_URI
+              value: http://neo4j:7474
+            - name: NEO4J_USER
+              value: neo4j
+            - name: NEO4J_PASSWORD
+              value: flowfish123
+            - name: NEO4J_DATABASE
+              value: neo4j
+            - name: REDIS_HOST
+              value: redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              value: redis123
+            - name: REDIS_URL
+              value: "redis://:redis123@redis:6379/0"
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('ready')"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "print('alive')"
+            initialDelaySeconds: 15
+            periodSeconds: 10

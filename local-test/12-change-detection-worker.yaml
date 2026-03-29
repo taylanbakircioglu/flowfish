@@ -1,0 +1,107 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: change-detection-worker
+  namespace: flowfish-local
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8001
+      targetPort: 8001
+      name: http
+  selector:
+    app: change-detection-worker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: change-detection-worker
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: change-detection-worker
+  template:
+    metadata:
+      labels:
+        app: change-detection-worker
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z postgresql 5432; do
+                echo "Waiting for postgresql..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready"
+      containers:
+        - name: change-detection-worker
+          image: taylanbakircioglu/flowfish:change-worker-latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+          env:
+            - name: CHANGE_DETECTION_ENABLED
+              value: "true"
+            - name: CHANGE_DETECTION_INTERVAL
+              value: "60"
+            - name: CHANGE_DETECTION_LOOKBACK_MINUTES
+              value: "5"
+            - name: LEADER_ELECTION_ENABLED
+              value: "false"
+            - name: DATABASE_URL
+              value: postgresql://flowfish:flowfish123@postgresql:5432/flowfish
+            - name: NEO4J_URI
+              value: bolt://neo4j:7687
+            - name: NEO4J_BOLT_URI
+              value: bolt://neo4j:7687
+            - name: NEO4J_USER
+              value: neo4j
+            - name: NEO4J_PASSWORD
+              value: flowfish123
+            - name: CLICKHOUSE_URL
+              value: http://clickhouse:8123
+            - name: CLICKHOUSE_USER
+              value: flowfish
+            - name: CLICKHOUSE_PASSWORD
+              value: flowfish123
+            - name: REDIS_URL
+              value: redis://:redis123@redis:6379/1
+            - name: SECRET_KEY
+              value: local-dev-secret-key-12345
+            - name: BACKEND_INTERNAL_URL
+              value: http://backend:8000
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: flowfish
+            - name: RABBITMQ_PASSWORD
+              value: flowfish123
+            - name: FLOWFISH_ENCRYPTION_KEY
+              value: Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA=
+            - name: CLUSTER_MANAGER_GRPC_URL
+              value: cluster-manager:5001
+            - name: LOG_LEVEL
+              value: INFO
+            - name: ENVIRONMENT
+              value: development
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8001
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 20
+            periodSeconds: 10

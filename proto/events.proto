@@ -1,0 +1,351 @@
+syntax = "proto3";
+
+package flowfish.events;
+
+import "google/protobuf/timestamp.proto";
+
+// =============================================================================
+// EVENT MESSAGES - All Inspector Gadget Event Types
+// =============================================================================
+
+// 1. Network Flow Event
+message NetworkFlowEvent {
+    google.protobuf.Timestamp timestamp = 1;
+    string event_id = 2;
+    
+    // Context
+    string cluster_id = 3;
+    string cluster_name = 4;
+    string analysis_id = 5;
+    
+    // Source
+    string source_namespace = 6;
+    string source_pod = 7;
+    string source_container = 8;
+    string source_node = 9;
+    string source_ip = 10;
+    uint32 source_port = 11;
+    
+    // Destination
+    string dest_namespace = 12;
+    string dest_pod = 13;
+    string dest_container = 14;
+    string dest_ip = 15;
+    uint32 dest_port = 16;
+    string dest_hostname = 17;
+    
+    // Connection
+    string protocol = 18; // TCP, UDP, ICMP
+    string direction = 19; // inbound, outbound, internal
+    string connection_state = 20;
+    
+    // Metrics
+    uint64 bytes_sent = 21;
+    uint64 bytes_received = 22;
+    uint32 packets_sent = 23;
+    uint32 packets_received = 24;
+    uint32 duration_ms = 25;
+    float latency_ms = 26;
+    
+    // Errors
+    uint32 error_count = 27;
+    uint32 retransmit_count = 28;
+    
+    // Labels
+    map<string, string> source_labels = 29;
+    map<string, string> dest_labels = 30;
+    
+    // Raw data
+    string event_data_json = 31;
+}
+
+// 2. DNS Query Event
+message DNSQueryEvent {
+    google.protobuf.Timestamp timestamp = 1;
+    string event_id = 2;
+    
+    // Context
+    string cluster_id = 3;
+    string cluster_name = 4;
+    string analysis_id = 5;
+    
+    // Source
+    string source_namespace = 6;
+    string source_pod = 7;
+    string source_container = 8;
+    string source_ip = 9;
+    
+    // DNS Query
+    string query_name = 10;
+    string query_type = 11; // A, AAAA, CNAME, MX, TXT
+    string query_class = 12;
+    
+    // DNS Response
+    string response_code = 13; // NOERROR, NXDOMAIN, etc.
+    repeated string response_ips = 14;
+    repeated string response_cnames = 15;
+    uint32 response_ttl = 16;
+    
+    // Performance
+    float latency_ms = 17;
+    
+    // DNS Server
+    string dns_server_ip = 18;
+    uint32 dns_server_port = 19;
+    
+    // Metadata
+    map<string, string> labels = 20;
+    string event_data_json = 21;
+}
+
+// 3. TCP Lifecycle Event
+message TCPLifecycleEvent {
+    google.protobuf.Timestamp timestamp = 1;
+    string event_id = 2;
+    
+    // Context
+    string cluster_id = 3;
+    string cluster_name = 4;
+    string analysis_id = 5;
+    
+    // Connection
+    string source_ip = 6;
+    uint32 source_port = 7;
+    string dest_ip = 8;
+    uint32 dest_port = 9;
+    
+    // TCP State
+    string old_state = 10; // CLOSED, LISTEN, SYN_SENT, ESTABLISHED, etc.
+    string new_state = 11;
+    
+    // Pod Context
+    string source_namespace = 12;
+    string source_pod = 13;
+    string source_container = 14;
+    
+    // Metadata
+    string event_data_json = 15;
+}
+
+// 4. Process Event
+message ProcessEvent {
+    google.protobuf.Timestamp timestamp = 1;
+    string event_id = 2;
+    
+    // Context
+    string cluster_id = 3;
+    string cluster_name = 4;
+    string analysis_id = 5;
+    
+    // Pod Context
+    string namespace = 6;
+    string pod = 7;
+    string container = 8;
+    string node = 9;
+    
+    // Process
+    uint32 pid = 10;
+    uint32 ppid = 11;
+    uint32 uid = 12;
+    uint32 gid = 13;
+    string comm = 14; // Command name
+    string exe = 15; // Executable path
+    repeated string args = 16;
+    string cwd = 17;
+    
+    // Event Type
+    string event_type = 18; // exec, exit, signal
+    int32 exit_code = 19;
+    int32 signal = 20;
+    
+    // Metadata
+    map<string, string> labels = 21;
+    string event_data_json = 22;
+}
+
+// 5. File Operation Event
+message FileOperationEvent {
+    google.protobuf.Timestamp timestamp = 1;
+    string event_id = 2;
+    
+    // Context
+    string cluster_id = 3;
+    string cluster_name = 4;
+    string analysis_id = 5;
+    
+    // Pod Context
+    string namespace = 6;
+    string pod = 7;
+    string container = 8;
+    
+    // File Operation
+    string operation = 9; // open, read, write, close, unlink
+    string file_path = 10;
+    string file_flags = 11;
+    uint32 file_mode = 12;
+    
+    // Process
+    uint32 pid = 13;
+    string comm = 14;
+    uint32 uid = 15;
+    uint32 gid = 16;
+    
+    // Metrics
+    uint64 bytes = 17;
+    uint32 duration_us = 18;
+    
+    // Result
+    int32 error_code = 19;
+    
+    // Metadata
+    string event_data_json = 20;
+}
+
+// 6. Capability Check Event
+message CapabilityCheckEvent {
+    google.protobuf.Timestamp timestamp = 1;
+    string event_id = 2;
+    
+    // Context
+    string cluster_id = 3;
+    string cluster_name = 4;
+    string analysis_id = 5;
+    
+    // Pod Context
+    string namespace = 6;
+    string pod = 7;
+    string container = 8;
+    
+    // Capability
+    string capability = 9; // CAP_NET_ADMIN, CAP_SYS_ADMIN, etc.
+    string syscall = 10;
+    
+    // Process
+    uint32 pid = 11;
+    string comm = 12;
+    uint32 uid = 13;
+    uint32 gid = 14;
+    
+    // Result
+    string verdict = 15; // allowed, denied
+    
+    // Metadata
+    string event_data_json = 16;
+}
+
+// 7. OOM Kill Event
+message OOMKillEvent {
+    google.protobuf.Timestamp timestamp = 1;
+    string event_id = 2;
+    
+    // Context
+    string cluster_id = 3;
+    string cluster_name = 4;
+    string analysis_id = 5;
+    
+    // Pod Context
+    string namespace = 6;
+    string pod = 7;
+    string container = 8;
+    string node = 9;
+    
+    // Killed Process
+    uint32 pid = 10;
+    string comm = 11;
+    
+    // Memory
+    uint64 memory_limit = 12;
+    uint64 memory_usage = 13;
+    uint64 memory_pages_total = 14;
+    uint64 memory_pages_free = 15;
+    
+    // Cgroup
+    string cgroup_path = 16;
+    
+    // Metadata
+    string event_data_json = 17;
+}
+
+// =============================================================================
+// EVENT TYPE METADATA
+// =============================================================================
+
+message EventTypeDefinition {
+    string id = 1; // network_flow, dns_query, etc.
+    string name = 2;
+    string description = 3;
+    string category = 4; // network, dns, process, file, security, resource
+    string gadget_name = 5; // Inspector Gadget gadget name
+    string table_name = 6; // ClickHouse table name
+    bool default_enabled = 7;
+    repeated EventField fields = 8;
+}
+
+message EventField {
+    string name = 1;
+    string label = 2;
+    string type = 3; // string, number, float, enum, array, map
+    bool filterable = 4;
+    bool aggregatable = 5;
+    repeated string enum_values = 6; // For enum types
+}
+
+message EventTypeList {
+    repeated EventTypeDefinition event_types = 1;
+}
+
+// =============================================================================
+// ANALYSIS EVENT CONFIGURATION
+// =============================================================================
+
+message AnalysisEventConfig {
+    string analysis_id = 1;
+    repeated EventTypeSelection event_types = 2;
+}
+
+message EventTypeSelection {
+    string event_type_id = 1; // network_flow, dns_query, etc.
+    bool enabled = 2;
+    EventFilters filters = 3; // Optional filters
+    uint32 sampling_rate = 4; // 0-100, 100 = all events
+}
+
+message EventFilters {
+    repeated EventFilter filters = 1;
+}
+
+message EventFilter {
+    string field_name = 1; // e.g., "dest_port", "source_namespace"
+    string operator = 2; // eq, ne, gt, lt, contains, in
+    string value = 3;
+    repeated string values = 4; // For "in" operator
+}
+
+// =============================================================================
+// INGESTION SERVICE - EVENT STREAM
+// =============================================================================
+
+service EventIngestion {
+    // Stream events from Inspector Gadget to Flowfish
+    rpc StreamEvents(stream InspectorGadgetEvent) returns (StreamEventsResponse);
+    
+    // Get supported event types
+    rpc GetEventTypes(GetEventTypesRequest) returns (EventTypeList);
+}
+
+message InspectorGadgetEvent {
+    string event_type = 1; // network_flow, dns_query, etc.
+    google.protobuf.Timestamp timestamp = 2;
+    bytes event_data = 3; // Serialized event (one of the above messages)
+}
+
+message StreamEventsResponse {
+    uint64 events_received = 1;
+    uint64 events_processed = 2;
+    repeated string errors = 3;
+}
+
+message GetEventTypesRequest {
+    // Empty - returns all supported event types
+}
+

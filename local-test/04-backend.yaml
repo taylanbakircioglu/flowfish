@@ -1,0 +1,118 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: flowfish-local
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: flowfish-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for dependencies..."
+              until nc -z postgresql 5432; do echo "Waiting for PostgreSQL..."; sleep 2; done
+              until nc -z redis 6379; do echo "Waiting for Redis..."; sleep 2; done
+              until nc -z cluster-manager 5001; do echo "Waiting for Cluster Manager..."; sleep 2; done
+              echo "All dependencies are ready!"
+      containers:
+        - name: backend
+          image: taylanbakircioglu/flowfish:backend-latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://flowfish:flowfish123@postgresql:5432/flowfish"
+            - name: REDIS_URL
+              value: "redis://:redis123@redis:6379/0"
+            - name: CLICKHOUSE_URL
+              value: "http://clickhouse:8123"
+            - name: CLICKHOUSE_HOST
+              value: "clickhouse"
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_USER
+              value: "flowfish"
+            - name: CLICKHOUSE_PASSWORD
+              value: "flowfish123"
+            - name: CLICKHOUSE_DATABASE
+              value: "flowfish"
+            - name: NEO4J_BOLT_URI
+              value: "bolt://neo4j:7687"
+            - name: NEO4J_HTTP_URI
+              value: "http://neo4j:7474"
+            - name: NEO4J_USER
+              value: "neo4j"
+            - name: NEO4J_PASSWORD
+              value: "flowfish123"
+            - name: NEO4J_DATABASE
+              value: "neo4j"
+            - name: RABBITMQ_HOST
+              value: "rabbitmq"
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: "flowfish"
+            - name: RABBITMQ_PASSWORD
+              value: "flowfish123"
+            - name: SECRET_KEY
+              value: "local-dev-secret-key-12345"
+            - name: JWT_EXPIRATION_HOURS
+              value: "24"
+            - name: CORS_ORIGINS
+              value: "*"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: CLUSTER_MANAGER_GRPC
+              value: "cluster-manager:5001"
+            - name: ANALYSIS_ORCHESTRATOR_GRPC
+              value: "analysis-orchestrator:5002"
+            - name: INGESTION_SERVICE_GRPC
+              value: "ingestion-service:5000"
+            - name: GRAPH_QUERY_URL
+              value: "http://graph-query:8001"
+            - name: TIMESERIES_QUERY_URL
+              value: "http://timeseries-query:8002"
+            - name: CHANGE_DETECTION_WORKER_URL
+              value: "http://change-detection-worker:8001"
+            - name: RUN_BASED_FILTERING_ENABLED
+              value: "true"
+            - name: FLOWFISH_ENCRYPTION_KEY
+              value: "Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA="
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10

@@ -1,0 +1,505 @@
+---
+# ClickHouse ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-clickhouse
+  namespace: flowfish
+  labels:
+    app: flowfish
+    component: clickhouse
+---
+# ClickHouse Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: flowfish
+  labels:
+    app: flowfish
+    component: clickhouse
+spec:
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: flowfish
+    component: clickhouse
+  ports:
+  - port: 8123
+    targetPort: 8123
+    protocol: TCP
+    name: http
+    appProtocol: http
+  - port: 9000
+    targetPort: 9000
+    protocol: TCP
+    name: tcp
+    appProtocol: tcp
+---
+# ClickHouse StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: flowfish
+  labels:
+    app: flowfish
+    component: clickhouse
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowfish
+      component: clickhouse
+  template:
+    metadata:
+      labels:
+        app: flowfish
+        component: clickhouse
+    spec:
+      serviceAccountName: flowfish-clickhouse
+      # OpenShift anyuid SCC required (must be granted manually by cluster admin)
+      # Run as ClickHouse default user for proper file permissions
+      securityContext:
+        runAsUser: 101  # ClickHouse default user
+        runAsGroup: 101
+        fsGroup: 101
+        # Note: seccompProfile removed for OpenShift anyuid SCC compatibility
+      
+      initContainers:
+      - name: init-clickhouse-dirs
+        image: busybox:latest
+        securityContext:
+          runAsUser: 101  # Same user as main container
+          runAsGroup: 101
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        command: 
+        - sh
+        - -c
+        - |
+          echo "Initializing ClickHouse directories..."
+          
+          # Create all required directories with proper permissions
+          # Running as UID 101 (ClickHouse user) with anyuid SCC
+          mkdir -p /var/lib/clickhouse/data \
+                   /var/lib/clickhouse/metadata \
+                   /var/lib/clickhouse/tmp \
+                   /var/lib/clickhouse/user_files \
+                   /var/lib/clickhouse/format_schemas \
+                   /var/lib/clickhouse/access \
+                   /var/log/clickhouse-server
+          
+          # Set permissions for ClickHouse user (UID 101)
+          chmod -R 755 /var/lib/clickhouse /var/log/clickhouse-server
+          
+          echo "ClickHouse directories initialized successfully."
+        volumeMounts:
+        - name: clickhouse-data
+          mountPath: /var/lib/clickhouse
+        - name: clickhouse-logs
+          mountPath: /var/log/clickhouse-server
+      
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:23-alpine
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false  # Keep restricted
+          readOnlyRootFilesystem: false    # ClickHouse needs write access
+          capabilities:
+            drop:
+            - ALL
+        # Use default entrypoint for production (graceful shutdown, signal handling)
+        # No command override - let ClickHouse handle initialization properly
+        ports:
+        - containerPort: 8123
+          name: http
+        - containerPort: 9000
+          name: tcp
+        env:
+        - name: CLICKHOUSE_DB
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: clickhouse-database
+        - name: CLICKHOUSE_USER
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: clickhouse-user
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: clickhouse-password
+        # OpenShift compatibility: Skip chown/chmod operations
+        - name: CLICKHOUSE_DO_NOT_CHOWN
+          value: "1"
+        # Additional OpenShift compatibility settings
+        - name: CLICKHOUSE_USER_FILES_PATH
+          value: "/var/lib/clickhouse/user_files"
+        - name: CLICKHOUSE_FORMAT_SCHEMA_PATH
+          value: "/var/lib/clickhouse/format_schemas"
+        - name: CLICKHOUSE_PATH
+          value: "/var/lib/clickhouse"
+        - name: CLICKHOUSE_LOG_PATH
+          value: "/var/log/clickhouse-server"
+        volumeMounts:
+        - name: clickhouse-data
+          mountPath: /var/lib/clickhouse
+        - name: clickhouse-logs
+          mountPath: /var/log/clickhouse-server
+        - name: clickhouse-config
+          mountPath: /etc/clickhouse-server/config.xml
+          subPath: config.xml
+        - name: clickhouse-config
+          mountPath: /etc/clickhouse-server/users.xml
+          subPath: users.xml
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: clickhouse-config
+        configMap:
+          name: clickhouse-config
+      - name: clickhouse-logs
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: clickhouse-data
+      labels:
+        app: flowfish
+        component: clickhouse
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: ""
+      resources:
+        requests:
+          storage: 20Gi
+---
+# ClickHouse initialization job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clickhouse-init
+  namespace: flowfish
+  labels:
+    app: flowfish
+    component: clickhouse
+    job: init
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: flowfish
+        component: clickhouse
+        job: init
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: flowfish-clickhouse
+      initContainers:
+      - name: wait-for-clickhouse
+        image: busybox:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for ClickHouse to be ready..."
+          until nc -z -w 2 clickhouse.flowfish.svc.cluster.local 9000 2>/dev/null; do
+            echo "ClickHouse TCP port not ready yet..."
+            sleep 3
+          done
+          
+          until nc -z -w 2 clickhouse.flowfish.svc.cluster.local 8123 2>/dev/null; do
+            echo "ClickHouse HTTP port not ready yet..."
+            sleep 3
+          done
+          
+          echo "ClickHouse ports are open!"
+          echo "Waiting 45s for ClickHouse to fully initialize and accept queries..."
+          sleep 45
+          echo "Ready to initialize schema!"
+      
+      containers:
+      - name: clickhouse-init
+        image: clickhouse/clickhouse-server:23-alpine
+        env:
+        - name: CLICKHOUSE_USER
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: clickhouse-user
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: clickhouse-password
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Connecting to ClickHouse..."
+          echo "Host: clickhouse.flowfish.svc.cluster.local"
+          echo ""
+          
+          # Test connection with retry (ClickHouse may need extra time to accept queries)
+          echo "Testing ClickHouse connection..."
+          MAX_RETRIES=20
+          RETRY_COUNT=0
+          
+          until /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "SELECT 1" 2>/dev/null; do
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+              echo "ERROR: Failed to connect to ClickHouse after $MAX_RETRIES attempts"
+              echo "Last connection attempt details:"
+              echo "Host: clickhouse.flowfish.svc.cluster.local"
+              echo "Port: 9000"
+              echo ""
+              echo "Attempting connection with verbose error..."
+              /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "SELECT 1" 2>&1 || true
+              exit 1
+            fi
+            echo "Connection attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 5s..."
+            sleep 5
+          done
+          
+          echo "Successfully connected to ClickHouse!"
+          echo ""
+          
+          echo "Creating ClickHouse database and schema..."
+          echo ""
+          
+          # Create database
+          echo "Creating database 'flowfish'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --query "CREATE DATABASE IF NOT EXISTS flowfish"
+          
+          # Create network_flows table
+          echo "Creating table 'network_flows'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          CREATE TABLE IF NOT EXISTS network_flows (
+              timestamp DateTime64(3) CODEC(DoubleDelta, LZ4),
+              event_date Date DEFAULT toDate(timestamp),
+              cluster_id UInt32,
+              cluster_name LowCardinality(String),
+              source_namespace LowCardinality(String),
+              source_workload_name String,
+              destination_namespace LowCardinality(String),
+              destination_workload_name String,
+              destination_ip IPv4,
+              destination_port UInt16,
+              protocol LowCardinality(String),
+              bytes_sent UInt64,
+              bytes_received UInt64,
+              is_external UInt8 DEFAULT 0,
+              metadata String
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMM(event_date)
+          ORDER BY (cluster_id, event_date, timestamp, destination_ip, destination_port)
+          TTL event_date + INTERVAL 30 DAY DELETE
+          "
+          
+          # Create request_metrics table
+          echo "Creating table 'request_metrics'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          CREATE TABLE IF NOT EXISTS request_metrics (
+              timestamp DateTime CODEC(DoubleDelta, LZ4),
+              event_date Date DEFAULT toDate(timestamp),
+              cluster_id UInt32,
+              source_workload String,
+              destination_workload String,
+              request_count UInt64,
+              avg_latency_ms Float32
+          ) ENGINE = SummingMergeTree()
+          PARTITION BY toYYYYMM(event_date)
+          ORDER BY (cluster_id, event_date, timestamp, source_workload, destination_workload)
+          TTL event_date + INTERVAL 90 DAY DELETE
+          "
+          
+          # Create change_events table (for Change Detection feature)
+          echo "Creating table 'change_events'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          CREATE TABLE IF NOT EXISTS change_events (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              detected_at DateTime64(3),
+              event_id UUID DEFAULT generateUUIDv4(),
+              cluster_id UInt32,
+              cluster_name String DEFAULT '',
+              analysis_id String,
+              run_id UInt32 DEFAULT 0,
+              run_number UInt16 DEFAULT 1,
+              change_type LowCardinality(String),
+              risk_level LowCardinality(String) DEFAULT 'medium',
+              target_name String DEFAULT '',
+              target_namespace String DEFAULT '',
+              target_type LowCardinality(String) DEFAULT 'workload',
+              entity_id UInt64 DEFAULT 0,
+              namespace_id Nullable(UInt32),
+              before_state String DEFAULT '{}',
+              after_state String DEFAULT '{}',
+              affected_services UInt16 DEFAULT 0,
+              blast_radius UInt16 DEFAULT 0,
+              changed_by String DEFAULT 'auto-discovery',
+              details String DEFAULT '',
+              metadata String DEFAULT '{}'
+          ) ENGINE = ReplacingMergeTree(timestamp)
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (analysis_id, run_id, timestamp, event_id)
+          SETTINGS index_granularity = 8192
+          "
+          
+          # Create indexes for change_events
+          echo "Creating indexes for 'change_events'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_run_id run_id TYPE minmax GRANULARITY 1
+          " || true
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_change_type change_type TYPE bloom_filter GRANULARITY 1
+          " || true
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_risk_level risk_level TYPE bloom_filter GRANULARITY 1
+          " || true
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_name target_name TYPE bloom_filter GRANULARITY 1
+          " || true
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_namespace target_namespace TYPE bloom_filter GRANULARITY 1
+          " || true
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_cluster_id cluster_id TYPE minmax GRANULARITY 1
+          " || true
+          
+          # Create materialized view for hourly aggregations
+          echo "Creating materialized view 'change_events_hourly_mv'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_hourly_mv
+          ENGINE = SummingMergeTree()
+          PARTITION BY toYYYYMMDD(hour)
+          ORDER BY (analysis_id, run_id, hour, change_type, risk_level)
+          AS SELECT
+              analysis_id,
+              run_id,
+              cluster_id,
+              toStartOfHour(timestamp) AS hour,
+              change_type,
+              risk_level,
+              count() AS change_count,
+              uniq(target_name) AS unique_targets,
+              sum(affected_services) AS total_affected
+          FROM change_events
+          GROUP BY analysis_id, run_id, cluster_id, hour, change_type, risk_level
+          "
+          
+          # Create materialized view for per-run statistics
+          echo "Creating materialized view 'change_events_run_stats_mv'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_run_stats_mv
+          ENGINE = SummingMergeTree()
+          ORDER BY (analysis_id, run_id)
+          AS SELECT
+              analysis_id,
+              run_id,
+              anyLast(run_number) AS run_number,
+              cluster_id,
+              count() AS total_changes,
+              countIf(risk_level = 'critical') AS critical_count,
+              countIf(risk_level = 'high') AS high_count,
+              countIf(risk_level = 'medium') AS medium_count,
+              countIf(risk_level = 'low') AS low_count,
+              countIf(change_type = 'workload_added') AS workloads_added,
+              countIf(change_type = 'workload_removed') AS workloads_removed,
+              countIf(change_type = 'replica_changed') AS replicas_changed,
+              countIf(change_type = 'config_changed') AS configs_changed,
+              countIf(change_type = 'image_changed') AS images_changed,
+              countIf(change_type = 'label_changed') AS labels_changed,
+              countIf(change_type = 'resource_changed') AS resources_changed,
+              countIf(change_type = 'env_changed') AS envs_changed,
+              countIf(change_type = 'spec_changed') AS specs_changed,
+              countIf(change_type = 'service_added') AS services_added,
+              countIf(change_type = 'service_removed') AS services_removed,
+              countIf(change_type = 'service_port_changed') AS service_ports_changed,
+              countIf(change_type = 'service_selector_changed') AS service_selectors_changed,
+              countIf(change_type = 'service_type_changed') AS service_types_changed,
+              countIf(change_type IN ('network_policy_added','network_policy_removed','network_policy_changed')) AS network_policy_changes,
+              countIf(change_type IN ('ingress_added','ingress_removed','ingress_changed')) AS ingress_changes,
+              countIf(change_type IN ('route_added','route_removed','route_changed')) AS route_changes,
+              countIf(change_type = 'connection_added') AS connections_added,
+              countIf(change_type = 'connection_removed') AS connections_removed,
+              countIf(change_type = 'port_changed') AS ports_changed,
+              countIf(change_type IN ('traffic_anomaly','dns_anomaly','process_anomaly','error_anomaly')) AS anomalies_total,
+              countIf(change_type = 'namespace_changed') AS namespaces_changed,
+              min(timestamp) AS first_change_at,
+              max(timestamp) AS last_change_at
+          FROM change_events
+          GROUP BY analysis_id, run_id, cluster_id
+          "
+          
+          # Create materialized view for daily summary
+          echo "Creating materialized view 'change_events_daily_mv'..."
+          /usr/bin/clickhouse-client --host clickhouse.flowfish.svc.cluster.local --port 9000 --user="${CLICKHOUSE_USER}" --password="${CLICKHOUSE_PASSWORD}" --database=flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS change_events_daily_mv
+          ENGINE = SummingMergeTree()
+          PARTITION BY toYYYYMM(day)
+          ORDER BY (analysis_id, day, cluster_id)
+          AS SELECT
+              analysis_id,
+              cluster_id,
+              toDate(timestamp) AS day,
+              count() AS total_changes,
+              countIf(risk_level = 'critical') AS critical_count,
+              countIf(risk_level = 'high') AS high_count,
+              uniq(target_name) AS unique_targets,
+              uniq(target_namespace) AS unique_namespaces,
+              uniq(run_id) AS runs_count
+          FROM change_events
+          GROUP BY analysis_id, cluster_id, day
+          "
+
+          echo "ClickHouse schema created successfully!"
+          
+          # Check overall status (last command was materialized view creation)
+          if [ $? -eq 0 ]; then
+            echo ""
+            echo "=========================================="
+            echo "ClickHouse schema initialization completed successfully!"
+            echo "=========================================="
+            echo ""
+            echo "Database: flowfish"
+            echo "Tables: network_flows, request_metrics, change_events"
+            echo "Materialized Views: change_events_hourly_mv, change_events_run_stats_mv, change_events_daily_mv"
+            echo "Engine: MergeTree, SummingMergeTree, ReplacingMergeTree"
+            echo "Data retention: 30-90 days (TTL), change_events: analysis lifecycle"
+            echo ""
+            echo "ClickHouse is ready for Flowfish platform!"
+            echo ""
+          else
+            echo ""
+            echo "Initialization failed with exit code $EXIT_CODE"
+            echo "This may be OK if tables already exist"
+            echo ""
+          fi

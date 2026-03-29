@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package flowfish.writer;
+
+import "common.proto";
+
+// ClickHouse Writer Service
+// Consumes messages from RabbitMQ and writes to ClickHouse
+service ClickHouseWriter {
+  // Health
+  rpc HealthCheck(common.Empty) returns (common.HealthStatus);
+  
+  // Statistics
+  rpc GetWriterStats(GetWriterStatsRequest) returns (WriterStats);
+  
+  // Control
+  rpc PauseWriter(PauseWriterRequest) returns (common.Empty);
+  rpc ResumeWriter(ResumeWriterRequest) returns (common.Empty);
+}
+
+// Messages
+
+message GetWriterStatsRequest {
+  int32 writer_id = 1;
+}
+
+message WriterStats {
+  int32 writer_id = 1;
+  string status = 2; // running, paused, error
+  int64 total_messages_consumed = 3;
+  int64 total_rows_written = 4;
+  int64 total_batches = 5;
+  int64 failed_writes = 6;
+  int64 queue_size = 7;
+  float avg_batch_time_ms = 8;
+  common.Timestamp started_at = 9;
+  common.Timestamp last_write_at = 10;
+}
+
+message PauseWriterRequest {
+  int32 writer_id = 1;
+  string reason = 2;
+}
+
+message ResumeWriterRequest {
+  int32 writer_id = 1;
+}
+
+// RabbitMQ Message Formats (for documentation)
+// These are JSON messages sent through RabbitMQ
+
+message NetworkFlowMessage {
+  string message_id = 1;
+  string event_type = 2; // "network_flow"
+  int32 cluster_id = 3;
+  int32 analysis_id = 4;
+  string analysis_name = 5;
+  common.Timestamp timestamp = 6;
+  NetworkFlowData data = 7;
+}
+
+message NetworkFlowData {
+  string namespace = 1;
+  string pod_name = 2;
+  string container_name = 3;
+  string src_ip = 4;
+  int32 src_port = 5;
+  string dst_ip = 6;
+  int32 dst_port = 7;
+  string protocol = 8;
+  int64 bytes_sent = 9;
+  int64 bytes_received = 10;
+  int32 packets_sent = 11;
+  int32 packets_received = 12;
+  int32 duration_ms = 13;
+}
+
+message DNSQueryMessage {
+  string message_id = 1;
+  string event_type = 2; // "dns_query"
+  int32 cluster_id = 3;
+  int32 analysis_id = 4;
+  string analysis_name = 5;
+  common.Timestamp timestamp = 6;
+  DNSQueryData data = 7;
+}
+
+message DNSQueryData {
+  string namespace = 1;
+  string pod_name = 2;
+  string query_name = 3;
+  string query_type = 4;
+  string response_ip = 5;
+  int32 response_code = 6;
+  float latency_ms = 7;
+}
+
+message TCPConnectionMessage {
+  string message_id = 1;
+  string event_type = 2; // "tcp_connection"
+  int32 cluster_id = 3;
+  int32 analysis_id = 4;
+  string analysis_name = 5;
+  common.Timestamp timestamp = 6;
+  TCPConnectionData data = 7;
+}
+
+message TCPConnectionData {
+  string namespace = 1;
+  string pod_name = 2;
+  string src_ip = 3;
+  int32 src_port = 4;
+  string dst_ip = 5;
+  int32 dst_port = 6;
+  string state = 7;
+  float rtt_ms = 8;
+}
+

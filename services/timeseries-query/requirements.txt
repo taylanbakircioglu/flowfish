@@ -1,0 +1,12 @@
+# Timeseries Query Service Dependencies
+fastapi>=0.121.0
+starlette>=0.49.1  # CVE-2025-62727 fix - explicit pin required
+uvicorn[standard]>=0.27.0
+pydantic>=2.7.0  # Required by FastAPI 0.121+
+pydantic-settings>=2.3.0
+clickhouse-driver==0.2.6
+structlog==24.1.0
+prometheus-client==0.19.0
+httpx==0.26.0
+cryptography>=42.0.4  # CVE-2024-26130, CVE-2023-50782 fix
+

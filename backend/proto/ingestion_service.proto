@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package flowfish.ingestion;
+
+import "common.proto";
+import "analysis_orchestrator.proto";
+
+// Data Ingestion Service
+service DataIngestion {
+  // Task management
+  rpc StartCollection(StartCollectionRequest) returns (CollectionSession);
+  rpc StopCollection(StopCollectionRequest) returns (common.Empty);
+  rpc GetCollectionStatus(GetCollectionStatusRequest) returns (CollectionStatus);
+  
+  // Health
+  rpc HealthCheck(common.Empty) returns (common.HealthStatus);
+  
+  // Worker registration
+  rpc RegisterWorker(RegisterWorkerRequest) returns (WorkerRegistration);
+  rpc HeartBeat(HeartBeatRequest) returns (common.Empty);
+  
+  // Statistics
+  rpc GetWorkerStats(GetWorkerStatsRequest) returns (WorkerStats);
+}
+
+// Messages
+
+message StartCollectionRequest {
+  string task_id = 1;
+  int32 cluster_id = 2;
+  int32 analysis_id = 3;
+  string analysis_name = 4;
+  string cluster_name = 5;
+  string cluster_api_url = 6;
+  string cluster_token = 7;
+  
+  // Gadget connection (protocol-agnostic)
+  string gadget_endpoint = 8;
+  string gadget_protocol = 9; // grpc, http, agent, websocket
+  string gadget_auth_method = 10; // token, api_key, mtls, kubeconfig
+  string gadget_token = 11;
+  string gadget_api_key = 12;
+  string gadget_client_cert = 13;
+  string gadget_client_key = 14;
+  string gadget_ca_cert = 15;
+  bool verify_ssl = 16;
+  bool use_tls = 17;
+  
+  repeated string gadget_modules = 18;
+  analysis.ScopeConfig scope = 19;
+  int32 duration_seconds = 20;
+  string gadget_namespace = 21;  // Namespace where Inspector Gadget is deployed
+}
+
+message CollectionSession {
+  string session_id = 1;
+  string task_id = 2;
+  int32 worker_id = 3;
+  string status = 4; // starting, running, completed, failed
+  common.Timestamp started_at = 5;
+}
+
+message StopCollectionRequest {
+  string session_id = 1;
+}
+
+message GetCollectionStatusRequest {
+  string session_id = 1;
+}
+
+message CollectionStatus {
+  string session_id = 1;
+  string task_id = 2;
+  string status = 3; // running, completed, failed
+  int64 events_collected = 4;
+  int64 bytes_written = 5;
+  int64 errors_count = 6;
+  string error_message = 7;
+  common.Timestamp started_at = 8;
+  common.Timestamp last_event_at = 9;
+  map<string, int64> gadget_stats = 10; // per-gadget statistics
+}
+
+message RegisterWorkerRequest {
+  string worker_name = 1;
+  string worker_address = 2;
+  int32 max_concurrent_tasks = 3;
+}
+
+message WorkerRegistration {
+  int32 worker_id = 1;
+  string status = 2;
+  common.Timestamp registered_at = 3;
+}
+
+message HeartBeatRequest {
+  int32 worker_id = 1;
+  int32 active_tasks = 2;
+  map<string, string> metrics = 3;
+}
+
+message GetWorkerStatsRequest {
+  int32 worker_id = 1;
+}
+
+message WorkerStats {
+  int32 worker_id = 1;
+  string worker_name = 2;
+  int32 active_tasks = 3;
+  int64 total_events_processed = 4;
+  int64 total_messages_sent = 5;
+  int64 errors_count = 6;
+  common.Timestamp started_at = 7;
+  common.Timestamp last_heartbeat = 8;
+}
+
+// Data structures (for internal use)
+
+message NetworkFlow {
+  common.Timestamp timestamp = 1;
+  int32 cluster_id = 2;
+  int32 analysis_id = 3;
+  string namespace = 4;
+  string pod_name = 5;
+  string container_name = 6;
+  string src_ip = 7;
+  int32 src_port = 8;
+  string dst_ip = 9;
+  int32 dst_port = 10;
+  string protocol = 11;
+  int64 bytes_sent = 12;
+  int64 bytes_received = 13;
+  int32 packets_sent = 14;
+  int32 packets_received = 15;
+  int32 duration_ms = 16;
+}
+
+message DNSQuery {
+  common.Timestamp timestamp = 1;
+  int32 cluster_id = 2;
+  int32 analysis_id = 3;
+  string namespace = 4;
+  string pod_name = 5;
+  string query_name = 6;
+  string query_type = 7;
+  string response_ip = 8;
+  int32 response_code = 9;
+  float latency_ms = 10;
+}
+
+message TCPConnection {
+  common.Timestamp timestamp = 1;
+  int32 cluster_id = 2;
+  int32 analysis_id = 3;
+  string namespace = 4;
+  string pod_name = 5;
+  string src_ip = 6;
+  int32 src_port = 7;
+  string dst_ip = 8;
+  int32 dst_port = 9;
+  string state = 10;
+  float rtt_ms = 11;
+}
+

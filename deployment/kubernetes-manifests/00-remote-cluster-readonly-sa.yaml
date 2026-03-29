@@ -1,0 +1,77 @@
+# Remote Cluster Read-Only ServiceAccount for Flowfish
+# 
+# Bu dosya, Flowfish'in UZAK cluster'lara bağlanması için
+# SADECE OKUMA yetkisi olan minimal bir ServiceAccount tanımlar.
+#
+# ⚠️  GÜVENLIK NOTU:
+#   - Bu ServiceAccount sadece GET/LIST/WATCH yetkilerine sahiptir
+#   - Hiçbir kaynak oluşturamaz, güncelleyemez veya silemez
+#   - Inspector Gadget event'lerini okumak için yeterlidir
+#
+# Kurulum:
+#   oc apply -f 00-remote-cluster-readonly-sa.yaml
+#   oc create token flowfish-remote-reader -n <namespace> --duration=8760h
+#
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-remote-reader
+  namespace: flowfish
+  labels:
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/component: remote-reader
+    app.kubernetes.io/purpose: readonly-access
+---
+# ClusterRole - Sadece okuma yetkisi
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flowfish-remote-reader
+  labels:
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/purpose: readonly-access
+rules:
+  # Temel Kubernetes kaynakları - SADECE OKUMA
+  - apiGroups: [""]
+    resources:
+      - pods
+      - nodes
+      - namespaces
+      - services
+      - events
+    verbs: ["get", "list", "watch"]
+  
+  # Apps kaynakları - SADECE OKUMA
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  
+  # Inspector Gadget traces - SADECE OKUMA
+  # (Event'leri okumak için yeterli)
+  - apiGroups: ["gadget.kinvolk.io"]
+    resources:
+      - traces
+    verbs: ["get", "list", "watch"]
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flowfish-remote-reader-binding
+  labels:
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/purpose: readonly-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flowfish-remote-reader
+subjects:
+  - kind: ServiceAccount
+    name: flowfish-remote-reader
+    namespace: flowfish
+

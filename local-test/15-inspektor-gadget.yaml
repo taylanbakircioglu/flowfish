@@ -1,0 +1,355 @@
+# Inspektor Gadget - eBPF Data Collection for Flowfish
+#
+# REQUIREMENTS:
+#   - Linux kernel 5.4+ with BTF support
+#   - amd64 (x86_64) architecture (ARM64/Apple Silicon NOT supported)
+#   - Privileged container access
+#
+# This manifest is OPTIONAL. Without it, Flowfish works but analyses
+# will show 0 events. Deploy only on amd64 Linux clusters.
+#
+# To skip Gadget: simply don't apply this file.
+# To deploy:      kubectl apply -f 15-inspektor-gadget.yaml
+#
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: traces.gadget.kinvolk.io
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.9.2
+spec:
+  group: gadget.kinvolk.io
+  names:
+    kind: Trace
+    listKind: TraceList
+    plural: traces
+    singular: trace
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Trace is the Schema for the traces API
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TraceSpec defines the desired state of Trace
+            properties:
+              filter:
+                properties:
+                  containerName:
+                    type: string
+                  labels:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  namespace:
+                    type: string
+                  podname:
+                    type: string
+                type: object
+              gadget:
+                type: string
+              node:
+                type: string
+              output:
+                properties:
+                  mode:
+                    type: string
+                type: object
+              parameters:
+                additionalProperties:
+                  type: string
+                type: object
+              runMode:
+                type: string
+            required:
+            - gadget
+            type: object
+          status:
+            properties:
+              operationError:
+                type: string
+              operationWarning:
+                type: string
+              output:
+                type: string
+              state:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inspektor-gadget
+  namespace: flowfish-local
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: inspektor-gadget
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "namespaces", "configmaps", "services", "events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["gadget.kinvolk.io"]
+  resources: ["traces"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: inspektor-gadget
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: inspektor-gadget
+subjects:
+- kind: ServiceAccount
+  name: inspektor-gadget
+  namespace: flowfish-local
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inspektor-gadget-config
+  namespace: flowfish-local
+  labels:
+    app: inspektor-gadget
+data:
+  config.yaml: |
+    events-buffer-length: 16384
+    containerd-socketpath: /run/containerd/containerd.sock
+    crio-socketpath: /run/crio/crio.sock
+    docker-socketpath: /run/docker.sock
+    podman-socketpath: /run/podman/podman.sock
+    gadget-namespace: "flowfish-local"
+    daemon-log-level: info
+    operator:
+      kubemanager:
+        fallback-podinformer: true
+        hook-mode: auto
+      oci:
+        allowed-gadgets: []
+        disallow-pulling: false
+        verify-image: false
+      otel-metrics:
+        otel-metrics-listen: false
+        otel-metrics-listen-address: 0.0.0.0:2224
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: inspektor-gadget
+  namespace: flowfish-local
+  labels:
+    app: inspektor-gadget
+    k8s-app: inspektor-gadget
+spec:
+  selector:
+    matchLabels:
+      app: inspektor-gadget
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: inspektor-gadget
+        k8s-app: gadget
+    spec:
+      serviceAccountName: inspektor-gadget
+      nodeSelector:
+        kubernetes.io/os: linux
+      # NOTE: No control-plane/master exclusion — K3S and single-node clusters
+      # run workloads on the control-plane node, so Gadget must be scheduled there.
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      containers:
+      - name: gadget
+        image: ghcr.io/inspektor-gadget/inspektor-gadget:v0.48.0
+        imagePullPolicy: IfNotPresent
+        terminationMessagePolicy: FallbackToLogsOnError
+        command:
+        - /bin/gadgettracermanager
+        - -serve
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /cleanup
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: GADGET_POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: GADGET_IMAGE
+          value: "ghcr.io/inspektor-gadget/inspektor-gadget"
+        - name: HOST_ROOT
+          value: "/host"
+        - name: IG_EXPERIMENTAL
+          value: "false"
+        securityContext:
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - SYS_ADMIN
+            - SYSLOG
+            - SYS_PTRACE
+            - SYS_RESOURCE
+            - IPC_LOCK
+            - NET_RAW
+            - NET_ADMIN
+        startupProbe:
+          exec:
+            command:
+            - /bin/gadgettracermanager
+            - -liveness
+          failureThreshold: 12
+          periodSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - /bin/gadgettracermanager
+            - -liveness
+          periodSeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          exec:
+            command:
+            - /bin/gadgettracermanager
+            - -liveness
+          periodSeconds: 5
+          timeoutSeconds: 2
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        volumeMounts:
+        - name: bin
+          mountPath: /host/bin
+          readOnly: true
+        - name: etc
+          mountPath: /host/etc
+        - name: opt
+          mountPath: /host/opt
+        - name: usr
+          mountPath: /host/usr
+          readOnly: true
+        - name: run
+          mountPath: /host/run
+          readOnly: true
+        - name: var
+          mountPath: /host/var
+          readOnly: true
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: run
+          mountPath: /run
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+        - name: cgroup
+          mountPath: /sys/fs/cgroup
+          readOnly: true
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+        - name: oci
+          mountPath: /var/lib/ig
+        - name: config
+          mountPath: /etc/ig
+          readOnly: true
+        - name: wasm-cache
+          mountPath: /var/run/ig/wasm-cache
+      volumes:
+      - name: bin
+        hostPath:
+          path: /bin
+      - name: etc
+        hostPath:
+          path: /etc
+      - name: opt
+        hostPath:
+          path: /opt
+      - name: usr
+        hostPath:
+          path: /usr
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: run
+        hostPath:
+          path: /run
+      - name: var
+        hostPath:
+          path: /var
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+      - name: bpffs
+        hostPath:
+          path: /sys/fs/bpf
+      - name: debugfs
+        hostPath:
+          path: /sys/kernel/debug
+      - name: oci
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: inspektor-gadget-config
+          defaultMode: 0400
+      - name: wasm-cache
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inspektor-gadget
+  namespace: flowfish-local
+  labels:
+    app: inspektor-gadget
+spec:
+  type: ClusterIP
+  ports:
+  - name: grpc
+    port: 16060
+    targetPort: 16060
+    protocol: TCP
+  selector:
+    app: inspektor-gadget

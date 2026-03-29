@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package flowfish.common;
+
+// Common empty message
+message Empty {}
+
+// Timestamp representation
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+// Pagination parameters
+message Pagination {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+// Health status
+message HealthStatus {
+  bool healthy = 1;
+  string message = 2;
+  map<string, string> details = 3;
+  Timestamp checked_at = 4;
+}
+
+// Generic key-value pair
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}
+
+// Error details
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+  string details = 3;
+}
+
+// Generic status response
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+  string status = 3;
+  int32 code = 4;
+}
+

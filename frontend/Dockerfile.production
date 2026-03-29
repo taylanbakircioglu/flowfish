@@ -1,0 +1,75 @@
+# Flowfish Frontend - Production Build (Fixed)
+# Multi-stage build for optimized React app
+
+# Build stage
+FROM node:18-alpine AS builder
+
+# Cache bust argument - change this to force rebuild
+ARG CACHE_BUST=1
+RUN echo "Cache bust: $CACHE_BUST"
+
+WORKDIR /app
+
+# Copy package files (build context is workspace root)
+COPY frontend/package*.json ./
+
+# Install ALL dependencies (including dev) for build
+# Use legacy peer deps to avoid conflicts
+RUN npm install --legacy-peer-deps
+
+# Force cache invalidation for source code copy
+# This ARG changes on each build, invalidating all subsequent layers
+ARG CACHE_BUST
+RUN echo "Source cache bust: $CACHE_BUST"
+
+# Copy source code from frontend directory
+COPY frontend/ .
+
+# Set production environment
+ENV NODE_ENV=production
+ENV GENERATE_SOURCEMAP=false
+ENV DISABLE_ESLINT_PLUGIN=true
+
+# CRITICAL: This env var is included in the bundle and forces unique hash
+# REACT_APP_* variables are embedded by Create React App
+ARG CACHE_BUST
+ENV REACT_APP_BUILD_TIMESTAMP=$CACHE_BUST
+
+# Clear any build cache
+RUN rm -rf node_modules/.cache
+
+# Build the app
+RUN npm run build
+
+# Production stage with Nginx
+FROM nginx:alpine AS production
+
+# Remove default nginx config
+RUN rm -rf /usr/share/nginx/html/*
+
+# Copy built app from builder
+COPY --from=builder /app/build /usr/share/nginx/html
+
+# Copy nginx configuration from frontend directory
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+
+# Create non-root user
+RUN addgroup -g 101 -S nginx 2>/dev/null || true && \
+    adduser -S -D -H -u 101 -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx 2>/dev/null || true
+
+# Change ownership
+RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx /etc/nginx 2>/dev/null || true
+
+# Switch to non-root user
+USER nginx
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget -q --spider http://localhost:3000/ || exit 1
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
+

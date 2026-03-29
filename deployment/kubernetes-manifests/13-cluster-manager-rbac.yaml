@@ -1,0 +1,70 @@
+---
+# ClusterRole for cluster-manager to read all cluster resources
+# This requires cluster-admin permissions to apply
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flowfish-cluster-reader
+  labels:
+    app: cluster-manager
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/component: cluster-manager
+rules:
+  # Core resources
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - namespaces
+      - pods
+      - pods/log
+      - services
+      - events
+      - configmaps
+    verbs: ["get", "list", "watch"]
+  # Apps resources
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - statefulsets
+      - replicasets
+    verbs: ["get", "list", "watch"]
+  # Batch resources
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  # Networking resources
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  # Inspector Gadget CRDs (gadget.kinvolk.io)
+  - apiGroups: ["gadget.kinvolk.io"]
+    resources:
+      - traces
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+---
+# ClusterRoleBinding for cluster-manager ServiceAccount
+# Note: Name includes namespace to allow multiple environments in same cluster
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flowfish-cluster-reader-binding-local
+  labels:
+    app: cluster-manager
+    app.kubernetes.io/name: flowfish
+    app.kubernetes.io/component: cluster-manager
+    app.kubernetes.io/environment: local
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flowfish-cluster-reader
+subjects:
+  - kind: ServiceAccount
+    name: flowfish-cluster-manager
+    namespace: flowfish
+

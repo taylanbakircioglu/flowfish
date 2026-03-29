@@ -1,0 +1,199 @@
+/* Modern Login Page Styles - Ocean Theme */
+.login-container {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+  position: relative;
+  overflow: hidden;
+  padding: 20px;
+}
+
+/* Animated background particles */
+.login-container::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    radial-gradient(circle at 20% 50%, rgba(255, 255, 255, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(255, 255, 255, 0.1) 0%, transparent 50%);
+  animation: float 20s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-20px);
+  }
+}
+
+.login-card {
+  width: 100%;
+  max-width: 450px;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(10px);
+  /* Background set dynamically via React */
+  position: relative;
+  z-index: 1;
+  animation: slideIn 0.5s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 32px;
+  padding: 24px 24px 0;
+}
+
+.login-icon {
+  font-size: 72px;
+  color: #0891b2;
+  margin-bottom: 16px;
+  display: inline-block;
+  animation: swim 3s ease-in-out infinite;
+  filter: drop-shadow(0 4px 6px rgba(8, 145, 178, 0.3));
+}
+
+@keyframes swim {
+  0%, 100% {
+    transform: translateX(0) rotate(0deg);
+  }
+  25% {
+    transform: translateX(5px) rotate(2deg);
+  }
+  75% {
+    transform: translateX(-5px) rotate(-2deg);
+  }
+}
+
+.login-title {
+  font-size: 32px;
+  font-weight: 700;
+  /* Color set dynamically via React */
+  margin-bottom: 8px !important;
+}
+
+.login-subtitle {
+  /* Color set dynamically via React */
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.login-form {
+  padding: 0 24px 24px;
+}
+
+.login-form .ant-form-item {
+  margin-bottom: 20px;
+}
+
+.login-form .ant-input-affix-wrapper,
+.login-form .ant-input-password {
+  height: 48px;
+  border-radius: 8px;
+  font-size: 15px;
+  transition: all 0.3s ease;
+}
+
+.login-form .ant-input-affix-wrapper:hover,
+.login-form .ant-input-affix-wrapper:focus,
+.login-form .ant-input-affix-wrapper-focused,
+.login-form .ant-input-password:hover,
+.login-form .ant-input-password:focus {
+  border-color: #0891b2;
+  box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.1);
+}
+
+.login-form .ant-input {
+  font-size: 15px;
+}
+
+.login-form .ant-btn-primary {
+  height: 48px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+  border: none;
+  box-shadow: 0 4px 12px rgba(8, 145, 178, 0.3);
+  transition: all 0.3s ease;
+}
+
+.login-form .ant-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(8, 145, 178, 0.4);
+  background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%);
+}
+
+.login-form .ant-btn-primary:active {
+  transform: translateY(0);
+}
+
+.login-footer {
+  text-align: center;
+  margin-top: 24px;
+  padding: 20px 24px;
+  border-top: 1px solid;
+  /* Colors set dynamically via React */
+  border-bottom-left-radius: 16px;
+  border-bottom-right-radius: 16px;
+}
+
+.login-footer-text {
+  /* Color set dynamically via React */
+  font-size: 13px;
+}
+
+.error-alert {
+  margin: 0 24px 16px;
+  border-radius: 8px;
+}
+
+/* Loading state */
+.login-form .ant-btn-loading {
+  opacity: 0.8;
+}
+
+/* Responsive */
+@media (max-width: 576px) {
+  .login-card {
+    max-width: 100%;
+    margin: 0 16px;
+  }
+  
+  .login-icon {
+    font-size: 48px;
+  }
+  
+  .login-title {
+    font-size: 24px;
+  }
+  
+  .login-form .ant-input-affix-wrapper,
+  .login-form .ant-input-password,
+  .login-form .ant-btn-primary {
+    height: 44px;
+  }
+}
+
+/* Light theme is default - no dark mode for login page */
+/* Keep the ocean theme bright and inviting */
+
