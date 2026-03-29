@@ -1258,7 +1258,7 @@ Range: 0-100
 ### 2.10. Integration Hub
 - Four-step guided wizard (Integration Type → Configure → Preview → Integration Code) with two integration paths: Dependency Analysis and Blast Radius Gate
 - Configure step: analysis selection, service identification method (Annotation, Label, Namespace + Deployment, Pod Name, Advanced), search depth, live test query
-- Preview step: dependency summary with upstream service metadata, downstream/caller statistics, matched services table
+- Preview step: per-service dependency breakdown with expandable matched services, downstream/callers by category, hop distance visualization for multi-depth queries, and aggregate summary
 - Integration Code step: tabbed snippet generation (Pipeline YAML, cURL, Python, JavaScript, Blast Radius)
 - Dedicated pipeline platforms with platform-specific templates: Azure DevOps, GitHub Actions, GitLab CI, Jenkins, and Other (Generic)
 - Blast Radius tab: pre-deployment risk assessment snippets with cross-link to Blast Radius Oracle page

@@ -22,6 +22,7 @@ import {
   Descriptions,
   Statistic,
   Radio,
+  Collapse,
   theme,
 } from 'antd';
 import {
@@ -581,8 +582,8 @@ const IntegrationHub: React.FC = () => {
                 <span>
                   Found <Text strong>{summaryData.service.name}</Text> in <Text strong>{summaryData.service.namespace}</Text>
                   {' \u2014 '}
-                  {summaryData.downstream.total} downstream, {summaryData.callers.total} callers
-                  {summaryData.downstream.critical_count ? <Tag color="red" style={{ marginLeft: 8 }}>{summaryData.downstream.critical_count} critical</Tag> : null}
+                  {summaryData.summary?.total_downstream_unique ?? 0} downstream, {summaryData.summary?.total_callers_unique ?? 0} callers
+                  {summaryData.summary?.downstream_critical_count ? <Tag color="red" style={{ marginLeft: 8 }}>{summaryData.summary.downstream_critical_count} critical</Tag> : null}
                 </span>
               }
             />
@@ -636,8 +637,8 @@ const IntegrationHub: React.FC = () => {
               </Col>
               <Col>
                 <Space size="large">
-                  <Statistic title={<><ArrowDownOutlined /> Downstream</>} value={summaryData.downstream.total} valueStyle={{ fontSize: 18 }} />
-                  <Statistic title={<><ArrowUpOutlined /> Callers</>} value={summaryData.callers.total} valueStyle={{ fontSize: 18 }} />
+                  <Statistic title={<><ArrowDownOutlined /> Downstream</>} value={summaryData.summary?.total_downstream_unique ?? 0} valueStyle={{ fontSize: 18 }} />
+                  <Statistic title={<><ArrowUpOutlined /> Callers</>} value={summaryData.summary?.total_callers_unique ?? 0} valueStyle={{ fontSize: 18 }} />
                 </Space>
               </Col>
             </Row>
@@ -654,8 +655,8 @@ const IntegrationHub: React.FC = () => {
                   { title: 'Name', dataIndex: 'name', key: 'name', render: (v: string) => <Text strong>{v}</Text> },
                   { title: 'Namespace', dataIndex: 'namespace', key: 'ns' },
                   { title: 'Kind', dataIndex: 'kind', key: 'kind', render: (v: string) => v ? <Tag>{v}</Tag> : '-' },
-                  { title: 'Downstream', dataIndex: 'downstream_count', key: 'ds', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? token.colorPrimary : token.colorBorderSecondary }} /> },
-                  { title: 'Callers', dataIndex: 'callers_count', key: 'cl', render: (v: number) => <Badge count={v} showZero style={{ backgroundColor: v ? token.colorSuccess : token.colorBorderSecondary }} /> },
+                  { title: 'Downstream', dataIndex: ['downstream', 'total'], key: 'ds', render: (v: number) => <Badge count={v ?? 0} showZero style={{ backgroundColor: v ? token.colorPrimary : token.colorBorderSecondary }} /> },
+                  { title: 'Callers', dataIndex: ['callers', 'total'], key: 'cl', render: (v: number) => <Badge count={v ?? 0} showZero style={{ backgroundColor: v ? token.colorSuccess : token.colorBorderSecondary }} /> },
                   {
                     title: 'Metadata',
                     key: 'meta',
@@ -674,10 +675,10 @@ const IntegrationHub: React.FC = () => {
             </Card>
           )}
 
-          {!summaryData.multi_service && Object.keys(summaryData.service.annotations || {}).length > 0 && (
+          {!summaryData.multi_service && Object.keys(summaryData.matched_services?.[0]?.annotations || {}).length > 0 && (
             <Card size="small" title="Upstream Service Metadata" style={{ marginBottom: 16 }}>
               <Descriptions size="small" column={{ xs: 1, sm: 2 }}>
-                {Object.entries(summaryData.service.annotations).map(([k, v]) => (
+                {Object.entries(summaryData.matched_services![0].annotations).map(([k, v]) => (
                   <Descriptions.Item key={k} label={<Text strong style={{ fontSize: 11, color: token.colorWarning }}>{k}</Text>}>
                     <Text style={{ fontSize: 11, wordBreak: 'break-all' }}>{v}</Text>
                   </Descriptions.Item>
@@ -686,30 +687,85 @@ const IntegrationHub: React.FC = () => {
             </Card>
           )}
 
-          <Tabs
-            items={[
-              {
-                key: 'downstream',
-                label: <span><ArrowDownOutlined /> Downstream ({summaryData.downstream.total})</span>,
-                children: <DependencyCategoryGroup group={summaryData.downstream} title="Downstream" />,
-              },
-              {
-                key: 'callers',
-                label: <span><ArrowUpOutlined /> Callers ({summaryData.callers.total})</span>,
-                children: <DependencyCategoryGroup group={summaryData.callers} title="Callers" />,
-              },
-              {
-                key: 'raw',
-                label: <span><CodeOutlined /> Raw JSON</span>,
-                children: (
-                  <div>
-                    <Text type="secondary" style={{ marginBottom: 8, display: 'block' }}>Response size: ~{responseSize} KB</Text>
-                    <CodeBlock code={JSON.stringify(summaryData, null, 2)} label="JSON" />
-                  </div>
-                ),
-              },
-            ]}
-          />
+          {summaryData.multi_service && summaryData.matched_services ? (
+            <Tabs
+              items={[
+                {
+                  key: 'dependencies',
+                  label: <span><BranchesOutlined /> Per-Service Dependencies ({summaryData.matched_services.length})</span>,
+                  children: (
+                    <Collapse
+                      defaultActiveKey={summaryData.matched_services.slice(0, 5).map((_, i) => String(i))}
+                      items={summaryData.matched_services.map((svc, idx) => ({
+                        key: String(idx),
+                        label: (
+                          <Space size="small" wrap>
+                            <Text strong>{svc.name}</Text>
+                            <Text type="secondary">{svc.namespace}</Text>
+                            {svc.kind && <Tag>{svc.kind}</Tag>}
+                            <Badge count={svc.downstream.total} showZero style={{ backgroundColor: svc.downstream.total ? token.colorPrimary : token.colorBorderSecondary }} />
+                            <Badge count={svc.callers.total} showZero style={{ backgroundColor: svc.callers.total ? token.colorSuccess : token.colorBorderSecondary }} />
+                          </Space>
+                        ),
+                        children: (
+                          <Tabs
+                            size="small"
+                            items={[
+                              {
+                                key: 'ds',
+                                label: <span><ArrowDownOutlined /> Downstream ({svc.downstream.total})</span>,
+                                children: <DependencyCategoryGroup group={svc.downstream} title="Downstream" />,
+                              },
+                              {
+                                key: 'cl',
+                                label: <span><ArrowUpOutlined /> Callers ({svc.callers.total})</span>,
+                                children: <DependencyCategoryGroup group={svc.callers} title="Callers" />,
+                              },
+                            ]}
+                          />
+                        ),
+                      }))}
+                    />
+                  ),
+                },
+                {
+                  key: 'raw',
+                  label: <span><CodeOutlined /> Raw JSON</span>,
+                  children: (
+                    <div>
+                      <Text type="secondary" style={{ marginBottom: 8, display: 'block' }}>Response size: ~{responseSize} KB</Text>
+                      <CodeBlock code={JSON.stringify(summaryData, null, 2)} label="JSON" />
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          ) : summaryData.matched_services?.[0] ? (
+            <Tabs
+              items={[
+                {
+                  key: 'downstream',
+                  label: <span><ArrowDownOutlined /> Downstream ({summaryData.matched_services[0].downstream.total})</span>,
+                  children: <DependencyCategoryGroup group={summaryData.matched_services[0].downstream} title="Downstream" />,
+                },
+                {
+                  key: 'callers',
+                  label: <span><ArrowUpOutlined /> Callers ({summaryData.matched_services[0].callers.total})</span>,
+                  children: <DependencyCategoryGroup group={summaryData.matched_services[0].callers} title="Callers" />,
+                },
+                {
+                  key: 'raw',
+                  label: <span><CodeOutlined /> Raw JSON</span>,
+                  children: (
+                    <div>
+                      <Text type="secondary" style={{ marginBottom: 8, display: 'block' }}>Response size: ~{responseSize} KB</Text>
+                      <CodeBlock code={JSON.stringify(summaryData, null, 2)} label="JSON" />
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          ) : null}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24 }}>
             <Button icon={<ArrowLeftOutlined />} onClick={() => setCurrentStep(1)}>
@@ -828,17 +884,19 @@ const IntegrationHub: React.FC = () => {
 
           <Card title="Understanding the Response" size="small" style={{ marginTop: 16 }}>
             <Paragraph>
-              The <Text code>/dependencies/summary</Text> response groups all dependencies by <Text strong>service category</Text> (database, cache, api, message_broker, etc.).
-              Each dependency includes its Kubernetes <Text strong>annotations</Text> and <Text strong>labels</Text>.
+              The <Text code>/dependencies/summary</Text> response provides <Text strong>per-service dependency breakdowns</Text>.
+              Each matched upstream service includes its own <Text code>downstream</Text> and <Text code>callers</Text> grouped by service category (database, cache, api, message_broker, etc.).
+              A top-level <Text code>summary</Text> provides globally deduplicated aggregate counts.
             </Paragraph>
             <Paragraph>
               Your pipeline should:
             </Paragraph>
             <ol>
-              <li>Extract <Text code>annotations[&quot;git-repo&quot;]</Text> from each downstream service to identify affected repositories</li>
+              <li>Iterate <Text code>matched_services</Text> to process each upstream service and its dependencies</li>
+              <li>For each service, extract <Text code>annotations[&quot;git-repo&quot;]</Text> from downstream dependencies to identify affected repositories</li>
               <li>Check <Text code>is_critical</Text> flag to prioritize critical dependency changes</li>
-              <li>Use <Text code>service_category</Text> grouping to understand the type of each dependency (database, cache, API, etc.)</li>
-              <li>Examine <Text code>callers</Text> to understand which services call the changed service</li>
+              <li>Use <Text code>hop_count</Text> (when depth &gt; 1) to distinguish direct from indirect dependencies</li>
+              <li>Use <Text code>summary</Text> for aggregate counts across all matched services</li>
             </ol>
           </Card>
 

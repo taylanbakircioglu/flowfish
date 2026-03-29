@@ -391,7 +391,7 @@ types = ['replica_changed', 'connection_added']
 ### Query Optimization
 
 1. **Time-series queries**: Always include time range filter
-2. **Graph queries**: Limit traversal depth (default: 3 hops)
+2. **Graph queries**: Limit traversal depth (default: 1 hop, max: 5 hops)
 3. **Metadata queries**: Use indexed columns (cluster_id, analysis_id)
 
 ### Data Consistency

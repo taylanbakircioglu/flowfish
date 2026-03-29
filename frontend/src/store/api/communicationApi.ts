@@ -347,6 +347,7 @@ export interface DependencySummaryService {
   is_critical?: boolean;
   service_type?: string;
   port?: number;
+  hop_count?: number;
 }
 
 export interface DependencySummaryGroup {
@@ -355,24 +356,31 @@ export interface DependencySummaryGroup {
   by_category: Record<string, DependencySummaryService[]>;
 }
 
+export interface DependencySummary {
+  total_matched: number;
+  total_downstream_unique: number;
+  total_callers_unique: number;
+  downstream_critical_count: number;
+  callers_critical_count: number;
+}
+
 export interface MatchedService {
   name: string;
   namespace: string;
   kind?: string;
   annotations: Record<string, string>;
   labels: Record<string, string>;
-  downstream_count: number;
-  callers_count: number;
+  downstream: DependencySummaryGroup;
+  callers: DependencySummaryGroup;
 }
 
 export interface DependencySummaryResponse {
   success: boolean;
   analysis_ids: number[];
   multi_service?: boolean;
+  summary?: DependencySummary;
   service: DependencySummaryService;
   matched_services?: MatchedService[];
-  downstream: DependencySummaryGroup;
-  callers: DependencySummaryGroup;
   error?: string;
 }
 

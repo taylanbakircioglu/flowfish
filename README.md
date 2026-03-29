@@ -222,7 +222,7 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 
 ![Integration Hub - Configure](docs/screenshots/integration-hub-2.png)
 
-**Preview** — View the dependency summary with matched upstream services, downstream dependencies grouped by category, callers, and raw JSON:
+**Preview** — Per-service dependency breakdown with downstream/callers grouped by category, hop distance visualization for multi-depth queries, and aggregate summary:
 
 ![Integration Hub - Preview](docs/screenshots/integration-hub-3.png)
 
@@ -728,14 +728,14 @@ The Integration Hub provides a **four-step guided wizard** (Integration Type →
 
 #### Use Case: Cross-Project Impact Analysis
 
-When a pull request is opened in Project A, an AI code agent (running as a build validation job) can query Flowfish to discover all services that depend on Project A — across clusters and namespaces. The agent receives a structured JSON response with upstream/downstream dependencies grouped by category, including rich metadata (annotations, labels, git-repo URLs, team ownership) that enables it to assess cross-project impact.
+When a pull request is opened in Project A, an AI code agent (running as a build validation job) can query Flowfish to discover all services that depend on Project A — across clusters and namespaces. The agent receives a structured JSON response with per-service downstream/callers breakdowns grouped by category, hop distance for indirect dependencies, and an aggregate summary — including rich metadata (annotations, labels, git-repo URLs, team ownership) that enables it to assess cross-project impact.
 
 #### Wizard Steps
 
 | Step | Description |
 |------|-------------|
 | **Configure** | Select one or more analyses, choose a service identification method (Annotation, Label, Namespace + Deployment, Pod Name, or Advanced), configure search depth, and optionally run a live test query to validate results |
-| **Preview & Validate** | View the dependency summary — upstream service metadata, downstream/caller statistics, matched services table with annotations and labels |
+| **Preview & Validate** | Per-service dependency breakdown with expandable matched services, downstream/callers by category, hop distance for multi-depth queries, and aggregate summary |
 | **Integration Code** | Generate and copy ready-to-use code snippets across tabs: Pipeline (platform-specific YAML), cURL, Python, JavaScript, and Blast Radius (pre-deployment risk assessment integration) |
 
 #### Supported Platforms

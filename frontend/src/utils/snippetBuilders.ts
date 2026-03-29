@@ -63,24 +63,28 @@ ${paramLines.join('\n')}
 resp.raise_for_status()
 deps = resp.json()
 
-# Extract affected git repos from downstream annotations
+# Extract affected git repos from per-service downstream annotations
 affected_repos = []
-for category, services in deps.get("downstream", {}).get("by_category", {}).items():
-    for svc in services:
-        repo = svc.get("annotations", {}).get("git-repo")
-        if repo:
-            affected_repos.append({
-                "repo": repo,
-                "service": svc["name"],
-                "namespace": svc["namespace"],
-                "category": category,
-                "critical": svc.get("is_critical", False),
-            })
+for matched in deps.get("matched_services", []):
+    for category, services in matched.get("downstream", {}).get("by_category", {}).items():
+        for svc in services:
+            repo = svc.get("annotations", {}).get("git-repo")
+            if repo:
+                affected_repos.append({
+                    "repo": repo,
+                    "service": svc["name"],
+                    "namespace": svc["namespace"],
+                    "upstream": matched["name"],
+                    "category": category,
+                    "critical": svc.get("is_critical", False),
+                })
 
+summary = deps.get("summary", {})
+print(f"Matched {summary.get('total_matched', 0)} services, {summary.get('total_downstream_unique', 0)} downstream deps")
 print(f"Found {len(affected_repos)} affected repositories")
 for r in affected_repos:
     flag = " [CRITICAL]" if r["critical"] else ""
-    print(f"  {r['service']} ({r['category']}){flag} -> {r['repo']}")`;
+    print(f"  {r['upstream']} -> {r['service']} ({r['category']}){flag} -> {r['repo']}")`;
 }
 
 export function buildJsSnippet(params: DependencySummaryParams | null): string {
@@ -98,20 +102,23 @@ const resp = await fetch(
 if (!resp.ok) throw new Error(\`HTTP \${resp.status}: \${await resp.text()}\`);
 const deps = await resp.json();
 
-// Extract affected repos
-const affectedRepos = Object.entries(deps.downstream?.by_category ?? {})
-  .flatMap(([category, services]) =>
-    services
-      .filter(svc => svc.annotations?.["git-repo"])
-      .map(svc => ({
-        repo: svc.annotations["git-repo"],
-        service: svc.name,
-        category,
-        critical: svc.is_critical,
-      }))
-  );
+// Extract affected repos from per-service downstream
+const affectedRepos = (deps.matched_services ?? []).flatMap(matched =>
+  Object.entries(matched.downstream?.by_category ?? {})
+    .flatMap(([category, services]) =>
+      services
+        .filter(svc => svc.annotations?.["git-repo"])
+        .map(svc => ({
+          repo: svc.annotations["git-repo"],
+          service: svc.name,
+          upstream: matched.name,
+          category,
+          critical: svc.is_critical,
+        }))
+    )
+);
 
-console.log(\`Found \${affectedRepos.length} affected repos\`);`;
+console.log(\`Matched \${deps.summary?.total_matched ?? 0} services, found \${affectedRepos.length} affected repos\`);`;
 }
 
 export function buildPipelineSnippet(
@@ -138,7 +145,7 @@ steps:
       CRITICAL=$(echo "$DEPS" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
-c=d.get('downstream',{}).get('critical_count',0)
+c=d.get('summary',{}).get('downstream_critical_count',0)
 print(c)
 ")
       echo "##vso[task.setvariable variable=CRITICAL_DEPS]$CRITICAL"
@@ -175,7 +182,7 @@ jobs:
           CRITICAL=$(python3 -c "
 import json
 d=json.load(open('flowfish-deps.json'))
-print(d.get('downstream',{}).get('critical_count',0))
+print(d.get('summary',{}).get('downstream_critical_count',0))
 ")
           echo "critical_deps=$CRITICAL" >> $GITHUB_OUTPUT
 

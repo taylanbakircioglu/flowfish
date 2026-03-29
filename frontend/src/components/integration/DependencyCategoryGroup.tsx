@@ -21,6 +21,10 @@ const DependencyCategoryGroup: React.FC<DependencyCategoryGroupProps> = ({ group
     return <Empty description={`No ${title.toLowerCase()}`} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
   }
 
+  const hasMultiHop = Object.values(group.by_category || {})
+    .flat()
+    .some((s: DependencySummaryService) => (s.hop_count ?? 1) > 1);
+
   return (
     <div>
       <Row gutter={16} style={{ marginBottom: 12 }}>
@@ -62,6 +66,15 @@ const DependencyCategoryGroup: React.FC<DependencyCategoryGroupProps> = ({ group
               { title: 'Namespace', dataIndex: 'namespace', key: 'ns' },
               { title: 'Kind', dataIndex: 'kind', key: 'kind', render: (v: string) => v ? <Tag>{v}</Tag> : '-' },
               { title: 'Port', dataIndex: 'port', key: 'port', render: (v: number) => v ?? '-' },
+              ...(hasMultiHop ? [{
+                title: 'Hops',
+                dataIndex: 'hop_count' as const,
+                key: 'hops',
+                width: 80,
+                render: (v: number) => (v ?? 1) > 1
+                  ? <Tag color="orange">{v} hops</Tag>
+                  : <Tag color="green">direct</Tag>,
+              }] : []),
               {
                 title: 'Annotations',
                 key: 'ann',

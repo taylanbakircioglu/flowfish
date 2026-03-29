@@ -1558,9 +1558,6 @@ class GraphQueryEngine:
             }
 
         results = stream_result["results"]
-        first = results[0]
-        upstream = first.get("upstream", {})
-        is_multi = len(results) > 1
 
         def _safe_labels(entry: dict) -> dict:
             lbl = entry.get("labels") or {}
@@ -1682,7 +1679,7 @@ class GraphQueryEngine:
             if not is_crit:
                 is_crit = self.is_critical_service(svc_type, entry.get("pod_name", ""))
             labels = _safe_labels(entry)
-            return {
+            result = {
                 "name": _workload_name(entry),
                 "namespace": entry.get("namespace", ""),
                 "kind": _resolve_kind(entry.get("owner_kind") or "", labels),
@@ -1693,14 +1690,22 @@ class GraphQueryEngine:
                 "service_category": svc_cat,
                 "port": comm.get("port"),
             }
+            hop = entry.get("hop_count", 1)
+            if hop > 1:
+                result["hop_count"] = hop
+            return result
 
         def _dedup_entries(entries: list) -> list:
             """Deduplicate dependency entries by logical workload identity,
-            collapsing replica pods that share the same Deployment/StatefulSet."""
+            collapsing replica pods that share the same Deployment/StatefulSet.
+            When duplicates exist, keeps the entry with the lowest hop_count
+            so multi-replica merges preserve the shortest path."""
             seen: Dict[str, dict] = {}
             for entry in entries:
                 key = _workload_key(entry)
                 if key not in seen:
+                    seen[key] = entry
+                elif entry.get("hop_count", 1) < seen[key].get("hop_count", 1):
                     seen[key] = entry
             return list(seen.values())
 
@@ -1723,78 +1728,93 @@ class GraphQueryEngine:
                 "by_category": by_cat,
             }
 
+        # --- Unified loop: works identically for single and multi-service ---
+        workload_map: Dict[str, dict] = {}
+        for res in results:
+            up = res.get("upstream", {})
+            ds = res.get("downstream", [])
+            cl = res.get("callers", [])
+            up_key = _workload_key(up)
+            up_labels = _safe_labels(up)
+            if up_key in workload_map:
+                workload_map[up_key]["_raw_downstream"].extend(ds)
+                workload_map[up_key]["_raw_callers"].extend(cl)
+                existing = workload_map[up_key]
+                resolved = _resolve_kind(up.get("owner_kind") or "", up_labels)
+                if (not existing["kind"] or existing["kind"] == "Unknown") and resolved not in ("", "Unknown"):
+                    existing["kind"] = resolved
+                if not existing["annotations"] and up.get("annotations"):
+                    existing["annotations"] = _filter_summary_annotations(up["annotations"])
+            else:
+                workload_map[up_key] = {
+                    "name": _workload_name(up),
+                    "namespace": up.get("namespace", ""),
+                    "kind": _resolve_kind(up.get("owner_kind") or "", up_labels),
+                    "annotations": _filter_summary_annotations(up.get("annotations", {})),
+                    "labels": up_labels,
+                    "_raw_downstream": list(ds),
+                    "_raw_callers": list(cl),
+                }
+
+        # Build per-service grouped downstream/callers and collect for global summary
+        all_downstream_raw = []
+        all_callers_raw = []
+        matched_services = []
+        for wk_data in workload_map.values():
+            raw_ds = wk_data.pop("_raw_downstream")
+            raw_cl = wk_data.pop("_raw_callers")
+            all_downstream_raw.extend(raw_ds)
+            all_callers_raw.extend(raw_cl)
+            wk_data["downstream"] = _group_by_category(_filter_and_dedup(raw_ds), "downstream")
+            wk_data["callers"] = _group_by_category(_filter_and_dedup(raw_cl), "caller")
+            matched_services.append(wk_data)
+
+        # Global summary with cross-service deduplication
+        global_ds = _filter_and_dedup(all_downstream_raw)
+        global_cl = _filter_and_dedup(all_callers_raw)
+        global_ds_grouped = _group_by_category(global_ds, "downstream")
+        global_cl_grouped = _group_by_category(global_cl, "caller")
+
+        is_multi = len(matched_services) > 1
+        all_namespaces = sorted(set(s["namespace"] for s in matched_services if s["namespace"]))
+
         if is_multi:
-            all_downstream = []
-            all_callers = []
-            workload_map: Dict[str, dict] = {}
-            for res in results:
-                up = res.get("upstream", {})
-                ds = res.get("downstream", [])
-                cl = res.get("callers", [])
-                all_downstream.extend(ds)
-                all_callers.extend(cl)
-                up_key = _workload_key(up)
-                up_labels = _safe_labels(up)
-                if up_key in workload_map:
-                    workload_map[up_key]["downstream_count"] += len(ds)
-                    workload_map[up_key]["callers_count"] += len(cl)
-                    existing = workload_map[up_key]
-                    resolved = _resolve_kind(up.get("owner_kind") or "", up_labels)
-                    if (not existing["kind"] or existing["kind"] == "Unknown") and resolved not in ("", "Unknown"):
-                        existing["kind"] = resolved
-                    if not existing["annotations"] and up.get("annotations"):
-                        existing["annotations"] = _filter_summary_annotations(up["annotations"])
-                else:
-                    workload_map[up_key] = {
-                        "name": _workload_name(up),
-                        "namespace": up.get("namespace", ""),
-                        "kind": _resolve_kind(up.get("owner_kind") or "", up_labels),
-                        "annotations": _filter_summary_annotations(up.get("annotations", {})),
-                        "labels": up_labels,
-                        "downstream_count": len(ds),
-                        "callers_count": len(cl),
-                    }
-            matched_services = list(workload_map.values())
-            all_downstream = _filter_and_dedup(all_downstream)
-            all_callers = _filter_and_dedup(all_callers)
-            all_namespaces = sorted(set(s["namespace"] for s in matched_services if s["namespace"]))
             if len(all_namespaces) == 1:
                 svc_label = f"{all_namespaces[0]} ({len(matched_services)} services)"
                 svc_ns = all_namespaces[0]
             else:
                 svc_label = f"{len(matched_services)} services across {len(all_namespaces)} namespaces"
                 svc_ns = ", ".join(all_namespaces)
-            return {
-                "success": True,
-                "analysis_ids": int_ids,
-                "multi_service": True,
-                "service": {
-                    "name": svc_label,
-                    "namespace": svc_ns,
-                    "kind": "",
-                    "annotations": {},
-                    "labels": {},
-                },
-                "matched_services": matched_services,
-                "downstream": _group_by_category(all_downstream, "downstream"),
-                "callers": _group_by_category(all_callers, "caller"),
+            service_info = {
+                "name": svc_label,
+                "namespace": svc_ns,
+                "kind": "",
+                "annotations": {},
+                "labels": {},
+            }
+        else:
+            ms = matched_services[0]
+            service_info = {
+                "name": ms["name"],
+                "namespace": ms["namespace"],
+                "kind": ms.get("kind", ""),
+                "annotations": ms.get("annotations", {}),
+                "labels": ms.get("labels", {}),
             }
 
-        single_downstream = _filter_and_dedup(first.get("downstream", []))
-        single_callers = _filter_and_dedup(first.get("callers", []))
         return {
             "success": True,
             "analysis_ids": int_ids,
-            "multi_service": False,
-            "service": {
-                "name": _workload_name(upstream),
-                "namespace": upstream.get("namespace", ""),
-                "kind": _resolve_kind(upstream.get("owner_kind") or "", _safe_labels(upstream)),
-                "annotations": _filter_summary_annotations(upstream.get("annotations", {})),
-                "labels": _safe_labels(upstream),
+            "multi_service": is_multi,
+            "summary": {
+                "total_matched": len(matched_services),
+                "total_downstream_unique": global_ds_grouped["total"],
+                "total_callers_unique": global_cl_grouped["total"],
+                "downstream_critical_count": global_ds_grouped["critical_count"],
+                "callers_critical_count": global_cl_grouped["critical_count"],
             },
-            "downstream": _group_by_category(single_downstream, "downstream"),
-            "callers": _group_by_category(single_callers, "caller"),
+            "service": service_info,
+            "matched_services": matched_services,
         }
 
     def diff_pod_dependencies(

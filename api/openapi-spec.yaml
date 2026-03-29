@@ -626,6 +626,9 @@ components:
           type: string
         port:
           type: integer
+        hop_count:
+          type: integer
+          description: Number of hops from the upstream service (1 = direct neighbor). Present when depth > 1.
 
     DependencySummaryGroup:
       type: object
@@ -640,6 +643,25 @@ components:
             type: array
             items:
               $ref: '#/components/schemas/DependencySummaryService'
+
+    DependencySummary:
+      type: object
+      properties:
+        total_matched:
+          type: integer
+          description: Number of unique upstream workloads matched
+        total_downstream_unique:
+          type: integer
+          description: Unique downstream dependency count across all matched services
+        total_callers_unique:
+          type: integer
+          description: Unique caller count across all matched services
+        downstream_critical_count:
+          type: integer
+          description: Critical downstream dependency count (globally deduplicated)
+        callers_critical_count:
+          type: integer
+          description: Critical caller count (globally deduplicated)
 
     MatchedService:
       type: object
@@ -658,10 +680,10 @@ components:
           type: object
           additionalProperties:
             type: string
-        downstream_count:
-          type: integer
-        callers_count:
-          type: integer
+        downstream:
+          $ref: '#/components/schemas/DependencySummaryGroup'
+        callers:
+          $ref: '#/components/schemas/DependencySummaryGroup'
 
     DependencySummaryResponse:
       type: object
@@ -674,18 +696,17 @@ components:
             type: integer
         multi_service:
           type: boolean
-          description: True when multiple upstream pods matched (e.g. namespace-wide query)
+          description: True when multiple upstream workloads matched
+        summary:
+          $ref: '#/components/schemas/DependencySummary'
         service:
           $ref: '#/components/schemas/DependencySummaryService'
+          description: Aggregate service label. For single match shows actual service info; for multi-match shows summary label.
         matched_services:
           type: array
-          description: Present when multi_service is true. Lists each matched upstream pod with its dependency counts.
+          description: Each matched upstream workload with its own downstream/callers breakdown. Always present when success is true.
           items:
             $ref: '#/components/schemas/MatchedService'
-        downstream:
-          $ref: '#/components/schemas/DependencySummaryGroup'
-        callers:
-          $ref: '#/components/schemas/DependencySummaryGroup'
         error:
           type: string
 
@@ -1285,6 +1306,9 @@ paths:
             type: string
         - name: depth
           in: query
+          description: |
+            Graph traversal depth (1-5 hops). Default 1 returns direct neighbors only.
+            Higher values discover indirect (transitive) dependencies with hop_count metadata.
           schema:
             type: integer
             minimum: 1
@@ -1472,11 +1496,13 @@ paths:
     get:
       tags:
         - Integration
-      summary: Dependency summary grouped by category for CI/CD integration
+      summary: Per-service dependency summary grouped by category for CI/CD and AI integration
       description: |
-        Returns a compact, grouped dependency summary for CI/CD pipelines and automation.
-        Dependencies are grouped by service_category. Annotations and labels are prominently
-        exposed for cross-project impact analysis (e.g. git-repo URLs, team info).
+        Returns a per-service dependency breakdown for CI/CD pipelines, AI agents, and automation.
+        Each matched upstream workload includes its own downstream and callers grouped by service_category.
+        A top-level summary provides globally deduplicated aggregate counts.
+        Dependencies include hop_count when depth > 1 to distinguish direct from indirect paths.
+        Annotations and labels are exposed for cross-project impact analysis (e.g. git-repo URLs, team info).
         Requires at least one analysis_id and one search parameter.
       parameters:
         - name: analysis_ids
@@ -1526,6 +1552,10 @@ paths:
             type: string
         - name: depth
           in: query
+          description: |
+            Graph traversal depth (1-5 hops). Default 1 returns direct neighbors only.
+            Higher values discover indirect (transitive) dependencies. Each dependency's hop_count
+            field indicates how many hops it is from the upstream service.
           schema:
             type: integer
             minimum: 1
@@ -1533,7 +1563,7 @@ paths:
             default: 1
       responses:
         '200':
-          description: Grouped dependency summary
+          description: Per-service dependency breakdown with aggregate summary
           content:
             application/json:
               schema:
