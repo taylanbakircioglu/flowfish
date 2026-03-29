@@ -1101,12 +1101,18 @@ class GraphQueryEngine:
             params["ip"] = ip
         
         if annotation_key:
-            ann_key_prefix = annotation_key.split('*')[0] if '*' in annotation_key else annotation_key
-            if ann_key_prefix:
+            if '*' in annotation_key or '?' in annotation_key:
+                ann_key_prefix = annotation_key.split('*')[0].split('?')[0]
+                if ann_key_prefix:
+                    match_conditions.append(
+                        "w.annotations CONTAINS $annotation_key_search"
+                    )
+                    params["annotation_key_search"] = f'"{ann_key_prefix}'
+            else:
                 match_conditions.append(
                     "w.annotations CONTAINS $annotation_key_search"
                 )
-                params["annotation_key_search"] = f'"{ann_key_prefix}'
+                params["annotation_key_search"] = f'"{annotation_key}"'
         
         if label_key and label_value:
             match_conditions.append(
@@ -1182,6 +1188,8 @@ class GraphQueryEngine:
         if annotation_key:
             from fnmatch import fnmatch
             ann_key_has_glob = '*' in annotation_key or '?' in annotation_key
+            ann_val_any = not annotation_value or annotation_value == '*'
+            ann_val_has_glob = not ann_val_any and ('*' in annotation_value or '?' in annotation_value)
             filtered = []
             for pod in matched_pods:
                 ann_raw = pod.get("annotations", "{}")
@@ -1196,10 +1204,9 @@ class GraphQueryEngine:
                 hit_keys = [k for k in ann if fnmatch(k, annotation_key)] if ann_key_has_glob else ([annotation_key] if annotation_key in ann else [])
                 if not hit_keys:
                     continue
-                if not annotation_value or annotation_value == '*':
+                if ann_val_any:
                     filtered.append(pod)
                     continue
-                ann_val_has_glob = '*' in annotation_value or '?' in annotation_value
                 for k in hit_keys:
                     v = str(ann[k])
                     if ann_val_has_glob:
