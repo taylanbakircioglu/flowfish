@@ -1263,10 +1263,12 @@ paths:
             type: string
         - name: annotation_key
           in: query
+          description: "Annotation key to match. Supports * wildcard (e.g. example.com/*)"
           schema:
             type: string
         - name: annotation_value
           in: query
+          description: "Annotation value to match. Supports * wildcard: * for any value, prefix* for startsWith"
           schema:
             type: string
         - name: label_key

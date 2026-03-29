@@ -484,14 +484,18 @@ const IntegrationHub: React.FC = () => {
                     <Form.Item
                       name="annotation_key"
                       label="Annotation Key"
-                      tooltip="Use custom annotations set during deployment (e.g. git-repo, team, version). Infrastructure annotations like openshift.io/* and kubernetes.io/* are not indexed."
+                      tooltip="Use custom annotations set during deployment. Supports * wildcard for prefix matching (e.g. example.com/* matches all keys starting with example.com/)."
                     >
-                      <Input placeholder="e.g. git-repo, build-id, team" />
+                      <Input placeholder="e.g. git-repo, example.com/project-link, example.com/*" />
                     </Form.Item>
                   </Col>
                   <Col xs={24} sm={12}>
-                    <Form.Item name="annotation_value" label="Annotation Value">
-                      <Input placeholder="e.g. https://tfs.company.com/.../my-service" />
+                    <Form.Item
+                      name="annotation_value"
+                      label="Annotation Value"
+                      tooltip="Enter exact value or use * wildcard. Use * alone to match any value, or as prefix/suffix (e.g. https://tfs.company.com/*)."
+                    >
+                      <Input placeholder="e.g. exact-value, https://tfs.company.com/*, *" />
                     </Form.Item>
                   </Col>
                 </>

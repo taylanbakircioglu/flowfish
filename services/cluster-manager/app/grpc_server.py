@@ -277,6 +277,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
         'kubectl.kubernetes.io/',
         'kubernetes.io/',
         'openshift.io/',
+        'openshift.openshift.io/',
         'k8s.v1.cni.cncf.io/',
         'k8s.ovn.org/',
         'seccomp.security.alpha.kubernetes.io/',

@@ -1100,17 +1100,13 @@ class GraphQueryEngine:
             match_conditions.append("w.ip = $ip")
             params["ip"] = ip
         
-        if annotation_key and annotation_value:
-            match_conditions.append(
-                "w.annotations CONTAINS $annotation_search"
-            )
-            params["annotation_search"] = f'"{annotation_key}"'
-            params["annotation_value"] = annotation_value
-        elif annotation_key:
-            match_conditions.append(
-                "w.annotations CONTAINS $annotation_key_search"
-            )
-            params["annotation_key_search"] = f'"{annotation_key}"'
+        if annotation_key:
+            ann_key_prefix = annotation_key.split('*')[0] if '*' in annotation_key else annotation_key
+            if ann_key_prefix:
+                match_conditions.append(
+                    "w.annotations CONTAINS $annotation_key_search"
+                )
+                params["annotation_key_search"] = f'"{ann_key_prefix}'
         
         if label_key and label_value:
             match_conditions.append(
@@ -1181,9 +1177,11 @@ class GraphQueryEngine:
                 }
             }
         
-        # Post-filter for annotation_value and label_value (JSON string matching)
+        # Post-filter for annotation_key/value (supports * glob pattern)
         matched_pods = find_result["data"]
-        if annotation_key and annotation_value:
+        if annotation_key:
+            from fnmatch import fnmatch
+            ann_key_has_glob = '*' in annotation_key or '?' in annotation_key
             filtered = []
             for pod in matched_pods:
                 ann_raw = pod.get("annotations", "{}")
@@ -1194,8 +1192,24 @@ class GraphQueryEngine:
                         ann = {}
                 else:
                     ann = ann_raw or {}
-                if ann.get(annotation_key) == annotation_value:
+                
+                hit_keys = [k for k in ann if fnmatch(k, annotation_key)] if ann_key_has_glob else ([annotation_key] if annotation_key in ann else [])
+                if not hit_keys:
+                    continue
+                if not annotation_value or annotation_value == '*':
                     filtered.append(pod)
+                    continue
+                ann_val_has_glob = '*' in annotation_value or '?' in annotation_value
+                for k in hit_keys:
+                    v = str(ann[k])
+                    if ann_val_has_glob:
+                        if fnmatch(v, annotation_value):
+                            filtered.append(pod)
+                            break
+                    else:
+                        if v == annotation_value:
+                            filtered.append(pod)
+                            break
             matched_pods = filtered
         
         if label_key and label_value:
@@ -1624,6 +1638,7 @@ class GraphQueryEngine:
             'kubectl.kubernetes.io/',
             'kubernetes.io/',
             'openshift.io/',
+            'openshift.openshift.io/',
             'k8s.v1.cni.cncf.io/',
             'k8s.ovn.org/',
             'seccomp.security.alpha.kubernetes.io/',
