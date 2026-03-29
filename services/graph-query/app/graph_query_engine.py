@@ -1620,8 +1620,35 @@ class GraphQueryEngine:
 
         _KIND_ALIASES = {"ReplicaSet": "Deployment"}
 
-        def _resolve_kind(raw: str) -> str:
-            return _KIND_ALIASES.get(raw, raw)
+        _NOISE_ANNOTATION_PREFIXES = (
+            'kubectl.kubernetes.io/',
+            'kubernetes.io/',
+            'openshift.io/',
+            'k8s.v1.cni.cncf.io/',
+            'k8s.ovn.org/',
+            'seccomp.security.alpha.kubernetes.io/',
+        )
+
+        def _resolve_kind(raw: str, labels: dict = None) -> str:
+            if raw in _KIND_ALIASES:
+                return _KIND_ALIASES[raw]
+            if raw in ("Unknown", "") and labels:
+                if labels.get("pod-template-hash"):
+                    return "Deployment"
+                if labels.get("controller-revision-hash"):
+                    if labels.get("statefulset.kubernetes.io/pod-name"):
+                        return "StatefulSet"
+                    return "DaemonSet"
+            return raw
+
+        def _filter_summary_annotations(ann: dict) -> dict:
+            if not ann or not isinstance(ann, dict):
+                return ann or {}
+            return {
+                k: v for k, v in ann.items()
+                if not any(k.startswith(p) for p in _NOISE_ANNOTATION_PREFIXES)
+                and len(str(v)) < 500
+            }
 
         def _compact_service(entry: dict, direction: str = "downstream") -> dict:
             comm = entry.get("communication") or {}
@@ -1632,12 +1659,13 @@ class GraphQueryEngine:
                 svc_cat = self.classify_service_category(svc_type, entry.get("pod_name", ""))
             if not is_crit:
                 is_crit = self.is_critical_service(svc_type, entry.get("pod_name", ""))
+            labels = _safe_labels(entry)
             return {
                 "name": _workload_name(entry),
                 "namespace": entry.get("namespace", ""),
-                "kind": _resolve_kind(entry.get("owner_kind", "")),
-                "annotations": entry.get("annotations", {}),
-                "labels": entry.get("labels", {}),
+                "kind": _resolve_kind(entry.get("owner_kind", ""), labels),
+                "annotations": _filter_summary_annotations(entry.get("annotations", {})),
+                "labels": labels,
                 "is_critical": is_crit,
                 "service_type": svc_type,
                 "service_category": svc_cat,
@@ -1684,22 +1712,23 @@ class GraphQueryEngine:
                 all_downstream.extend(ds)
                 all_callers.extend(cl)
                 up_key = _workload_key(up)
+                up_labels = _safe_labels(up)
                 if up_key in workload_map:
                     workload_map[up_key]["downstream_count"] += len(ds)
                     workload_map[up_key]["callers_count"] += len(cl)
                     existing = workload_map[up_key]
-                    resolved = _resolve_kind(up.get("owner_kind", ""))
+                    resolved = _resolve_kind(up.get("owner_kind", ""), up_labels)
                     if (not existing["kind"] or existing["kind"] == "Unknown") and resolved not in ("", "Unknown"):
                         existing["kind"] = resolved
                     if not existing["annotations"] and up.get("annotations"):
-                        existing["annotations"] = up["annotations"]
+                        existing["annotations"] = _filter_summary_annotations(up["annotations"])
                 else:
                     workload_map[up_key] = {
                         "name": _workload_name(up),
                         "namespace": up.get("namespace", ""),
-                        "kind": _resolve_kind(up.get("owner_kind", "")),
-                        "annotations": up.get("annotations", {}),
-                        "labels": _safe_labels(up),
+                        "kind": _resolve_kind(up.get("owner_kind", ""), up_labels),
+                        "annotations": _filter_summary_annotations(up.get("annotations", {})),
+                        "labels": up_labels,
                         "downstream_count": len(ds),
                         "callers_count": len(cl),
                     }
@@ -1738,9 +1767,9 @@ class GraphQueryEngine:
             "service": {
                 "name": _workload_name(upstream),
                 "namespace": upstream.get("namespace", ""),
-                "kind": _resolve_kind(upstream.get("owner_kind", "")),
-                "annotations": upstream.get("annotations", {}),
-                "labels": upstream.get("labels", {}),
+                "kind": _resolve_kind(upstream.get("owner_kind", ""), _safe_labels(upstream)),
+                "annotations": _filter_summary_annotations(upstream.get("annotations", {})),
+                "labels": _safe_labels(upstream),
             },
             "downstream": _group_by_category(single_downstream, "downstream"),
             "callers": _group_by_category(single_callers, "caller"),
