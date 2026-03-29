@@ -747,22 +747,22 @@ const IntegrationHub: React.FC = () => {
             style={{ marginBottom: 16 }}
           />
 
-          <Card size="small" style={{ marginBottom: 16 }}>
-            <Space align="center">
-              <Text strong>Pipeline Platform:</Text>
-              <Select value={platform} onChange={setPlatform} style={{ width: 200 }}>
-                {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
-              </Select>
-              <Text type="secondary">(affects pipeline snippet format)</Text>
-            </Space>
-          </Card>
-
           <Tabs
             items={[
               {
                 key: 'pipeline',
-                label: <span><RocketOutlined /> {PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline'}</span>,
-                children: <CodeBlock code={buildPipelineSnippet(summaryParams, platform)} label="Pipeline YAML" />,
+                label: <span><RocketOutlined /> Pipeline</span>,
+                children: (
+                  <div>
+                    <Space align="center" style={{ marginBottom: 12 }}>
+                      <Text strong>Platform:</Text>
+                      <Select value={platform} onChange={setPlatform} style={{ width: 200 }}>
+                        {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
+                      </Select>
+                    </Space>
+                    <CodeBlock code={buildPipelineSnippet(summaryParams, platform)} label="Pipeline YAML" />
+                  </div>
+                ),
               },
               {
                 key: 'curl',
@@ -802,7 +802,7 @@ const IntegrationHub: React.FC = () => {
                         },
                         {
                           key: 'br-pipeline',
-                          label: PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline',
+                          label: `Pipeline (${PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline'})`,
                           children: <CodeBlock code={buildBlastRadiusPipelineSnippet(platform, contextNamespace, contextOwnerName)} label="Blast Radius Pipeline" />,
                         },
                       ]}
@@ -916,21 +916,22 @@ const IntegrationHub: React.FC = () => {
             style={{ marginBottom: 16 }}
           />
 
-          <Card size="small" style={{ marginBottom: 16 }}>
-            <Space align="center">
-              <Text strong>Pipeline Platform:</Text>
-              <Select value={platform} onChange={setPlatform} style={{ width: 200 }}>
-                {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
-              </Select>
-            </Space>
-          </Card>
-
           <Tabs
             items={[
               {
                 key: 'br-pipeline',
-                label: <span><RocketOutlined /> {PIPELINE_PLATFORMS.find(p => p.value === platform)?.label || 'Pipeline'}</span>,
-                children: <CodeBlock code={buildBlastRadiusPipelineSnippet(platform, brTargetNamespace || undefined, brTargetService || undefined)} label="Blast Radius Pipeline" />,
+                label: <span><RocketOutlined /> Pipeline</span>,
+                children: (
+                  <div>
+                    <Space align="center" style={{ marginBottom: 12 }}>
+                      <Text strong>Platform:</Text>
+                      <Select value={platform} onChange={setPlatform} style={{ width: 200 }}>
+                        {PIPELINE_PLATFORMS.map(p => <Option key={p.value} value={p.value}>{p.label}</Option>)}
+                      </Select>
+                    </Space>
+                    <CodeBlock code={buildBlastRadiusPipelineSnippet(platform, brTargetNamespace || undefined, brTargetService || undefined)} label="Blast Radius Pipeline" />
+                  </div>
+                ),
               },
               {
                 key: 'br-curl',

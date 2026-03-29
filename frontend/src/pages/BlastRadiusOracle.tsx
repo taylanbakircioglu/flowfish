@@ -556,26 +556,25 @@ const BlastRadiusOracle: React.FC = () => {
         }
       />
 
-      <div style={{ marginBottom: 16 }}>
-        <Text strong style={{ marginRight: 12 }}>Platform:</Text>
-        <Select
-          value={selectedPlatform}
-          onChange={setSelectedPlatform}
-          style={{ width: 200 }}
-        >
-          {PIPELINE_PLATFORMS.map(p => (
-            <Option key={p.value} value={p.value}>{p.label}</Option>
-          ))}
-        </Select>
-      </div>
-
       <Tabs
         size="small"
         items={[
           {
             key: 'br-pipeline',
-            label: <span><RocketOutlined /> {PIPELINE_PLATFORMS.find(p => p.value === selectedPlatform)?.label || 'Pipeline'}</span>,
-            children: <CodeBlock code={buildBlastRadiusPipelineSnippet(selectedPlatform)} label="Blast Radius Pipeline" />,
+            label: <span><RocketOutlined /> Pipeline</span>,
+            children: (
+              <div>
+                <Space align="center" style={{ marginBottom: 12 }}>
+                  <Text strong>Platform:</Text>
+                  <Select value={selectedPlatform} onChange={setSelectedPlatform} style={{ width: 200 }}>
+                    {PIPELINE_PLATFORMS.map(p => (
+                      <Option key={p.value} value={p.value}>{p.label}</Option>
+                    ))}
+                  </Select>
+                </Space>
+                <CodeBlock code={buildBlastRadiusPipelineSnippet(selectedPlatform)} label="Blast Radius Pipeline" />
+              </div>
+            ),
           },
           {
             key: 'br-curl',
