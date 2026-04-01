@@ -122,6 +122,19 @@ Flowfish uses **Inspektor Gadget** to collect eBPF-based network, DNS, process, 
 Without it, analyses will complete but **all event counts will remain at 0** — this includes
 the Dashboard (connections, traffic, DNS), Dependency Map, and Network Explorer.
 
+### Supported Platforms
+
+The Gadget DaemonSet automatically detects the container runtime socket path at pod startup
+via an init container. No manual configuration is needed.
+
+| Platform | Containerd Socket | Status |
+|----------|------------------|--------|
+| **Standard K8s** (kubeadm, GKE, EKS, AKS) | `/run/containerd/containerd.sock` | Auto-detected |
+| **K3s** | `/run/k3s/containerd/containerd.sock` | Auto-detected |
+| **RKE2** | `/run/k3s/containerd/containerd.sock` | Auto-detected |
+| **MicroK8s** | `/var/snap/microk8s/common/run/containerd.sock` | Auto-detected |
+| **OpenShift** (CRI-O) | `/run/crio/crio.sock` | Configured via `crio-socketpath` |
+
 > **Docker Compose users:** Inspektor Gadget is a Kubernetes-native DaemonSet and cannot run
 > in Docker Compose. It requires the Kubernetes API for pod/container discovery and metadata
 > enrichment. If you deployed Flowfish via Docker Compose, add a remote Kubernetes cluster

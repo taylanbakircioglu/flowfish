@@ -124,6 +124,8 @@ install() {
   echo ""
   if [ "$with_gadget" = "true" ]; then
     echo "  Inspektor Gadget: ENABLED (eBPF data collection active)"
+    echo "  Container runtime socket path is auto-detected at pod startup."
+    echo "  Supported: K3s, RKE2, standard K8s, MicroK8s."
     echo "  You can add this cluster as In-Cluster and run analyses."
   else
     echo "  Inspektor Gadget: NOT installed"
