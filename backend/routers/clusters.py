@@ -695,7 +695,11 @@ metadata:
 data:
   config.yaml: |
     events-buffer-length: 16384
-    containerd-socketpath: /run/containerd/containerd.sock
+    # Auto-detected by init container at pod startup. Supported platforms:
+    #   K3s/RKE2:  /run/k3s/containerd/containerd.sock
+    #   MicroK8s:  /var/snap/microk8s/common/run/containerd.sock
+    #   Standard:  /run/containerd/containerd.sock
+    containerd-socketpath: CONTAINERD_SOCKET_AUTO
     crio-socketpath: /run/crio/crio.sock
     docker-socketpath: /run/docker.sock
     podman-socketpath: /run/podman/podman.sock
@@ -791,6 +795,9 @@ spec:
         prometheus.io/port: "2223"
         prometheus.io/path: "/metrics"
     spec:
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: inspektor-gadget
       nodeSelector:
         kubernetes.io/os: linux
@@ -811,6 +818,39 @@ spec:
         operator: Exists
       - effect: NoExecute
         operator: Exists
+      initContainers:
+      - name: detect-runtime
+        image: busybox:1.36
+        command: ['sh', '-c']
+        args:
+        - |
+          if [ -S /host/run/k3s/containerd/containerd.sock ]; then
+            SOCKET="/run/k3s/containerd/containerd.sock"
+            echo "Detected K3s/RKE2 containerd socket"
+          elif [ -S /host/run/containerd/containerd.sock ]; then
+            SOCKET="/run/containerd/containerd.sock"
+            echo "Detected standard containerd socket"
+          elif [ -S /host/var/snap/microk8s/common/run/containerd.sock ]; then
+            SOCKET="/host/var/snap/microk8s/common/run/containerd.sock"
+            echo "Detected MicroK8s containerd socket"
+          else
+            SOCKET="/run/containerd/containerd.sock"
+            echo "WARNING: No containerd socket found at known paths, using default"
+          fi
+          echo "Using containerd socket: $SOCKET"
+          sed "s|CONTAINERD_SOCKET_AUTO|$SOCKET|g" /config-template/config.yaml > /config-generated/config.yaml
+        volumeMounts:
+        - name: run
+          mountPath: /host/run
+          readOnly: true
+        - name: var
+          mountPath: /host/var
+          readOnly: true
+        - name: config
+          mountPath: /config-template
+          readOnly: true
+        - name: config-generated
+          mountPath: /config-generated
       containers:
       - name: gadget
         image: GADGET_IMAGE_PLACEHOLDER
@@ -919,7 +959,7 @@ spec:
           mountPath: /sys/fs/bpf
         - name: oci
           mountPath: /var/lib/ig
-        - name: config
+        - name: config-generated
           mountPath: /etc/ig
           readOnly: true
         - name: wasm-cache
@@ -961,6 +1001,8 @@ spec:
         configMap:
           name: inspektor-gadget-config
           defaultMode: 0400
+      - name: config-generated
+        emptyDir: {}
       - name: wasm-cache
         emptyDir: {}
 ---
@@ -1355,6 +1397,9 @@ spec:
         prometheus.io/port: "2223"
         prometheus.io/path: "/metrics"
     spec:
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: inspektor-gadget
       nodeSelector:
         kubernetes.io/os: linux
@@ -1375,6 +1420,39 @@ spec:
         operator: Exists
       - effect: NoExecute
         operator: Exists
+      initContainers:
+      - name: detect-runtime
+        image: busybox:1.36
+        command: ['sh', '-c']
+        args:
+        - |
+          if [ -S /host/run/k3s/containerd/containerd.sock ]; then
+            SOCKET="/run/k3s/containerd/containerd.sock"
+            echo "Detected K3s/RKE2 containerd socket"
+          elif [ -S /host/run/containerd/containerd.sock ]; then
+            SOCKET="/run/containerd/containerd.sock"
+            echo "Detected standard containerd socket"
+          elif [ -S /host/var/snap/microk8s/common/run/containerd.sock ]; then
+            SOCKET="/host/var/snap/microk8s/common/run/containerd.sock"
+            echo "Detected MicroK8s containerd socket"
+          else
+            SOCKET="/run/containerd/containerd.sock"
+            echo "WARNING: No containerd socket found at known paths, using default"
+          fi
+          echo "Using containerd socket: $SOCKET"
+          sed "s|CONTAINERD_SOCKET_AUTO|$SOCKET|g" /config-template/config.yaml > /config-generated/config.yaml
+        volumeMounts:
+        - name: run
+          mountPath: /host/run
+          readOnly: true
+        - name: var
+          mountPath: /host/var
+          readOnly: true
+        - name: config
+          mountPath: /config-template
+          readOnly: true
+        - name: config-generated
+          mountPath: /config-generated
       containers:
       - name: gadget
         image: GADGET_IMAGE_PLACEHOLDER
@@ -1479,7 +1557,7 @@ spec:
           mountPath: /sys/fs/bpf
         - name: oci
           mountPath: /var/lib/ig
-        - name: config
+        - name: config-generated
           mountPath: /etc/ig
           readOnly: true
         - name: wasm-cache
@@ -1533,6 +1611,8 @@ spec:
         configMap:
           name: inspektor-gadget-config
           defaultMode: 0400
+      - name: config-generated
+        emptyDir: {}
       # Persistent storage for WASM cache
       - name: wasm-cache
         ephemeral:
