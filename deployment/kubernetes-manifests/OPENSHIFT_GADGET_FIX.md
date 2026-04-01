@@ -60,6 +60,12 @@ time="..." level=info msg="Serving on gRPC socket /run/gadgettracermanager.socke
 time="..." level=info msg="Starting gRPC server on 0.0.0.0:16060"
 ```
 
+The init container (`detect-runtime`) auto-detects the containerd socket path. Check its output:
+```bash
+oc logs -n $OPENSHIFT_NAMESPACE -l app=inspektor-gadget -c detect-runtime
+# Expected: "Detected standard containerd socket" or "Detected K3s/RKE2 containerd socket"
+```
+
 ## Quick Deploy Script (Automated)
 
 **Recommended Method:** Use the provided deployment script:

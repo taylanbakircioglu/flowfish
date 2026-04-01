@@ -9,7 +9,11 @@ metadata:
 data:
   config.yaml: |
     events-buffer-length: 16384
-    containerd-socketpath: /run/containerd/containerd.sock
+    # Auto-detected by init container at pod startup. Supported platforms:
+    #   K3s/RKE2:  /run/k3s/containerd/containerd.sock
+    #   MicroK8s:  /var/snap/microk8s/common/run/containerd.sock
+    #   Standard:  /run/containerd/containerd.sock
+    containerd-socketpath: CONTAINERD_SOCKET_AUTO
     crio-socketpath: /run/crio/crio.sock
     docker-socketpath: /run/docker.sock
     podman-socketpath: /run/podman/podman.sock
