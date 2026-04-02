@@ -194,6 +194,42 @@
   }
 }
 
-/* Light theme is default - no dark mode for login page */
-/* Keep the ocean theme bright and inviting */
+/* Dark mode overrides */
+.dark-theme .login-container {
+  background: linear-gradient(135deg, #0c4a6e 0%, #164e63 50%, #1e293b 100%);
+}
+
+.dark-theme .login-container::before {
+  background: 
+    radial-gradient(circle at 20% 50%, rgba(8, 145, 178, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(6, 182, 212, 0.1) 0%, transparent 50%);
+}
+
+.dark-theme .login-card {
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.dark-theme .login-form .ant-input-affix-wrapper,
+.dark-theme .login-form .ant-input-password {
+  background: #141414 !important;
+  border-color: #374151 !important;
+}
+
+.dark-theme .login-form .ant-input-affix-wrapper .ant-input,
+.dark-theme .login-form .ant-input-password .ant-input {
+  background: #141414 !important;
+  color: #e5e7eb !important;
+}
+
+.dark-theme .login-form .ant-input-affix-wrapper:hover,
+.dark-theme .login-form .ant-input-affix-wrapper-focused,
+.dark-theme .login-form .ant-input-password:hover {
+  border-color: #0891b2 !important;
+  box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.2) !important;
+}
+
+.dark-theme .login-form .ant-input-affix-wrapper .ant-input::placeholder,
+.dark-theme .login-form .ant-input-password .ant-input::placeholder {
+  color: rgba(255, 255, 255, 0.3) !important;
+}
 

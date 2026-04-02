@@ -7,6 +7,7 @@ import { RootState } from '../store';
 import { loginStart, loginSuccess, loginFailure } from '../store/slices/authSlice';
 import { apiClient } from '../utils/api';
 import FlowfishLogo from '../components/FlowfishLogo';
+import { APP_VERSION } from '../version';
 import './Login.css';
 
 const { useToken } = theme;
@@ -317,7 +318,7 @@ const Login: React.FC = () => {
           }}
         >
           <Text className="login-footer-text" style={{ color: themeStyles.footer.textColor }}>
-            Secure Enterprise Platform · Version 1.0.0
+            Secure Enterprise Platform · Version {APP_VERSION}
           </Text>
         </div>
       </Card>

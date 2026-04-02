@@ -1374,7 +1374,11 @@ const ChangeDetection: React.FC = () => {
               onClick={() => handleStatCardClick('anomalies')}
               style={{ 
                 cursor: 'pointer',
-                background: anomalyCount > 0 ? 'linear-gradient(135deg, #fff2e8 0%, #fff7e6 100%)' : undefined,
+                background: anomalyCount > 0
+                  ? isDark
+                    ? 'linear-gradient(135deg, rgba(212, 117, 106, 0.18) 0%, rgba(212, 117, 106, 0.08) 100%)'
+                    : 'linear-gradient(135deg, #fff2e8 0%, #fff7e6 100%)'
+                  : undefined,
                 borderLeft: anomalyCount > 0 ? '3px solid #d4756a' : undefined,
                 border: activeStatFilter === 'anomalies' ? '2px solid #d4756a' : undefined,
               }}
@@ -2064,7 +2068,7 @@ const ChangeDetection: React.FC = () => {
                         {/* Comparison Summary Cards */}
                         <Row gutter={16} style={{ marginBottom: 16 }}>
                           <Col span={6}>
-                            <Card bordered={false} style={{ background: '#e6f7ff', borderLeft: '3px solid #0891b2' }}>
+                            <Card bordered={false} style={{ background: isDark ? 'rgba(8, 145, 178, 0.15)' : '#e6f7ff', borderLeft: '3px solid #0891b2' }}>
                               <Statistic
                                 title={<><SyncOutlined style={{ color: '#0891b2' }} /> Run #{runA}</>}
                                 value={runComparisonData.comparison.total_in_run_a}
@@ -2077,7 +2081,7 @@ const ChangeDetection: React.FC = () => {
                             </Card>
                           </Col>
                           <Col span={6}>
-                            <Card bordered={false} style={{ background: '#f6ffed', borderLeft: '3px solid #4d9f7c' }}>
+                            <Card bordered={false} style={{ background: isDark ? 'rgba(77, 159, 124, 0.15)' : '#f6ffed', borderLeft: '3px solid #4d9f7c' }}>
                               <Statistic
                                 title={<><SyncOutlined style={{ color: '#4d9f7c' }} /> Run #{runB}</>}
                                 value={runComparisonData.comparison.total_in_run_b}
@@ -2090,7 +2094,7 @@ const ChangeDetection: React.FC = () => {
                             </Card>
                           </Col>
                           <Col span={6}>
-                            <Card bordered={false} style={{ background: '#fff2e8', borderLeft: '3px solid #b89b5d' }}>
+                            <Card bordered={false} style={{ background: isDark ? 'rgba(184, 155, 93, 0.15)' : '#fff2e8', borderLeft: '3px solid #b89b5d' }}>
                               <Statistic
                                 title={<><PlusCircleOutlined style={{ color: '#b89b5d' }} /> New in Run #{runB}</>}
                                 value={runComparisonData.comparison.only_in_run_b}
@@ -2103,7 +2107,7 @@ const ChangeDetection: React.FC = () => {
                             </Card>
                           </Col>
                           <Col span={6}>
-                            <Card bordered={false} style={{ background: '#fff1f0', borderLeft: '3px solid #c75450' }}>
+                            <Card bordered={false} style={{ background: isDark ? 'rgba(199, 84, 80, 0.15)' : '#fff1f0', borderLeft: '3px solid #c75450' }}>
                               <Statistic
                                 title={<><MinusCircleOutlined style={{ color: '#c75450' }} /> Gone from #{runA}</>}
                                 value={runComparisonData.comparison.only_in_run_a}
