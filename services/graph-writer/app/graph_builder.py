@@ -130,6 +130,39 @@ class GraphBuilder:
         '169.254.',       # Link-local
     )
     
+    # Known public TLDs — safety check for DNS search domain normalization.
+    # After stripping a search suffix, the base must end with one of these
+    # to confirm it is a real external domain (not a K8s service name).
+    # Not exhaustive: unknown TLDs simply won't be stripped (safer default).
+    KNOWN_TLDS = frozenset({
+        'com', 'net', 'org', 'edu', 'gov', 'mil', 'int',
+        'io', 'co', 'ai', 'app', 'dev', 'cloud', 'tech', 'site', 'online',
+        'store', 'shop', 'blog', 'info', 'biz', 'xyz', 'me', 'tv', 'cc',
+        'pro', 'mobi', 'asia', 'name', 'tel',
+        'bank', 'insurance', 'law', 'healthcare',
+        'uk', 'de', 'fr', 'it', 'es', 'nl', 'be', 'at', 'ch', 'se', 'no',
+        'dk', 'fi', 'pl', 'cz', 'hu', 'ro', 'bg', 'hr', 'pt', 'gr', 'ie',
+        'ru', 'ua', 'cn', 'jp', 'kr', 'tw', 'hk', 'sg', 'th', 'vn', 'my',
+        'id', 'in', 'pk', 'au', 'nz', 'br', 'ar', 'cl', 'mx', 'pe',
+        'us', 'ca', 'za', 'ng', 'ke', 'eg', 'ae', 'sa', 'il', 'tr', 'ir',
+    })
+
+    # Multi-level public TLD suffixes (e.g. .com.tr, .co.uk)
+    MULTI_LEVEL_TLDS = frozenset({
+        'com.tr', 'gov.tr', 'org.tr', 'edu.tr', 'net.tr',
+        'co.uk', 'org.uk', 'gov.uk', 'ac.uk',
+        'com.au', 'gov.au', 'org.au', 'edu.au',
+        'com.br', 'gov.br', 'org.br',
+        'co.jp', 'or.jp', 'ac.jp',
+        'co.kr', 'or.kr',
+        'com.cn', 'gov.cn', 'org.cn',
+        'co.in', 'gov.in', 'org.in',
+        'co.za', 'gov.za', 'org.za',
+        'co.nz', 'govt.nz',
+        'com.mx', 'gov.mx',
+        'com.ar', 'gov.ar',
+    })
+    
     def __init__(self):
         self.vertex_cache = {}  # Cache to avoid duplicate vertex creation
         self.edge_cache = {}    # Cache to aggregate edge updates
@@ -301,40 +334,88 @@ class GraphBuilder:
     
     def _normalize_dns_name(self, name: str) -> str:
         """
-        Normalize DNS name to prevent duplicate nodes for the same host.
+        Normalize DNS name to collapse search domain artifacts into one graph node.
         
-        Handles:
-        - Trailing dots: 'host.domain.com.' → 'host.domain.com'
-        - Cluster local suffix: 'host.domain.com.cluster.local' → 'host.domain.com'
-        - Kubernetes service DNS: '10-128-1-1.svc.cluster.local' → keep as is (pod IP)
+        Kubernetes pods expand short names via /etc/resolv.conf search list:
+          auth.docker.io → tries auth.docker.io.<ns>.svc.cluster.local  (NXDOMAIN)
+                                  auth.docker.io.svc.cluster.local      (NXDOMAIN)
+                                  auth.docker.io.cluster.local           (NXDOMAIN)
+                                  auth.docker.io.<custom-domain>         (NXDOMAIN)
+                                  auth.docker.io                         (success)
         
-        Args:
-            name: DNS name to normalize
-            
-        Returns:
-            Normalized DNS name
+        Without normalization each variant creates a separate Neo4j node.
+        
+        Algorithm:
+          1. Strip trailing dot (FQDN notation)
+          2. Try stripping K8s search suffixes (.svc.cluster.local, .cluster.local)
+          3. Try stripping custom search domains (DNS_SEARCH_DOMAINS env var)
+          4. Each strip is accepted only if the base has a known public TLD (safety)
         """
         if not name:
             return name
         
-        # Remove trailing dot (FQDN format)
         name = name.rstrip('.')
         
-        # Remove .cluster.local suffix for external DNS names
-        # But keep it for actual K8s service DNS (contains IP pattern or 'svc')
-        if name.endswith('.cluster.local'):
-            # Check if this is a real K8s service DNS
-            base = name[:-14]  # Remove '.cluster.local'
-            # K8s service DNS looks like: service-name.namespace.svc
-            # or pod DNS: 10-128-1-1.service.namespace.svc
-            if '.svc' in name or self._looks_like_ip_dns(base):
-                # Keep as is - it's a real K8s internal DNS
-                pass
-            else:
-                # External DNS with .cluster.local appended (DNS search domain)
-                name = base
+        stripped = self._strip_k8s_search_suffix(name)
+        if stripped != name:
+            return stripped
+        
+        stripped = self._strip_custom_search_domains(name)
+        if stripped != name:
+            return stripped
         
         return name
+    
+    def _strip_k8s_search_suffix(self, name: str) -> str:
+        """Strip Kubernetes DNS search suffixes if the remaining base is a valid external domain."""
+        lower = name.lower()
+        
+        if lower.endswith('.svc.cluster.local'):
+            base = name[:-18]  # len('.svc.cluster.local') == 18
+            if base and '.' in base and self._has_known_tld(base):
+                return base
+            # Try removing one more label (<namespace>) before .svc.cluster.local
+            dot = base.rfind('.')
+            if dot > 0:
+                shorter = base[:dot]
+                if '.' in shorter and self._has_known_tld(shorter):
+                    return shorter
+        elif lower.endswith('.cluster.local'):
+            base = name[:-14]  # len('.cluster.local') == 14
+            if base and '.' in base and self._has_known_tld(base):
+                return base
+        
+        return name
+    
+    def _strip_custom_search_domains(self, name: str) -> str:
+        """Strip custom DNS search domains configured via DNS_SEARCH_DOMAINS env var."""
+        raw = os.environ.get('DNS_SEARCH_DOMAINS', '')
+        if not raw:
+            return name
+        
+        domains = [d.strip().lower().lstrip('.') for d in raw.split(',') if d.strip()]
+        domains.sort(key=len, reverse=True)
+        
+        lower = name.lower()
+        for domain in domains:
+            suffix = f'.{domain}'
+            if lower.endswith(suffix):
+                base = name[:len(name) - len(suffix)]
+                if base and '.' in base and self._has_known_tld(base):
+                    return base
+        
+        return name
+    
+    def _has_known_tld(self, name: str) -> bool:
+        """Check whether name ends with a known public TLD (single or multi-level)."""
+        if not name or '.' not in name:
+            return False
+        parts = name.lower().rsplit('.', 3)
+        if len(parts) >= 3:
+            two = f'{parts[-2]}.{parts[-1]}'
+            if two in self.MULTI_LEVEL_TLDS:
+                return True
+        return parts[-1] in self.KNOWN_TLDS
     
     def _looks_like_ip_dns(self, name: str) -> bool:
         """Check if name looks like an IP-based DNS name (e.g., 10-128-1-1.service...)"""
@@ -795,9 +876,13 @@ class GraphBuilder:
             # Source: the pod making the DNS query
             src_namespace = data.get('namespace') or 'unknown'
             src_pod = data.get('pod_name') or data.get('pod') or 'unknown'
-            query_name = data.get('query_name') or data.get('name') or ''
+            query_name_raw = data.get('query_name') or data.get('name') or ''
             
-            # Skip internal Kubernetes DNS queries
+            # Normalize to collapse search domain artifacts into one node
+            query_name = self._normalize_dns_name(query_name_raw) if query_name_raw else ''
+            
+            # Skip internal K8s DNS (checked AFTER normalization so real
+            # K8s names that survived normalization are still skipped)
             if not query_name or query_name.endswith('.svc.cluster.local') or query_name.endswith('.pod.cluster.local'):
                 return vertices, []
             
@@ -840,9 +925,10 @@ class GraphBuilder:
                 resolved_ip = str(response_ips[0]) if response_ips[0] else ''
             else:
                 resolved_ip = data.get('resolved_ip') or data.get('answer') or ''
-            if dst_vid not in self.vertex_cache:
-                # Determine network_type based on resolved IP
-                # This is critical for frontend to distinguish PUBLIC vs DATACENTER
+            # Emit vertex when first seen OR when this event provides a resolved IP
+            # that a previous NXDOMAIN artifact lacked. Neo4j MERGE + SET handles
+            # duplicates: later properties overwrite earlier ones in the same batch.
+            if dst_vid not in self.vertex_cache or resolved_ip:
                 network_type = ''
                 if resolved_ip:
                     network_type = self._classify_ip_network_type(resolved_ip)
@@ -856,9 +942,9 @@ class GraphBuilder:
                         'namespace': 'external',
                         'cluster_id': str(cluster_id),
                         'analysis_id': str(analysis_id) if analysis_id else '',
-                        'ip': str(resolved_ip) if resolved_ip else '',  # IP from DNS resolution
+                        'ip': str(resolved_ip) if resolved_ip else '',
                         'dns_name': str(query_name),
-                        'network_type': network_type,  # For PUBLIC vs DATACENTER classification
+                        'network_type': network_type,
                         'resolution_source': 'dns',
                         'created_at': int(datetime.utcnow().timestamp()),
                         'is_external': True,
@@ -998,7 +1084,8 @@ class GraphBuilder:
             
             namespace = data.get('namespace') or 'unknown'
             pod_name = data.get('pod_name') or data.get('pod') or data.get('comm') or 'unknown'
-            sni_name = data.get('sni_name') or data.get('name') or data.get('server_name') or ''
+            sni_name_raw = data.get('sni_name') or data.get('name') or data.get('server_name') or ''
+            sni_name = self._normalize_dns_name(sni_name_raw) if sni_name_raw else ''
             dst_ip = data.get('dst_ip') or data.get('dest_ip') or ''
             dst_port = data.get('dst_port') or data.get('dest_port') or 443
             

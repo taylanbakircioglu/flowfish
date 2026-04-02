@@ -42,7 +42,8 @@ import {
   GroupOutlined,
   UnorderedListOutlined,
   ExclamationCircleOutlined,
-  AlertOutlined
+    AlertOutlined,
+    FilterOutlined
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useGetClustersQuery } from '../store/api/clusterApi';
@@ -124,6 +125,7 @@ const NetworkExplorer: React.FC = () => {
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 1000 });
   const [groupByConnection, setGroupByConnection] = useState(false); // Group unique connections
+  const [hideSearchArtifacts, setHideSearchArtifacts] = useState(false);
   
   // Column filters state - for each tab
   const [flowsColumnFilters, setFlowsColumnFilters] = useState<Record<string, FilterValue | null>>({});
@@ -676,6 +678,18 @@ const NetworkExplorer: React.FC = () => {
     return servicesData;
   }, [servicesData, debouncedSearchTerm, matchesSearch]);
 
+  const isSearchDomainArtifact = useCallback((e: DnsQueryEvent): boolean => {
+    const code = (e.response_code || '').toUpperCase();
+    if (code === 'NOERROR' || !code) return false;
+    const name = (e.query_name || '').toLowerCase();
+    return name.endsWith('.cluster.local');
+  }, []);
+
+  const searchArtifactCount = useMemo(() => {
+    if (!dnsData?.queries) return 0;
+    return dnsData.queries.filter(isSearchDomainArtifact).length;
+  }, [dnsData?.queries, isSearchDomainArtifact]);
+
   // Filter DNS queries using specific search
   const filteredDnsQueries = useMemo(() => {
     if (!dnsData?.queries) return [];
@@ -688,6 +702,8 @@ const NetworkExplorer: React.FC = () => {
           const eventClusterId = typeof e.cluster_id === 'string' ? parseInt(e.cluster_id, 10) : e.cluster_id;
           if (!selectedClusterIds.includes(eventClusterId)) return false;
         }
+        // Hide search domain artifacts (NXDOMAIN for .cluster.local/.svc.cluster.local)
+        if (hideSearchArtifacts && isSearchDomainArtifact(e)) return false;
         // Client-side search fallback
         if (debouncedSearchTerm && debouncedSearchTerm.length >= 3) {
           return matchesSearch(debouncedSearchTerm,
@@ -733,7 +749,7 @@ const NetworkExplorer: React.FC = () => {
     }
     
     return filtered;
-  }, [dnsData?.queries, groupByConnection, isMultiClusterAnalysis, selectedClusterIds, analysisClusterIds, debouncedSearchTerm, matchesSearch]);
+  }, [dnsData?.queries, groupByConnection, hideSearchArtifacts, isSearchDomainArtifact, isMultiClusterAnalysis, selectedClusterIds, analysisClusterIds, debouncedSearchTerm, matchesSearch]);
 
   // Filter SNI events using specific search
   const filteredSniEvents = useMemo(() => {
@@ -1835,6 +1851,23 @@ const NetworkExplorer: React.FC = () => {
                   </Text>
                 </Space>
               </Tooltip>
+              {activeTab === 'dns' && searchArtifactCount > 0 && (
+                <Tooltip title={hideSearchArtifacts
+                  ? `Hiding ${searchArtifactCount} DNS search domain artifacts (NXDOMAIN for .cluster.local). Toggle off to show all.`
+                  : `${searchArtifactCount} DNS queries appear to be Kubernetes search domain artifacts (NXDOMAIN for .cluster.local suffixes). Toggle on to hide them.`}>
+                  <Space>
+                    <Switch
+                      checked={hideSearchArtifacts}
+                      onChange={setHideSearchArtifacts}
+                      checkedChildren={<FilterOutlined />}
+                      unCheckedChildren={<FilterOutlined />}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {hideSearchArtifacts ? `Artifacts Hidden (${searchArtifactCount})` : 'Show All DNS'}
+                    </Text>
+                  </Space>
+                </Tooltip>
+              )}
               <Button 
                 icon={<ReloadOutlined />} 
                 onClick={handleRefresh}

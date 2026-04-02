@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     filter_localhost: bool = False  # If True, filter localhost traffic at graph-writer level
     # Note: Frontend also has a toggle to filter localhost. Set this to False to let frontend handle it.
     
+    # DNS search domain normalization — comma-separated list of custom search
+    # domains to strip from DNS names before creating graph nodes.
+    # Typically matches the search list from /etc/resolv.conf on cluster nodes.
+    # Example: DNS_SEARCH_DOMAINS=mycompany.local,internal.mycompany.local
+    dns_search_domains: str = Field(default="", description="From DNS_SEARCH_DOMAINS env var")
+    
     # Kubernetes (for workload discovery)
     k8s_in_cluster: bool = True
     k8s_config_path: str = "~/.kube/config"
