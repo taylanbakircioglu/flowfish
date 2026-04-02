@@ -1612,7 +1612,7 @@ spec:
           name: inspektor-gadget-config
           defaultMode: 0400
       - name: config-generated
-        emptyDir: {}
+        emptyDir: {{}}
       # Persistent storage for WASM cache
       - name: wasm-cache
         ephemeral:
