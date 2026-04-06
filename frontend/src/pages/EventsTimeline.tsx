@@ -23,6 +23,7 @@ import {
   Tooltip,
   Switch,
   Segmented,
+  Skeleton,
   theme
 } from 'antd';
 import { 
@@ -53,6 +54,7 @@ import { useGetAnalysesQuery } from '../store/api/analysisApi';
 import { 
   useGetEventStatsQuery, 
   useGetEventsQuery,
+  useGetEventHistogramQuery,
   UnifiedEvent
 } from '../store/api/eventsApi';
 import { Analysis } from '../types';
@@ -260,6 +262,20 @@ const EventsTimeline: React.FC = () => {
 
   const { data: eventStats, isLoading: isStatsLoading, refetch: refetchStats } = useGetEventStatsQuery(
     statsParams,
+    { skip: !selectedAnalysisId || !selectedClusterId }
+  );
+
+  const histogramParams = useMemo(() => ({
+    cluster_id: selectedClusterId!,
+    analysis_id: selectedAnalysisId,
+    event_types: selectedTypes.length > 0 ? selectedTypes.join(',') : undefined,
+    start_time: dateRange?.[0]?.toISOString(),
+    end_time: dateRange?.[1]?.toISOString(),
+    bucket_count: 60,
+  }), [selectedClusterId, selectedAnalysisId, selectedTypes, dateRange]);
+
+  const { data: histogramData, isLoading: isHistogramLoading, refetch: refetchHistogram } = useGetEventHistogramQuery(
+    histogramParams,
     { skip: !selectedAnalysisId || !selectedClusterId }
   );
 
@@ -495,53 +511,30 @@ const EventsTimeline: React.FC = () => {
     return Array.from(namespaces).sort();
   }, [eventsData?.events]);
   
-  // Timeline data - aggregate events by time buckets
+  // Timeline data from server-side histogram
   const timelineData = useMemo(() => {
-    const buckets: { time: string; count: number; types: Record<string, number>; startTime: dayjs.Dayjs; endTime: dayjs.Dayjs }[] = [];
-    
-    if (!eventsData?.events || eventsData.events.length === 0) {
-      return buckets;
+    if (!histogramData?.buckets || histogramData.buckets.length === 0) {
+      return [];
     }
     
-    // Find time range from events
-    const timestamps = eventsData.events.map(e => dayjs(e.timestamp));
-    const minTime = timestamps.reduce((min, t) => t.isBefore(min) ? t : min, timestamps[0]);
-    const maxTime = timestamps.reduce((max, t) => t.isAfter(max) ? t : max, timestamps[0]);
+    const intervalSeconds = histogramData.interval_seconds || 1;
+    const start = histogramData.time_range?.start ? dayjs(histogramData.time_range.start) : null;
+    const end = histogramData.time_range?.end ? dayjs(histogramData.time_range.end) : null;
+    const isMultiDay = start && end && end.diff(start, 'day') >= 1;
+    const timeFormat = isMultiDay ? 'DD MMM HH:mm' : 'HH:mm';
     
-    const rangeMinutes = maxTime.diff(minTime, 'minute');
-    const bucketCount = 60;
-    const bucketSizeMinutes = Math.max(1, Math.ceil(rangeMinutes / bucketCount));
-    
-    const startTime = minTime.startOf('minute');
-    for (let i = 0; i < bucketCount; i++) {
-      const bucketStart = startTime.add(i * bucketSizeMinutes, 'minute');
-      const bucketEnd = bucketStart.add(bucketSizeMinutes, 'minute');
-      
-      buckets.push({
-        time: bucketStart.format('HH:mm'),
-        count: 0,
-        types: {},
+    return histogramData.buckets.map((bucket) => {
+      const bucketStart = dayjs(bucket.time);
+      const bucketEnd = bucketStart.add(intervalSeconds, 'second');
+      return {
+        time: bucketStart.format(timeFormat),
+        count: bucket.count,
+        types: bucket.types,
         startTime: bucketStart,
-        endTime: bucketEnd
-      });
-    }
-    
-    // Count events in each bucket
-    eventsData.events.forEach(event => {
-      const eventTime = dayjs(event.timestamp);
-      const eventUnix = eventTime.unix();
-      
-      for (let i = 0; i < buckets.length; i++) {
-        if (eventUnix >= buckets[i].startTime.unix() && eventUnix < buckets[i].endTime.unix()) {
-          buckets[i].count++;
-          buckets[i].types[event.event_type] = (buckets[i].types[event.event_type] || 0) + 1;
-          break;
-        }
-      }
+        endTime: bucketEnd,
+      };
     });
-    
-    return buckets;
-  }, [eventsData?.events]);
+  }, [histogramData]);
   
   // Max value for timeline scaling
   const timelineMax = useMemo(() => {
@@ -552,8 +545,9 @@ const EventsTimeline: React.FC = () => {
   const handleRefresh = useCallback((silent = false) => {
     refetchEvents();
     refetchStats();
+    refetchHistogram();
     if (!silent) message.success('Data refreshed');
-  }, [refetchEvents, refetchStats]);
+  }, [refetchEvents, refetchStats, refetchHistogram]);
   
   // Auto-refresh effect
   useEffect(() => {
@@ -1098,10 +1092,13 @@ const EventsTimeline: React.FC = () => {
             <Space>
               <ClockCircleOutlined style={{ color: '#22a6a6' }} />
               <Text strong>Events Timeline</Text>
+              {histogramData?.total_events != null && histogramData.total_events > 0 && (
+                <Tag color="cyan" style={{ marginLeft: 4 }}>{histogramData.total_events.toLocaleString()} events</Tag>
+              )}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                ({timelineData.length > 0 && timelineData[0].startTime ? 
-                  `${timelineData[0].startTime.format('HH:mm')} - ${timelineData[timelineData.length - 1].endTime?.format('HH:mm') || 'Now'}` : 
-                  'No data'})
+                {timelineData.length > 0 && timelineData[0].startTime ? 
+                  `(${timelineData[0].startTime.format('DD MMM HH:mm')} - ${timelineData[timelineData.length - 1].endTime?.format('DD MMM HH:mm') || 'Now'})` : 
+                  isHistogramLoading ? '' : '(No data)'}
               </Text>
             </Space>
           }
@@ -1115,25 +1112,25 @@ const EventsTimeline: React.FC = () => {
           }
           bodyStyle={{ padding: '12px 16px' }}
         >
+          {isHistogramLoading ? (
+            <Skeleton.Input active block style={{ height: 64 }} />
+          ) : (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {/* Bars */}
-            <div style={{ display: 'flex', alignItems: 'flex-end', height: 50, gap: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', height: 64, gap: 1 }}>
               {timelineData.map((bucket, idx) => {
-                const height = bucket.count > 0 ? Math.max((bucket.count / timelineMax) * 45, 2) : 0;
-                // Determine dominant event type for color
-                const getDominantColor = () => {
-                  if (bucket.count === 0) return '#f0f0f0';
-                  const types = bucket.types;
-                  const maxType = Object.keys(types).reduce((a, b) => types[a] > types[b] ? a : b, Object.keys(types)[0]);
-                  return eventTypeConfig[maxType]?.color || '#0891b2';
-                };
+                const barHeight = bucket.count > 0 ? Math.max((bucket.count / timelineMax) * 58, 3) : 1;
+                const eventTypeOrder = Object.keys(eventTypeConfig);
+                const typeEntries = Object.entries(bucket.types)
+                  .sort(([a], [b]) => eventTypeOrder.indexOf(a) - eventTypeOrder.indexOf(b));
+                
                 return (
                   <Tooltip 
                     key={idx} 
                     title={
                       <div>
                         <div><strong>{bucket.time}</strong></div>
-                        {Object.entries(bucket.types).map(([type, count]) => (
+                        {typeEntries.map(([type, count]) => (
                           <div key={type} style={{ color: eventTypeConfig[type]?.color }}>
                             {eventTypeConfig[type]?.label || type}: {count}
                           </div>
@@ -1143,38 +1140,60 @@ const EventsTimeline: React.FC = () => {
                     }
                   >
                     <div
+                      onClick={() => {
+                        if (bucket.count > 0) {
+                          setDateRange([bucket.startTime, bucket.endTime]);
+                        }
+                      }}
                       style={{
                         flex: 1,
-                        height: height,
-                        minHeight: bucket.count > 0 ? 2 : 0,
-                        backgroundColor: getDominantColor(),
+                        height: barHeight,
                         borderRadius: 1,
-                        transition: 'height 0.3s ease',
-                        cursor: 'pointer',
+                        cursor: bucket.count > 0 ? 'pointer' : 'default',
+                        overflow: 'hidden',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        transition: 'opacity 0.2s ease',
                         opacity: bucket.count > 0 ? 1 : 0.3,
+                        backgroundColor: bucket.count === 0 ? (isDark ? '#333' : '#f0f0f0') : undefined,
                       }}
-                    />
+                      onMouseEnter={(e) => { if (bucket.count > 0) e.currentTarget.style.opacity = '0.8'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.opacity = bucket.count > 0 ? '1' : '0.3'; }}
+                    >
+                      {bucket.count > 0 && typeEntries.map(([type, count]) => (
+                        <div
+                          key={type}
+                          style={{
+                            flex: count,
+                            backgroundColor: eventTypeConfig[type]?.color || '#0891b2',
+                            minHeight: 1,
+                          }}
+                        />
+                      ))}
+                    </div>
                   </Tooltip>
                 );
               })}
             </div>
-            {/* Time labels */}
+            {/* Time labels - 5 evenly spaced */}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, paddingLeft: 2, paddingRight: 2 }}>
-              <Text type="secondary" style={{ fontSize: 10 }}>
-                {timelineData.length > 0 ? timelineData[0].time : ''}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 10 }}>
-                {timelineData.length > 30 ? timelineData[Math.floor(timelineData.length / 2)].time : ''}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 10 }}>
-                {timelineData.length > 0 ? timelineData[timelineData.length - 1].time : ''}
-              </Text>
+              {timelineData.length > 0 && [0, 0.25, 0.5, 0.75, 1].map((pct, i) => {
+                const idx = Math.min(Math.floor(pct * (timelineData.length - 1)), timelineData.length - 1);
+                return (
+                  <Text key={i} type="secondary" style={{ fontSize: 10 }}>
+                    {timelineData[idx]?.time || ''}
+                  </Text>
+                );
+              })}
             </div>
           </div>
-          {/* Legend */}
+          )}
+          {/* Legend - show all types present in data */}
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: 6 }}>
             <Space size={12} wrap>
-              {Object.entries(eventTypeConfig).slice(0, 6).map(([key, config]) => (
+              {Object.entries(eventTypeConfig)
+                .filter(([key]) => histogramData?.buckets?.some(b => key in b.types))
+                .map(([key, config]) => (
                 <Space key={key} size={4}>
                   <div style={{ width: 8, height: 8, backgroundColor: config.color, borderRadius: 2 }} />
                   <Text type="secondary" style={{ fontSize: 10 }}>{config.label}</Text>

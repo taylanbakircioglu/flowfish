@@ -598,6 +598,46 @@ async def get_tcp_connections(
 
 
 @router.get(
+    "/histogram",
+    summary="Get Event Histogram",
+    description="Time-bucketed event histogram for timeline visualization"
+)
+async def get_event_histogram(
+    cluster_id: Optional[int] = Query(None, description="Cluster ID"),
+    analysis_id: Optional[int] = Query(None, description="Filter by analysis", gt=0),
+    event_types: Optional[str] = Query(None, description="Comma-separated event types"),
+    start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
+    end_time: Optional[str] = Query(None, description="End time (ISO format)"),
+    bucket_count: int = Query(60, ge=1, le=200, description="Number of time buckets"),
+    current_user: dict = Depends(get_current_user),
+    service: EventService = Depends(get_service)
+):
+    """Get event histogram for timeline"""
+    if not analysis_id:
+        raise HTTPException(status_code=400, detail="analysis_id is required for histogram")
+    
+    try:
+        types_list: Optional[List[str]] = None
+        if event_types:
+            types_list = [t.strip() for t in event_types.split(",")]
+        
+        return await service.get_event_histogram(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            event_types=types_list,
+            start_time=start_time,
+            end_time=end_time,
+            bucket_count=bucket_count
+        )
+    except Exception as e:
+        logger.error("Failed to get event histogram", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve event histogram: {str(e)}"
+        )
+
+
+@router.get(
     "",
     response_model=GenericEventsResponse,
     summary="Get All Events",

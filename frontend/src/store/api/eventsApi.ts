@@ -232,10 +232,32 @@ export interface EventsResponse {
   has_more: boolean;
 }
 
+export interface HistogramBucket {
+  time: string;
+  count: number;
+  types: Record<string, number>;
+}
+
+export interface EventHistogramResponse {
+  buckets: HistogramBucket[];
+  time_range: { start: string | null; end: string | null };
+  interval_seconds: number;
+  total_events: number;
+}
+
+export interface EventHistogramParams {
+  cluster_id?: number;
+  analysis_id?: number;
+  event_types?: string;
+  start_time?: string;
+  end_time?: string;
+  bucket_count?: number;
+}
+
 export const eventsApi = createApi({
   reducerPath: 'eventsApi',
   baseQuery: baseQueryWithReauth,
-  tagTypes: ['Events', 'EventStats'],
+  tagTypes: ['Events', 'EventStats', 'EventHistogram'],
   endpoints: (builder) => ({
     // Get events list
     getEvents: builder.query<EventsResponse, EventsQueryParams>({
@@ -256,6 +278,16 @@ export const eventsApi = createApi({
       }),
       providesTags: (result, error, params) => [
         { type: 'EventStats', id: `${params.cluster_id}-${params.analysis_id || 'all'}` }
+      ],
+    }),
+    
+    getEventHistogram: builder.query<EventHistogramResponse, EventHistogramParams>({
+      query: (params) => ({
+        url: '/events/histogram',
+        params,
+      }),
+      providesTags: (result, error, params) => [
+        { type: 'EventHistogram', id: `${params?.cluster_id}-${params?.analysis_id || 'all'}` }
       ],
     }),
     
@@ -353,6 +385,7 @@ export const eventsApi = createApi({
 export const {
   useGetEventsQuery,
   useGetEventStatsQuery,
+  useGetEventHistogramQuery,
   useGetDnsQueriesQuery,
   useGetSniEventsQuery,
   useGetSecurityEventsQuery,

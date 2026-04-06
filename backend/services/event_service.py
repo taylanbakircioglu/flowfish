@@ -11,7 +11,7 @@ Responsibilities:
 - Provide unified interface for controllers
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional
 import asyncio
 import structlog
 
@@ -919,6 +919,25 @@ class EventService:
         
         has_more = (offset + len(events)) < total
         return GenericEventsResponse(events=events, total=total, has_more=has_more)
+
+    async def get_event_histogram(
+        self,
+        cluster_id: Optional[int] = None,
+        analysis_id: Optional[int] = None,
+        event_types: Optional[List[str]] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        bucket_count: int = 60
+    ) -> Dict[str, Any]:
+        """Get time-bucketed event histogram for timeline visualization"""
+        return await self.event_repository.get_event_histogram(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            event_types=event_types,
+            start_time=start_time,
+            end_time=end_time,
+            bucket_count=bucket_count
+        )
 
 
 # Service factory for dependency injection

@@ -199,6 +199,7 @@
 | Frontend Page | eventsApi Hook | Backend Endpoint | Query Service |
 |----------------|----------------|------------------|---------------|
 | EventsTimeline | `useGetEventsQuery` | `/events` | timeseries-query |
+| EventsTimeline | `useGetEventHistogramQuery` | `/events/histogram` | timeseries-query |
 | SecurityCenter | `useGetSecurityEventsQuery` | `/events/security` | timeseries-query |
 | SecurityCenter | `useGetOomEventsQuery` | `/events/oom` | timeseries-query |
 | ActivityMonitor | `useGetProcessEventsQuery` | `/events/process` | timeseries-query |

@@ -1867,6 +1867,33 @@ class TimeseriesQueryEventRepository(EventRepository):
             return (result.get("events", []), result.get("total", 0))
         return ([], 0)
     
+    async def get_event_histogram(
+        self,
+        cluster_id: Optional[int] = None,
+        analysis_id: Optional[int] = None,
+        event_types: Optional[List[str]] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        bucket_count: int = 60
+    ) -> Dict[str, Any]:
+        """Get time-bucketed event histogram from timeseries-query service"""
+        params = {
+            "cluster_id": cluster_id,
+            "analysis_id": analysis_id,
+            "start_time": start_time,
+            "end_time": end_time,
+            "bucket_count": bucket_count
+        }
+        
+        if event_types:
+            params["event_types"] = ",".join(event_types)
+        
+        result = await self._request("/events/histogram", params)
+        
+        if result:
+            return result
+        return {"buckets": [], "time_range": {"start": None, "end": None}, "interval_seconds": 0, "total_events": 0}
+    
     async def delete_analysis_data(
         self,
         analysis_id: int,

@@ -29,10 +29,12 @@ This document details which data sources (ClickHouse / Neo4j) each Flowfish fron
 | Data | Source | API Endpoint | Time Range |
 |------|--------|--------------|------------|
 | All Events | ClickHouse | `/events` | ✅ Supported |
+| Event Histogram | ClickHouse | `/events/histogram` | ✅ Supported |
 | Event Stats | ClickHouse | `/events/stats` | ❌ Aggregate |
 
 **RTK Query Hooks:**
 - `useGetEventsQuery` → ClickHouse
+- `useGetEventHistogramQuery` → ClickHouse
 - `useGetEventStatsQuery` → ClickHouse
 
 **Time Range Implementation:**

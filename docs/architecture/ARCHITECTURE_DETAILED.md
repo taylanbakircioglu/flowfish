@@ -263,6 +263,7 @@
 │  │ │ Endpoints:                  │        │ Endpoints:                  │         │   │
 │  │ │ • GET /events/stats         │        │ • GET /graph/dependencies   │         │   │
 │  │ │ • GET /events               │        │ • GET /graph/impact         │         │   │
+│  │ │ • GET /events/histogram     │        │                             │         │   │
 │  │ │ • GET /events/{type}        │        │ • GET /graph/path           │         │   │
 │  │ │ • GET /events/network       │        │ • GET /communications       │         │   │
 │  │ │ • GET /events/dns           │        │                             │         │   │

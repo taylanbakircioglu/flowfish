@@ -106,6 +106,7 @@ Bu dizin Flowfish platformunun mikroservis uygulamalarını içerir.
 - `GET /health` - Health check
 - `GET /events/stats` - Event statistics
 - `GET /events` - All events with filtering
+- `GET /events/histogram` - Event counts over time buckets
 - `GET /events/{type}` - Specific event type query
 
 **Dependencies:**

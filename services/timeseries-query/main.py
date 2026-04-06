@@ -133,6 +133,40 @@ async def get_event_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/events/histogram")
+async def get_event_histogram(
+    cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
+    analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
+    event_types: Optional[str] = Query(None, description="Comma-separated event types"),
+    start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
+    end_time: Optional[str] = Query(None, description="End time (ISO format)"),
+    bucket_count: int = Query(60, ge=1, le=200, description="Number of time buckets")
+):
+    """
+    Time-bucketed event histogram for timeline visualization.
+    
+    Returns aggregated event counts grouped by time bucket and event type
+    using efficient server-side ClickHouse aggregation.
+    """
+    try:
+        types_list = None
+        if event_types:
+            types_list = [t.strip() for t in event_types.split(",")]
+        
+        result = await query_engine.query_event_histogram(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            event_types=types_list,
+            start_time=start_time,
+            end_time=end_time,
+            bucket_count=bucket_count
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Failed to get event histogram: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/events")
 async def get_all_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),

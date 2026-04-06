@@ -6,8 +6,9 @@ Currently backed by ClickHouse, but interface is database-agnostic.
 """
 
 import logging
+import math
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from clickhouse_driver import Client
 from clickhouse_driver.errors import Error as DatabaseError
 
@@ -605,6 +606,145 @@ class TimeseriesQueryEngine:
             
         except Exception as e:
             logger.error(f"Failed to query all events: {e}")
+            raise
+    
+    async def query_event_histogram(
+        self,
+        cluster_id: Optional[int] = None,
+        analysis_id: Optional[int] = None,
+        event_types: Optional[List[str]] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        bucket_count: int = 60
+    ) -> Dict[str, Any]:
+        """
+        Time-bucketed event histogram for timeline visualization.
+        
+        Uses ClickHouse toStartOfInterval for efficient server-side aggregation
+        across all event tables, returning counts per bucket per event type.
+        """
+        try:
+            tables_to_query = self.EVENT_TABLES.copy()
+            if event_types:
+                tables_to_query = {k: v for k, v in self.EVENT_TABLES.items() if k in event_types}
+            
+            if not tables_to_query:
+                return {"buckets": [], "time_range": {"start": None, "end": None}, "interval_seconds": 0, "total_events": 0}
+            
+            sensitive_caps = [
+                'CAP_SYS_ADMIN', 'CAP_NET_ADMIN', 'CAP_NET_RAW',
+                'CAP_SYS_PTRACE', 'CAP_SYS_MODULE', 'CAP_DAC_OVERRIDE',
+                'CAP_SETUID', 'CAP_SETGID', 'CAP_CHOWN', 'CAP_FOWNER',
+                'CAP_SYS_RAWIO', 'CAP_MKNOD', 'CAP_LINUX_IMMUTABLE'
+            ]
+            sensitive_caps_str = ", ".join([f"'{c}'" for c in sensitive_caps])
+            cap_filter = f" AND (verdict = 'denied' OR verdict = '1' OR toString(verdict) = '1' OR capability IN ({sensitive_caps_str}))"
+            
+            # Step 1: Find global time range across all tables
+            global_min = None
+            global_max = None
+            
+            for event_type, table_name in tables_to_query.items():
+                ns_col = "source_namespace" if table_name in ("network_flows", "dns_queries") else "namespace"
+                where = self._build_where_clause(
+                    cluster_id, analysis_id,
+                    start_time=start_time, end_time=end_time,
+                    namespace_column=ns_col
+                )
+                if table_name == "capability_checks":
+                    where += cap_filter
+                
+                query = f"SELECT min(timestamp), max(timestamp), count() FROM {table_name} WHERE {where}"
+                result = self.client.execute(query)
+                
+                if result and result[0][2] > 0:
+                    t_min, t_max = result[0][0], result[0][1]
+                    if global_min is None or t_min < global_min:
+                        global_min = t_min
+                    if global_max is None or t_max > global_max:
+                        global_max = t_max
+            
+            if global_min is None or global_max is None:
+                return {"buckets": [], "time_range": {"start": None, "end": None}, "interval_seconds": 0, "total_events": 0}
+            
+            # Step 2: Compute interval
+            total_seconds = (global_max - global_min).total_seconds()
+            interval_seconds = max(1, math.ceil(total_seconds / bucket_count))
+            
+            # Step 3: Query histogram per table
+            raw_buckets: Dict[str, Dict[str, int]] = {}
+            total_events = 0
+            
+            for event_type, table_name in tables_to_query.items():
+                ns_col = "source_namespace" if table_name in ("network_flows", "dns_queries") else "namespace"
+                where = self._build_where_clause(
+                    cluster_id, analysis_id,
+                    start_time=start_time, end_time=end_time,
+                    namespace_column=ns_col
+                )
+                if table_name == "capability_checks":
+                    where += cap_filter
+                
+                hist_query = f"""
+                SELECT 
+                    toStartOfInterval(timestamp, INTERVAL {interval_seconds} SECOND) as bucket,
+                    count() as cnt
+                FROM {table_name}
+                WHERE {where}
+                GROUP BY bucket
+                ORDER BY bucket
+                """
+                result = self.client.execute(hist_query)
+                
+                for row in result:
+                    bucket_time = row[0].isoformat() if isinstance(row[0], datetime) else str(row[0])
+                    count = row[1]
+                    total_events += count
+                    
+                    if bucket_time not in raw_buckets:
+                        raw_buckets[bucket_time] = {}
+                    raw_buckets[bucket_time][event_type] = raw_buckets[bucket_time].get(event_type, 0) + count
+            
+            # Step 4-5: Build complete bucket series with empty fills.
+            # Align to epoch-based boundaries matching ClickHouse toStartOfInterval:
+            #   intDiv(toUnixTimestamp(ts), N) * N
+            epoch = datetime(1970, 1, 1)
+            if global_min.tzinfo:
+                epoch = epoch.replace(tzinfo=global_min.tzinfo)
+            
+            global_min_unix = int((global_min - epoch).total_seconds())
+            global_max_unix = int((global_max - epoch).total_seconds())
+            aligned_start = epoch + timedelta(seconds=(global_min_unix // interval_seconds) * interval_seconds)
+            aligned_end = epoch + timedelta(seconds=(global_max_unix // interval_seconds) * interval_seconds)
+            
+            buckets = []
+            current = aligned_start
+            while current <= aligned_end:
+                bucket_key = current.isoformat()
+                types = raw_buckets.get(bucket_key, {})
+                bucket_total = sum(types.values())
+                buckets.append({
+                    "time": bucket_key,
+                    "count": bucket_total,
+                    "types": types
+                })
+                current = current + timedelta(seconds=interval_seconds)
+            
+            if len(buckets) > bucket_count + 2:
+                buckets = buckets[:bucket_count + 2]
+            
+            return {
+                "buckets": buckets,
+                "time_range": {
+                    "start": global_min.isoformat(),
+                    "end": global_max.isoformat()
+                },
+                "interval_seconds": interval_seconds,
+                "total_events": total_events
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to query event histogram: {e}")
             raise
     
     def health_check(self) -> Dict[str, Any]:

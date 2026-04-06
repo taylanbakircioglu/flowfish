@@ -57,6 +57,8 @@ tags:
     description: Kubernetes workload inventory (Pod, Deployment, Service, StatefulSet) with labels and annotations
   - name: Communications
     description: Service-to-service communication records and dependency graphs
+  - name: Events
+    description: Time-series event queries and aggregations
   - name: Integration
     description: Dependency intelligence APIs for CI/CD pipeline integrations — dependency discovery, impact analysis, and cross-project dependency mapping
   - name: Dependencies
@@ -1248,6 +1250,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GraphData'
+  
+  /events/histogram:
+    get:
+      tags:
+        - Events
+      summary: Event time histogram
+      description: Returns event counts aggregated into time buckets for the given range and filters
+      parameters:
+        - name: cluster_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: analysis_id
+          in: query
+          schema:
+            type: integer
+        - name: event_types
+          in: query
+          schema:
+            type: string
+          description: Comma-separated event type identifiers
+        - name: start_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: bucket_count
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Histogram buckets and metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  time_range:
+                    type: object
+                    additionalProperties: true
+                  interval_seconds:
+                    type: number
+                  total_events:
+                    type: integer
   
   /communications/dependencies/stream:
     get:
