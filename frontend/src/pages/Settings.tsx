@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTheme } from '../contexts/ThemeContext';
 import { 
   Card, 
@@ -223,8 +224,14 @@ interface IntegrationSettings {
 // ================== MAIN COMPONENT ==================
 
 const Settings: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('general');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') || 'general');
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const tab = searchParams.get('tab') || 'general';
+    setActiveTab(prev => prev !== tab ? tab : prev);
+  }, [searchParams]);
   const [saving, setSaving] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
@@ -1337,7 +1344,7 @@ const Settings: React.FC = () => {
         </div>
         
         {/* Admin Warning - not shown for API Keys tab (users can manage their own keys) */}
-        {!isAdmin && activeTab !== 'api-keys' && (
+        {!isAdmin && activeTab !== 'api-tokens' && (
           <Alert
             message="Read-Only Mode"
             description="Admin privileges required to make changes."
@@ -1350,7 +1357,10 @@ const Settings: React.FC = () => {
         {/* Settings Tabs */}
         <Tabs 
           activeKey={activeTab} 
-          onChange={setActiveTab}
+          onChange={(key) => {
+            setActiveTab(key);
+            setSearchParams(key === 'general' ? {} : { tab: key }, { replace: true });
+          }}
           type="card"
           size="large"
         >

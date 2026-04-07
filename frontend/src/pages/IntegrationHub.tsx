@@ -276,16 +276,23 @@ const IntegrationHub: React.FC = () => {
         All API calls require authentication via <Text strong>API Key</Text>. Include the header <Text code>X-API-Key: fk_your_key</Text> in every request.
       </Paragraph>
       <ol>
-        <li>Go to <Link to="/settings"><Text strong>Settings</Text></Link> and open the <Text strong>API Keys</Text> tab</li>
+        <li>Go to <Link to="/settings?tab=api-tokens"><Text strong>Settings &gt; API Keys</Text></Link></li>
         <li>Click <Text strong>Generate New API Key</Text> and give it a descriptive name (e.g. &quot;azure-devops-pipeline&quot;)</li>
         <li>Copy the generated key (starts with <Text code>fk_</Text>) and store it securely in your CI/CD platform&apos;s secrets/variables</li>
       </ol>
-      <Alert
-        type="warning"
-        showIcon
-        message="API keys provide full API access. Store them as encrypted secrets in your pipeline platform, never in source code."
-        style={{ marginTop: 8 }}
-      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+        <Link to="/settings?tab=api-tokens">
+          <Button type="primary" icon={<KeyOutlined />}>
+            Generate API Key
+          </Button>
+        </Link>
+        <Alert
+          type="warning"
+          showIcon
+          message="API keys provide full API access. Store them as encrypted secrets in your pipeline platform, never in source code."
+          style={{ flex: 1, margin: 0 }}
+        />
+      </div>
     </Card>
   );
 
@@ -626,23 +633,82 @@ const IntegrationHub: React.FC = () => {
       )}
       {integrationType === 'dependency' && currentStep === 2 && summaryData?.success && (
         <div>
-          <Card size="small" style={{ borderLeft: `3px solid ${token.colorPrimary}`, marginBottom: 16 }}>
-            <Row gutter={16} align="middle">
-              <Col flex="auto">
-                <Space split={<Divider type="vertical" />}>
-                  <Text strong style={{ fontSize: 16 }}>{summaryData.service.name}</Text>
-                  <Text type="secondary">{summaryData.service.namespace}</Text>
-                  {summaryData.service.kind && <Tag>{summaryData.service.kind}</Tag>}
-                </Space>
-              </Col>
-              <Col>
-                <Space size="large">
-                  <Statistic title={<><ArrowDownOutlined /> Downstream</>} value={summaryData.summary?.total_downstream_unique ?? 0} valueStyle={{ fontSize: 18 }} />
-                  <Statistic title={<><ArrowUpOutlined /> Callers</>} value={summaryData.summary?.total_callers_unique ?? 0} valueStyle={{ fontSize: 18 }} />
-                </Space>
-              </Col>
-            </Row>
-          </Card>
+          {summaryData.multi_service && summaryData.matched_services ? (() => {
+            const namespaces = Array.from(new Set(summaryData.matched_services.map(s => s.namespace))).sort();
+            const critCount = summaryData.summary?.downstream_critical_count ?? 0;
+            return (
+              <Card size="small" style={{ borderLeft: `3px solid ${token.colorPrimary}`, marginBottom: 16 }}>
+                <Row gutter={24} align="middle">
+                  <Col>
+                    <Statistic
+                      title="Matched Services"
+                      value={summaryData.matched_services.length}
+                      valueStyle={{ fontSize: 28, fontWeight: 700, color: token.colorPrimary }}
+                    />
+                  </Col>
+                  <Col>
+                    <Statistic
+                      title="Namespaces"
+                      value={namespaces.length}
+                      valueStyle={{ fontSize: 28, fontWeight: 700 }}
+                    />
+                  </Col>
+                  <Col>
+                    <Statistic
+                      title={<><ArrowDownOutlined /> Downstream</>}
+                      value={summaryData.summary?.total_downstream_unique ?? 0}
+                      valueStyle={{ fontSize: 28, fontWeight: 700 }}
+                    />
+                  </Col>
+                  <Col>
+                    <Statistic
+                      title={<><ArrowUpOutlined /> Callers</>}
+                      value={summaryData.summary?.total_callers_unique ?? 0}
+                      valueStyle={{ fontSize: 28, fontWeight: 700 }}
+                    />
+                  </Col>
+                  {critCount > 0 && (
+                    <Col>
+                      <Statistic
+                        title="Critical"
+                        value={critCount}
+                        valueStyle={{ fontSize: 28, fontWeight: 700, color: token.colorError }}
+                      />
+                    </Col>
+                  )}
+                </Row>
+                {namespaces.length > 0 && (
+                  <div style={{
+                    display: 'flex', flexWrap: 'wrap', gap: 4,
+                    marginTop: 12, paddingTop: 12,
+                    borderTop: `1px solid ${token.colorBorderSecondary}`,
+                  }}>
+                    {namespaces.map(ns => (
+                      <Tag key={ns} style={{ margin: 0, fontSize: 12 }}>{ns}</Tag>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            );
+          })() : (
+            <Card size="small" style={{ borderLeft: `3px solid ${token.colorPrimary}`, marginBottom: 16 }}>
+              <Row gutter={16} align="middle">
+                <Col flex="auto">
+                  <Space split={<Divider type="vertical" />}>
+                    <Text strong style={{ fontSize: 16 }}>{summaryData.service.name}</Text>
+                    <Text type="secondary">{summaryData.service.namespace}</Text>
+                    {summaryData.service.kind && <Tag>{summaryData.service.kind}</Tag>}
+                  </Space>
+                </Col>
+                <Col>
+                  <Space size="large">
+                    <Statistic title={<><ArrowDownOutlined /> Downstream</>} value={summaryData.summary?.total_downstream_unique ?? 0} valueStyle={{ fontSize: 18 }} />
+                    <Statistic title={<><ArrowUpOutlined /> Callers</>} value={summaryData.summary?.total_callers_unique ?? 0} valueStyle={{ fontSize: 18 }} />
+                  </Space>
+                </Col>
+              </Row>
+            </Card>
+          )}
 
           {summaryData.multi_service && summaryData.matched_services && summaryData.matched_services.length > 0 && (
             <Card size="small" title={`Matched Upstream Services (${summaryData.matched_services.length})`} style={{ marginBottom: 16 }}>
