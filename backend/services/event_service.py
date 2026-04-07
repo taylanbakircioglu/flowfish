@@ -930,7 +930,7 @@ class EventService:
         bucket_count: int = 60
     ) -> Dict[str, Any]:
         """Get time-bucketed event histogram for timeline visualization"""
-        return await self.event_repository.get_event_histogram(
+        return await self.repository.get_event_histogram(
             cluster_id=cluster_id,
             analysis_id=analysis_id,
             event_types=event_types,
