@@ -257,26 +257,27 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
                     <Tag color={currentCluster.gadget_health_status === 'healthy' ? 'green' : 'orange'}>
                       {currentCluster.gadget_health_status || 'unknown'}
                     </Tag>
-                    {currentCluster.gadget_version && (
-                      <Text type="secondary" style={{ marginLeft: 8 }}>
-                        {currentCluster.gadget_version}
-                      </Text>
-                    )}
-                    {currentCluster.gadget_version && supportedGadgetVersion && (() => {
-                      const pa = currentCluster.gadget_version.replace('v','').split('.').map(Number);
-                      const pb = supportedGadgetVersion.replace('v','').split('.').map(Number);
-                      let cmp = 0;
-                      for (let i = 0; i < 3; i++) {
-                        if ((pa[i]||0) < (pb[i]||0)) { cmp = -1; break; }
-                        if ((pa[i]||0) > (pb[i]||0)) { cmp = 1; break; }
+                    {currentCluster.gadget_version && (() => {
+                      let needsUpgrade = false;
+                      if (supportedGadgetVersion) {
+                        const pa = currentCluster.gadget_version.replace('v','').split('.').map(Number);
+                        const pb = supportedGadgetVersion.replace('v','').split('.').map(Number);
+                        for (let i = 0; i < 3; i++) {
+                          if ((pa[i]||0) < (pb[i]||0)) { needsUpgrade = true; break; }
+                          if ((pa[i]||0) > (pb[i]||0)) { break; }
+                        }
                       }
-                      return cmp < 0 ? (
+                      return needsUpgrade ? (
                         <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Go to Cluster Management to upgrade.`}>
-                          <Tag color="orange" style={{ fontSize: 10, verticalAlign: 'middle', margin: '0 0 0 4px' }}>
-                            <ArrowUpOutlined /> UPGRADE
-                          </Tag>
+                          <Text style={{ marginLeft: 8, fontSize: 12, color: '#fa8c16' }}>
+                            {currentCluster.gadget_version} <ArrowUpOutlined style={{ fontSize: 10 }} />
+                          </Text>
                         </Tooltip>
-                      ) : null;
+                      ) : (
+                        <Text type="secondary" style={{ marginLeft: 8 }}>
+                          {currentCluster.gadget_version}
+                        </Text>
+                      );
                     })()}
                   </Text>
                 </div>

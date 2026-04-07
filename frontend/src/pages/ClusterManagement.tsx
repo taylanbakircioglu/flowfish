@@ -622,21 +622,15 @@ const ClusterManagement: React.FC = () => {
         const needsUpgrade = clusterVersion && supportedGadgetVersion && 
           compareVersions(clusterVersion, supportedGadgetVersion) < 0;
         return (
-          <Space direction="vertical" size={0}>
+          <Space direction="vertical" size={2} style={{ textAlign: 'center', width: '100%' }}>
             <Tag color={colorMap[status || 'unknown']} icon={status === 'healthy' ? <CheckCircleOutlined /> : <CloseCircleOutlined />}>
               {(status || 'unknown').toUpperCase()}
             </Tag>
-            <Space size={4} align="center">
-              {record.gadget_version && (
-                <Typography.Text type="secondary" style={{ fontSize: '11px', lineHeight: '20px' }}>
-                  {record.gadget_version}
-                </Typography.Text>
-              )}
-              {needsUpgrade && (
+            {record.gadget_version && (
+              needsUpgrade ? (
                 <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Click to view upgrade script.`}>
-                  <Tag
-                    color="orange"
-                    style={{ cursor: 'pointer', fontSize: '10px', margin: 0, lineHeight: '18px' }}
+                  <Typography.Text
+                    style={{ fontSize: '11px', color: '#fa8c16', cursor: 'pointer' }}
                     onClick={(e) => {
                       e.stopPropagation();
                       setUpgradeCluster(record);
@@ -651,11 +645,15 @@ const ClusterManagement: React.FC = () => {
                         });
                     }}
                   >
-                    <ArrowUpOutlined /> UPGRADE
-                  </Tag>
+                    {record.gadget_version} <ArrowUpOutlined style={{ fontSize: '10px' }} />
+                  </Typography.Text>
                 </Tooltip>
-              )}
-            </Space>
+              ) : (
+                <Typography.Text type="secondary" style={{ fontSize: '11px' }}>
+                  {record.gadget_version}
+                </Typography.Text>
+              )
+            )}
           </Space>
         );
       },
