@@ -1720,4 +1720,4 @@ In summary: you are free to use, modify, and distribute this software, but any m
 
 ---
 
-**Version:** 2.3.0 | **Last Updated:** March 2026
+**Version:** 2.4.0 | **Last Updated:** April 2026
