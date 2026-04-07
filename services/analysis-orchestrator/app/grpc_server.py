@@ -439,7 +439,15 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                 # Update auto-stop monitor with current sessions
                 auto_stop_monitor.set_active_sessions(self.active_sessions)
                 
-                # Update analysis status (sync)
+                # Clear stale gadget warnings from previous runs before setting status
+                clean_output = dict(analysis.output_config or {})
+                clean_output.pop("gadget_errors", None)
+                clean_output.pop("has_gadget_warnings", None)
+                db_manager.update_analysis_sync(request.analysis_id, {
+                    "output_config": clean_output
+                })
+                
+                # Update analysis status (sets started_at timestamp)
                 db_manager.update_analysis_status_sync(request.analysis_id, AnalysisStatus.RUNNING)
                 
                 # Check for gadget startup errors ASYNCHRONOUSLY (non-blocking)
@@ -477,7 +485,7 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                         logger.error(f"Background gadget error check failed: {e}")
                 
                 # Start background thread (non-blocking)
-                existing_output = analysis.output_config or {}
+                existing_output = clean_output
                 thread = threading.Thread(
                     target=_check_gadget_errors_background,
                     args=(request.analysis_id, list(session_ids), existing_output),
