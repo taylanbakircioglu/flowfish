@@ -1,17 +1,20 @@
 #!/bin/bash
 # Push Inspektor Gadget OCI images to local registry
 # Skips images that already exist in the target registry
+#
+# NOTE: This script mirrors OCI gadget images (trace_network, trace_dns, etc.)
+# The main DaemonSet image (inspektor-gadget:vX.Y.Z) is pushed manually to Harbor.
 
 set -e
 
 echo "================================================"
-echo "Pushing Inspektor Gadget Images to Local Registry"
+echo "Pushing Inspektor Gadget OCI Images to Registry"
 echo "================================================"
 
 # Configuration - GADGET_VERSION must be set externally
 if [ -z "${GADGET_VERSION}" ]; then
-    echo "❌ ERROR: GADGET_VERSION environment variable must be set"
-    echo "   Example: export GADGET_VERSION=v0.50.1"
+    echo "ERROR: GADGET_VERSION environment variable must be set"
+    echo "  Example: export GADGET_VERSION=v0.50.1"
     exit 1
 fi
 
@@ -47,8 +50,8 @@ if command -v docker &> /dev/null; then
 elif command -v podman &> /dev/null; then
     CONTAINER_CMD="podman"
 else
-    echo "⚠️  Neither docker nor podman found. Skipping gadget image push."
-    echo "   Gadget images must be manually pushed to: $TARGET_REGISTRY"
+    echo "WARNING: Neither docker nor podman found. Skipping gadget image push."
+    echo "  Gadget images must be manually pushed to: $TARGET_REGISTRY"
     exit 0
 fi
 
@@ -72,6 +75,11 @@ if command -v skopeo &> /dev/null; then
     echo "Using skopeo for multi-arch image copy (recommended)"
 fi
 
+echo ""
+echo "================================================"
+echo "Mirroring OCI gadget images"
+echo "================================================"
+
 for gadget in "${GADGETS[@]}"; do
     SOURCE_IMAGE="$SOURCE_REGISTRY/$gadget:$GADGET_VERSION"
     TARGET_IMAGE="$TARGET_REGISTRY/$gadget:$GADGET_VERSION"
@@ -83,7 +91,7 @@ for gadget in "${GADGETS[@]}"; do
     
     # Check if image already exists in target registry
     if $CONTAINER_CMD manifest inspect "$TARGET_IMAGE" &>/dev/null; then
-        echo "  ✅ Already exists in target registry, skipping"
+        echo "  [SKIP] Already exists in target registry"
         ((SKIPPED++))
         continue
     fi
@@ -91,42 +99,42 @@ for gadget in "${GADGETS[@]}"; do
     if [ "$USE_SKOPEO" = true ]; then
         # Use skopeo to preserve multi-arch manifest (OCI image index)
         # This is REQUIRED for Inspector Gadget v0.46.0+
-        echo "  📥 Copying with skopeo (preserving multi-arch manifest)..."
+        echo "  Copying with skopeo (preserving multi-arch manifest)..."
         SKOPEO_OPTS="--all"
         if [ -n "$HARBOR_USER" ] && [ -n "$HARBOR_PASSWORD" ]; then
             SKOPEO_OPTS="$SKOPEO_OPTS --dest-creds=$HARBOR_USER:$HARBOR_PASSWORD"
         fi
         if skopeo copy $SKOPEO_OPTS "docker://$SOURCE_IMAGE" "docker://$TARGET_IMAGE"; then
-            echo "  ✅ Successfully copied (multi-arch)"
+            echo "  [OK] Successfully copied (multi-arch)"
             ((PUSHED++))
         else
-            echo "  ❌ Failed to copy"
+            echo "  [FAIL] Failed to copy"
             ((FAILED++))
         fi
     else
         # Fallback to docker/podman (WARNING: loses multi-arch support!)
-        echo "  ⚠️  WARNING: Using $CONTAINER_CMD - multi-arch manifest will be lost!"
-        echo "     Install 'skopeo' for proper multi-arch support (required for Inspector Gadget v0.46+)"
+        echo "  WARNING: Using $CONTAINER_CMD - multi-arch manifest will be lost!"
+        echo "    Install 'skopeo' for proper multi-arch support (required for Inspector Gadget v0.46+)"
         
         # Try to pull from source
-        echo "  📥 Pulling from source..."
+        echo "  Pulling from source..."
         if ! $CONTAINER_CMD pull "$SOURCE_IMAGE" 2>/dev/null; then
-            echo "  ⚠️  Failed to pull from source (network access required)"
+            echo "  [FAIL] Failed to pull from source (network access required)"
             ((FAILED++))
             continue
         fi
         
         # Tag for target registry
-        echo "  🏷️  Tagging..."
+        echo "  Tagging..."
         $CONTAINER_CMD tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
         
         # Push to target registry
-        echo "  📤 Pushing to target..."
+        echo "  Pushing to target..."
         if $CONTAINER_CMD push "$TARGET_IMAGE"; then
-            echo "  ✅ Successfully pushed (single-arch only)"
+            echo "  [OK] Successfully pushed (single-arch only)"
             ((PUSHED++))
         else
-            echo "  ❌ Failed to push"
+            echo "  [FAIL] Failed to push"
             ((FAILED++))
         fi
     fi
@@ -142,7 +150,6 @@ echo "  Failed:  $FAILED"
 echo "================================================"
 
 if [ $FAILED -gt 0 ]; then
-    echo "⚠️  Some images failed. You may need to manually push them."
-    echo "   Or ensure the build agent has access to ghcr.io"
+    echo "WARNING: Some images failed. You may need to manually push them."
+    echo "  Or ensure the build agent has access to ghcr.io"
 fi
-

@@ -92,9 +92,9 @@ STORAGE_CLASS="${2:-}"
 
 if [ -z "$NAMESPACE" ]; then
     echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "============================================================================"
     read -p "Enter namespace where Inspektor Gadget is deployed: " NAMESPACE
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "============================================================================"
 fi
 
 if [ -z "$NAMESPACE" ]; then
@@ -240,7 +240,7 @@ print_header "Applying DaemonSet Update"
 
 echo ""
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ ⚠️  This will update the Inspektor Gadget DaemonSet with:                   │"
+echo "│ WARNING: This will update the Inspektor Gadget DaemonSet with:              │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
 echo "│   - Node affinity: Exclude master/control-plane/infra nodes               │"
 if [ "$USE_PVC" = true ]; then
@@ -251,7 +251,7 @@ echo "│   - OCI volume: emptyDir (node local disk)                            
 echo "│   - WASM cache: emptyDir (node local disk)                                │"
 fi
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
-echo "│ ⚠️  All gadget pods will be restarted!                                      │"
+echo "│ WARNING: All gadget pods will be restarted!                                 │"
 echo "└─────────────────────────────────────────────────────────────────────────────┘"
 echo ""
 read -p "Do you want to proceed? (y/N): " PROCEED_CONFIRM
@@ -630,28 +630,28 @@ fi
 echo ""
 echo "╔═══════════════════════════════════════════════════════════════════════════╗"
 echo "║                                                                           ║"
-echo "║   ✅ DAEMONSET UPDATE COMPLETE                                            ║"
+echo "║   DAEMONSET UPDATE COMPLETE                                               ║"
 echo "║                                                                           ║"
 echo "╚═══════════════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ 📋 SUMMARY                                                                   │"
+echo "│ SUMMARY                                                                      │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
-echo "│ ✅ Node affinity: master/control-plane/infra nodes excluded               │"
+echo "│ [OK] Node affinity: master/control-plane/infra nodes excluded              │"
 if [ "$USE_PVC" = true ]; then
-echo "│ ✅ Storage: PVC with StorageClass: $STORAGE_CLASS"
-echo "│ ✅ OCI volume: 10Gi ephemeral PVC per node                                │"
-echo "│ ✅ WASM cache: 5Gi ephemeral PVC per node                                 │"
+echo "│ [OK] Storage: PVC with StorageClass: $STORAGE_CLASS"
+echo "│ [OK] OCI volume: 10Gi ephemeral PVC per node                               │"
+echo "│ [OK] WASM cache: 5Gi ephemeral PVC per node                              │"
 else
-echo "│ ✅ Storage: emptyDir (node local disk)                                    │"
-echo "│ ✅ OCI volume: emptyDir                                                   │"
-echo "│ ✅ WASM cache: emptyDir                                                   │"
+echo "│ [OK] Storage: emptyDir (node local disk)                                 │"
+echo "│ [OK] OCI volume: emptyDir                                                │"
+echo "│ [OK] WASM cache: emptyDir                                                │"
 fi
 echo "└─────────────────────────────────────────────────────────────────────────────┘"
 echo ""
 if [ "$USE_PVC" = true ]; then
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ 📝 PVC STORAGE NOTES                                                        │"
+echo "│ PVC STORAGE NOTES                                                            │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
 echo "│ 1. Ephemeral PVCs are created automatically per pod                        │"
 echo "│ 2. PVCs are deleted when pod is deleted (ephemeral lifecycle)              │"
@@ -659,7 +659,7 @@ echo "│ 3. Each node will have its own dedicated storage                      
 echo "│ 4. Monitor PVC usage: $CLI_TOOL get pvc -n $NAMESPACE                       │"
 else
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ 📝 EMPTYDIR STORAGE NOTES                                                   │"
+echo "│ EMPTYDIR STORAGE NOTES                                                       │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
 echo "│ 1. Data is stored on node's local disk (/var/lib/kubelet/pods/...)        │"
 echo "│ 2. Data is lost when pod restarts or is rescheduled                        │"
@@ -669,7 +669,7 @@ fi
 echo "└─────────────────────────────────────────────────────────────────────────────┘"
 echo ""
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ 🔍 MONITORING COMMANDS                                                      │"
+echo "│ MONITORING COMMANDS                                                          │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
 if [ "$USE_PVC" = true ]; then
 echo "│ Check PVCs:                                                                 │"
