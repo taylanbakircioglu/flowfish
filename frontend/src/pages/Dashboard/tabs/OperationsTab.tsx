@@ -272,7 +272,7 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
                       }
                       return cmp < 0 ? (
                         <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Go to Cluster Management to upgrade.`}>
-                          <Tag color="orange" style={{ marginLeft: 4, fontSize: 10 }}>
+                          <Tag color="orange" style={{ fontSize: 10, verticalAlign: 'middle', margin: '0 0 0 4px' }}>
                             <ArrowUpOutlined /> UPGRADE
                           </Tag>
                         </Tooltip>

@@ -626,9 +626,9 @@ const ClusterManagement: React.FC = () => {
             <Tag color={colorMap[status || 'unknown']} icon={status === 'healthy' ? <CheckCircleOutlined /> : <CloseCircleOutlined />}>
               {(status || 'unknown').toUpperCase()}
             </Tag>
-            <Space size={4}>
+            <Space size={4} align="center">
               {record.gadget_version && (
-                <Typography.Text type="secondary" style={{ fontSize: '11px' }}>
+                <Typography.Text type="secondary" style={{ fontSize: '11px', lineHeight: '20px' }}>
                   {record.gadget_version}
                 </Typography.Text>
               )}
@@ -636,7 +636,7 @@ const ClusterManagement: React.FC = () => {
                 <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Click to view upgrade script.`}>
                   <Tag
                     color="orange"
-                    style={{ cursor: 'pointer', fontSize: '10px' }}
+                    style={{ cursor: 'pointer', fontSize: '10px', margin: 0, lineHeight: '18px' }}
                     onClick={(e) => {
                       e.stopPropagation();
                       setUpgradeCluster(record);
