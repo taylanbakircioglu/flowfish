@@ -629,7 +629,7 @@ const ClusterManagement: React.FC = () => {
             <Space size={4}>
               {record.gadget_version && (
                 <Typography.Text type="secondary" style={{ fontSize: '11px' }}>
-                  v{record.gadget_version}
+                  {record.gadget_version}
                 </Typography.Text>
               )}
               {needsUpgrade && (

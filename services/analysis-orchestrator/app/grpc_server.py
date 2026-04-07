@@ -293,12 +293,13 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                        f"exclude_namespaces={exclude_namespaces}, exclude_pod_patterns={exclude_pod_patterns}, exclude_strategy={exclude_strategy}, "
                        f"gadgets={gadget_modules}, clusters={len(cluster_ids)}")
             
-            # Fetch global ingestion rate limit via isolated HTTP call
+            # Fetch global ingestion rate limit via synchronous HTTP call
+            # NOTE: StartAnalysis is a sync gRPC method, so we must use httpx.Client (not AsyncClient)
             ingestion_rate_limit = 0
             try:
                 backend_url = f"http://{settings.backend_service_host}:{settings.backend_service_port}"
-                async with httpx.AsyncClient(timeout=5.0) as http_client:
-                    resp = await http_client.get(f"{backend_url}/api/v1/settings/analysis-limits/defaults")
+                with httpx.Client(timeout=5.0) as http_client:
+                    resp = http_client.get(f"{backend_url}/api/v1/settings/analysis-limits/defaults")
                     if resp.status_code == 200:
                         ingestion_rate_limit = resp.json().get('ingestion_rate_limit_per_second', 0)
             except Exception as e:

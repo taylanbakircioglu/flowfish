@@ -259,7 +259,7 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
                     </Tag>
                     {currentCluster.gadget_version && (
                       <Text type="secondary" style={{ marginLeft: 8 }}>
-                        v{currentCluster.gadget_version}
+                        {currentCluster.gadget_version}
                       </Text>
                     )}
                     {currentCluster.gadget_version && supportedGadgetVersion && (() => {

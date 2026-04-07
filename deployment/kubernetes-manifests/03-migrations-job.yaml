@@ -1692,8 +1692,8 @@ spec:
 
           echo ""
           echo "--- Fix blast_radius_assessments FK constraint (add ON DELETE SET NULL) ---"
-          psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'EOSQL'
-          DO $$
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          DO $BODY$
           BEGIN
             IF EXISTS (
               SELECT 1 FROM information_schema.table_constraints
@@ -1707,15 +1707,14 @@ spec:
                 FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE SET NULL;
               RAISE NOTICE 'Fixed blast_radius_assessments FK to ON DELETE SET NULL';
             END IF;
-          END
-          $$;
+          END $BODY$;
           EOSQL
           echo "blast_radius_assessments FK fix complete."
 
           echo ""
           echo "--- Fix analysis_event_types FK constraint (add ON DELETE CASCADE) ---"
-          psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'EOSQL'
-          DO $$
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          DO $BODY$
           BEGIN
             -- Add FK if it doesn't exist yet (table was created without one)
             IF NOT EXISTS (
@@ -1732,8 +1731,7 @@ spec:
                 FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE;
               RAISE NOTICE 'Added analysis_event_types FK with ON DELETE CASCADE';
             END IF;
-          END
-          $$;
+          END $BODY$;
           EOSQL
           echo "analysis_event_types FK fix complete."
 

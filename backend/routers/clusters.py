@@ -2582,31 +2582,47 @@ async def get_gadget_upgrade_script(
 #   chmod +x upgrade-gadget.sh
 #   ./upgrade-gadget.sh
 #
-# Prerequisites:
-#   - kubectl/oc CLI with cluster access
-#   - Cluster admin permissions
-#   - No active analyses running on this cluster
-#
-# What this script does:
-#   1. Updates the DaemonSet image to the target version
-#   2. Applies memory limit optimization
-#   3. Optimizes events-buffer-length in ConfigMap (reduces idle memory)
-#   4. Waits for rollout and verifies the upgrade
+# The script will interactively ask for configuration and validate
+# each step before making changes. Safe to run - nothing changes
+# without your explicit confirmation.
 #
 # =========================================================================
 
-set -euo pipefail
+# Colors
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[1;33m'
+BLUE='\\033[0;34m'
+CYAN='\\033[0;36m'
+BOLD='\\033[1m'
+NC='\\033[0m'
 
-NAMESPACE="{namespace}"
-TARGET_VERSION="{target_version}"
-MEMORY_LIMIT="{memory_limit}"
-EVENTS_BUFFER_LENGTH=8192
+print_info() {{ echo -e "${{BLUE}}[INFO]${{NC}} $1"; }}
+print_ok() {{ echo -e "${{GREEN}}[OK]${{NC}} $1"; }}
+print_warn() {{ echo -e "${{YELLOW}}[WARN]${{NC}} $1"; }}
+print_err() {{ echo -e "${{RED}}[ERROR]${{NC}} $1"; }}
+print_header() {{ echo -e "\\n${{CYAN}}${{BOLD}}=== $1 ===${{NC}}\\n"; }}
 
+confirm_step() {{
+    local msg="${{1:-Continue?}}"
+    read -p "$msg (y/N): " ans
+    if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+        echo "Cancelled by user."
+        exit 0
+    fi
+}}
+
+echo ""
 echo "======================================================================="
-echo "  Inspektor Gadget Upgrade - {cluster_name}"
-echo "  Current: {current_version} -> Target: $TARGET_VERSION"
+echo "  Inspektor Gadget Upgrade"
+echo "  Cluster: {cluster_name}"
 echo "======================================================================="
 echo ""
+
+# =========================================================================
+# Step 1: Pre-flight Checks
+# =========================================================================
+print_header "Pre-flight Checks"
 
 # Detect CLI tool
 if command -v oc &>/dev/null; then
@@ -2614,82 +2630,258 @@ if command -v oc &>/dev/null; then
 elif command -v kubectl &>/dev/null; then
     CLI_TOOL="kubectl"
 else
-    echo "ERROR: Neither oc nor kubectl found in PATH"
+    print_err "Neither oc nor kubectl found in PATH"
     exit 1
 fi
+print_ok "CLI tool: $CLI_TOOL"
 
-echo "[1/6] Checking prerequisites..."
-$CLI_TOOL get namespace "$NAMESPACE" >/dev/null 2>&1 || {{ echo "ERROR: Namespace $NAMESPACE not found"; exit 1; }}
-$CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" >/dev/null 2>&1 || {{ echo "ERROR: DaemonSet not found in $NAMESPACE"; exit 1; }}
+# Check login
+if ! $CLI_TOOL whoami &>/dev/null 2>&1; then
+    print_err "Not logged in. Run '$CLI_TOOL login' first."
+    exit 1
+fi
+CURRENT_USER=$($CLI_TOOL whoami 2>/dev/null || echo "unknown")
+print_ok "Logged in as: $CURRENT_USER"
 
-CURRENT=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' 2>/dev/null \\
-  | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
-echo "  Current image version: $CURRENT"
-echo "  Target version: $TARGET_VERSION"
-echo ""
-
-read -p "Continue with upgrade? (y/N): " CONFIRM
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "Upgrade cancelled."
-    exit 0
+# Check permissions
+if ! $CLI_TOOL auth can-i patch daemonset -n "{namespace}" &>/dev/null 2>&1; then
+    print_warn "May not have permission to patch DaemonSets in {namespace}"
+    print_warn "Upgrade might fail at the apply step"
 fi
 
+# =========================================================================
+# Step 2: Interactive Configuration
+# =========================================================================
+print_header "Configuration"
+
+# Namespace
+DEFAULT_NAMESPACE="{namespace}"
+echo -e "${{CYAN}}Namespace:${{NC}} Where Inspektor Gadget is deployed"
+echo -e "  Default: $DEFAULT_NAMESPACE"
+read -p "Enter namespace (press Enter for default): " INPUT_NS
+NAMESPACE="${{INPUT_NS:-$DEFAULT_NAMESPACE}}"
+
+# Validate namespace exists
+if ! $CLI_TOOL get namespace "$NAMESPACE" &>/dev/null 2>&1; then
+    print_err "Namespace '$NAMESPACE' does not exist!"
+    exit 1
+fi
+print_ok "Namespace '$NAMESPACE' exists"
+
+# Validate DaemonSet exists
+if ! $CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" &>/dev/null 2>&1; then
+    print_err "DaemonSet 'inspektor-gadget' not found in namespace '$NAMESPACE'"
+    print_info "Check: $CLI_TOOL get daemonset -n $NAMESPACE"
+    exit 1
+fi
+print_ok "DaemonSet 'inspektor-gadget' found"
 echo ""
-echo "[2/6] Updating DaemonSet image..."
-REGISTRY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' | sed "s|:.*||")
-$CLI_TOOL set image daemonset/inspektor-gadget -n "$NAMESPACE" gadget="$REGISTRY:$TARGET_VERSION"
 
-echo "[3/6] Updating memory limit to $MEMORY_LIMIT..."
-$CLI_TOOL patch daemonset inspektor-gadget -n "$NAMESPACE" --type=json \\
-  -p="[{{\\"op\\": \\"replace\\", \\"path\\": \\"/spec/template/spec/containers/0/resources/limits/memory\\", \\"value\\": \\"$MEMORY_LIMIT\\"}}]"
+# Read current state from cluster
+CURRENT_IMAGE=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' 2>/dev/null || echo "unknown")
+CURRENT_REGISTRY=$(echo "$CURRENT_IMAGE" | sed "s|:.*||")
+CURRENT_VERSION=$(echo "$CURRENT_IMAGE" | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
+CURRENT_MEM=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.spec.template.spec.containers[0].resources.limits.memory}}}}' 2>/dev/null || echo "unknown")
+CURRENT_READY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.status.numberReady}}}}' 2>/dev/null || echo "0")
+CURRENT_DESIRED=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.status.desiredNumberScheduled}}}}' 2>/dev/null || echo "0")
 
-echo "[4/6] Optimizing event buffer configuration..."
-if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" >/dev/null 2>&1; then
-    CURRENT_CONFIG=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
-      -o jsonpath='{{{{.data.config\\.yaml}}}}' 2>/dev/null || echo "")
-    if [ -n "$CURRENT_CONFIG" ]; then
-        CURRENT_BUFFER=$(echo "$CURRENT_CONFIG" | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "0")
-        if [ "$CURRENT_BUFFER" -gt "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
-            UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | sed "s/events-buffer-length:.*/events-buffer-length: $EVENTS_BUFFER_LENGTH/")
-            $CLI_TOOL create configmap inspektor-gadget-config -n "$NAMESPACE" \\
-              --from-literal="config.yaml=$UPDATED_CONFIG" --dry-run=client -o yaml \\
-              | $CLI_TOOL apply -f -
-            echo "  Buffer optimized: $CURRENT_BUFFER -> $EVENTS_BUFFER_LENGTH"
+print_info "Current state:"
+print_info "  Image:        $CURRENT_IMAGE"
+print_info "  Version:      $CURRENT_VERSION"
+print_info "  Registry:     $CURRENT_REGISTRY"
+print_info "  Memory Limit: $CURRENT_MEM"
+print_info "  Pods Ready:   $CURRENT_READY / $CURRENT_DESIRED"
+echo ""
+
+# Check if pods are healthy before upgrade
+if [ "$CURRENT_READY" != "$CURRENT_DESIRED" ] || [ "$CURRENT_READY" = "0" ]; then
+    print_warn "Not all pods are ready ($CURRENT_READY / $CURRENT_DESIRED)"
+    print_warn "Upgrading an unhealthy DaemonSet may cause issues"
+    confirm_step "Continue anyway?"
+fi
+
+# Target version
+DEFAULT_TARGET="{target_version}"
+echo -e "${{CYAN}}Target Version:${{NC}} Version to upgrade to"
+echo -e "  Current: $CURRENT_VERSION"
+echo -e "  Default: $DEFAULT_TARGET"
+read -p "Enter target version (press Enter for default): " INPUT_VER
+TARGET_VERSION="${{INPUT_VER:-$DEFAULT_TARGET}}"
+
+if [ "$TARGET_VERSION" = "$CURRENT_VERSION" ]; then
+    print_warn "Target version ($TARGET_VERSION) is the same as current ($CURRENT_VERSION)"
+    confirm_step "Continue anyway?"
+fi
+
+# Registry
+echo ""
+echo -e "${{CYAN}}Image Registry:${{NC}} Where to pull the gadget image from"
+echo -e "  Current: $CURRENT_REGISTRY"
+echo -e "  Press Enter to keep current registry (recommended)"
+read -p "Enter registry (press Enter to keep current): " INPUT_REG
+REGISTRY="${{INPUT_REG:-$CURRENT_REGISTRY}}"
+
+# Memory limit
+DEFAULT_MEM="{memory_limit}"
+echo ""
+echo -e "${{CYAN}}Memory Limit:${{NC}} Memory limit for gadget containers"
+echo -e "  Current: $CURRENT_MEM"
+echo -e "  Recommended: $DEFAULT_MEM"
+read -p "Enter memory limit (press Enter for recommended): " INPUT_MEM
+MEMORY_LIMIT="${{INPUT_MEM:-$DEFAULT_MEM}}"
+
+# Events buffer
+DEFAULT_BUFFER=8192
+CURRENT_BUFFER_VAL=""
+if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
+    CURRENT_BUFFER_VAL=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
+      -o jsonpath='{{{{.data.config\\.yaml}}}}' 2>/dev/null | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "")
+fi
+echo ""
+echo -e "${{CYAN}}Events Buffer Length:${{NC}} eBPF ring buffer size (lower = less idle memory)"
+if [ -n "$CURRENT_BUFFER_VAL" ]; then
+    echo -e "  Current: $CURRENT_BUFFER_VAL"
+fi
+echo -e "  Recommended: $DEFAULT_BUFFER"
+read -p "Enter buffer length (press Enter for recommended, 0 to skip): " INPUT_BUF
+EVENTS_BUFFER_LENGTH="${{INPUT_BUF:-$DEFAULT_BUFFER}}"
+
+# =========================================================================
+# Step 3: Review & Confirm
+# =========================================================================
+print_header "Upgrade Plan"
+
+echo "The following changes will be applied:"
+echo ""
+echo "  Namespace:      $NAMESPACE"
+echo "  Image:          $REGISTRY:$TARGET_VERSION"
+echo "  Version:        $CURRENT_VERSION -> $TARGET_VERSION"
+echo "  Memory Limit:   $CURRENT_MEM -> $MEMORY_LIMIT"
+if [ "$EVENTS_BUFFER_LENGTH" != "0" ] && [ -n "$CURRENT_BUFFER_VAL" ] && [ "$CURRENT_BUFFER_VAL" -gt "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
+    echo "  Events Buffer:  $CURRENT_BUFFER_VAL -> $EVENTS_BUFFER_LENGTH"
+elif [ "$EVENTS_BUFFER_LENGTH" = "0" ]; then
+    echo "  Events Buffer:  (skipped)"
+else
+    echo "  Events Buffer:  (no change needed)"
+fi
+echo ""
+echo "  Rollback command (save this):"
+echo "    $CLI_TOOL set image daemonset/inspektor-gadget -n $NAMESPACE gadget=$CURRENT_IMAGE"
+echo ""
+
+print_warn "All gadget pods will be restarted during the upgrade."
+print_warn "Ensure no active analyses are running on this cluster."
+echo ""
+confirm_step "Apply upgrade?"
+
+# =========================================================================
+# Step 4: Apply Changes
+# =========================================================================
+print_header "Applying Upgrade"
+
+# 4a: Update image
+print_info "[1/4] Updating DaemonSet image to $REGISTRY:$TARGET_VERSION ..."
+if ! $CLI_TOOL set image daemonset/inspektor-gadget -n "$NAMESPACE" gadget="$REGISTRY:$TARGET_VERSION"; then
+    print_err "Failed to update image!"
+    print_info "Rollback: $CLI_TOOL set image daemonset/inspektor-gadget -n $NAMESPACE gadget=$CURRENT_IMAGE"
+    exit 1
+fi
+print_ok "Image updated"
+
+# 4b: Update memory limit
+print_info "[2/4] Setting memory limit to $MEMORY_LIMIT ..."
+if ! $CLI_TOOL patch daemonset inspektor-gadget -n "$NAMESPACE" --type=json \\
+  -p="[{{\\"op\\": \\"replace\\", \\"path\\": \\"/spec/template/spec/containers/0/resources/limits/memory\\", \\"value\\": \\"$MEMORY_LIMIT\\"}}]"; then
+    print_warn "Failed to update memory limit (non-fatal, continuing)"
+fi
+print_ok "Memory limit set"
+
+# 4c: Update events buffer
+if [ "$EVENTS_BUFFER_LENGTH" != "0" ]; then
+    print_info "[3/4] Optimizing events buffer..."
+    if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
+        CUR_CFG=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
+          -o jsonpath='{{{{.data.config\\.yaml}}}}' 2>/dev/null || echo "")
+        if [ -n "$CUR_CFG" ]; then
+            CUR_BUF=$(echo "$CUR_CFG" | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "0")
+            if [ "$CUR_BUF" -gt "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
+                UPD_CFG=$(echo "$CUR_CFG" | sed "s/events-buffer-length:.*/events-buffer-length: $EVENTS_BUFFER_LENGTH/")
+                $CLI_TOOL create configmap inspektor-gadget-config -n "$NAMESPACE" \\
+                  --from-literal="config.yaml=$UPD_CFG" --dry-run=client -o yaml \\
+                  | $CLI_TOOL apply -f -
+                print_ok "Buffer optimized: $CUR_BUF -> $EVENTS_BUFFER_LENGTH"
+            else
+                print_ok "Buffer already optimal (${{CUR_BUF:-unknown}})"
+            fi
         else
-            echo "  Buffer already optimal (${{CURRENT_BUFFER:-unknown}})"
+            print_warn "ConfigMap has no config.yaml data, skipping"
         fi
     else
-        echo "  ConfigMap found but no config.yaml data, skipping buffer optimization"
+        print_warn "ConfigMap not found, skipping buffer optimization"
     fi
 else
-    echo "  ConfigMap inspektor-gadget-config not found, skipping buffer optimization"
+    print_info "[3/4] Events buffer optimization skipped (user choice)"
 fi
 
-echo "[5/6] Waiting for rollout..."
-$CLI_TOOL rollout status daemonset/inspektor-gadget -n "$NAMESPACE" --timeout=300s
+# 4d: Wait for rollout
+print_info "[4/4] Waiting for rollout (timeout: 5 minutes)..."
+if ! $CLI_TOOL rollout status daemonset/inspektor-gadget -n "$NAMESPACE" --timeout=300s; then
+    print_err "Rollout timed out or failed!"
+    print_warn "Check pod status: $CLI_TOOL get pods -l app=inspektor-gadget -n $NAMESPACE"
+    print_warn "Check events: $CLI_TOOL get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -20"
+    print_info "Rollback: $CLI_TOOL set image daemonset/inspektor-gadget -n $NAMESPACE gadget=$CURRENT_IMAGE"
+    exit 1
+fi
+print_ok "Rollout complete"
 
-echo "[6/6] Verifying upgrade..."
-NEW_VERSION=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' \\
-  | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
+# =========================================================================
+# Step 5: Verification
+# =========================================================================
+print_header "Verification"
+
+NEW_IMAGE=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' 2>/dev/null || echo "unknown")
+NEW_VERSION_ACTUAL=$(echo "$NEW_IMAGE" | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
+NEW_MEM=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.spec.template.spec.containers[0].resources.limits.memory}}}}' 2>/dev/null || echo "unknown")
 READY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.status.numberReady}}}}')
+  -o jsonpath='{{{{.status.numberReady}}}}' 2>/dev/null || echo "0")
 DESIRED=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.status.desiredNumberScheduled}}}}')
+  -o jsonpath='{{{{.status.desiredNumberScheduled}}}}' 2>/dev/null || echo "0")
+
+# Verify version
+if [ "$NEW_VERSION_ACTUAL" = "$TARGET_VERSION" ]; then
+    print_ok "Version: $NEW_VERSION_ACTUAL"
+else
+    print_warn "Version mismatch: expected $TARGET_VERSION, got $NEW_VERSION_ACTUAL"
+fi
+
+# Verify pods
+if [ "$READY" = "$DESIRED" ] && [ "$READY" != "0" ]; then
+    print_ok "Pods: $READY / $DESIRED ready"
+else
+    print_warn "Pods: $READY / $DESIRED ready"
+    print_info "Some pods may still be starting. Check: $CLI_TOOL get pods -l app=inspektor-gadget -n $NAMESPACE"
+fi
+
+print_ok "Memory Limit: $NEW_MEM"
+print_ok "Image: $NEW_IMAGE"
 
 echo ""
 echo "======================================================================="
-echo "  Upgrade Complete!"
-echo "  Version: $NEW_VERSION"
-echo "  Memory Limit: $MEMORY_LIMIT"
-echo "  Events Buffer: $EVENTS_BUFFER_LENGTH"
-echo "  Pods Ready: $READY / $DESIRED"
+echo "  Upgrade Complete"
+echo "======================================================================="
 echo ""
 echo "  Next steps:"
 echo "  1. Sync the cluster in Flowfish UI to update version info"
 echo "  2. Start a test analysis to verify gadget functionality"
+echo ""
+echo "  Rollback (if needed):"
+echo "    $CLI_TOOL set image daemonset/inspektor-gadget -n $NAMESPACE gadget=$CURRENT_IMAGE"
 echo "======================================================================="
 '''
         
