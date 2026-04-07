@@ -1,1 +1,3 @@
-export const APP_VERSION = '2.4.0';
+import versionData from '../../version.json';
+
+export const APP_VERSION = versionData.version;
