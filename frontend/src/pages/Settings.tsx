@@ -382,7 +382,8 @@ const Settings: React.FC = () => {
       if (token) {
         const payload = JSON.parse(atob(token.split('.')[1]));
         const roles = payload.roles || [];
-        setIsAdmin(roles.includes('Super Admin') || roles.includes('Admin'));
+        const lowerRoles = roles.map((r: string) => r.toLowerCase());
+        setIsAdmin(lowerRoles.includes('super admin') || lowerRoles.includes('admin') || lowerRoles.includes('platform admin'));
       }
     } catch {
       setIsAdmin(false);

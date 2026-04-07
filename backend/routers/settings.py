@@ -143,20 +143,7 @@ async def update_analysis_limits(
     - max_allowed_duration_minutes: Maximum duration users can set
     - warning_before_minutes: When to show warning before auto-stop
     """
-    # Check admin role
-    roles = current_user.get('roles', [])
-    
-    if 'Super Admin' not in roles and 'Admin' not in roles:
-        logger.warning(
-            "Non-admin attempted to update analysis limits",
-            user_id=current_user.get('user_id'),
-            username=current_user.get('username'),
-            roles=roles
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required to update system settings"
-        )
+    check_admin_role(current_user)
     
     try:
         # Validate that default duration doesn't exceed max
