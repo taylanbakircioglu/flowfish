@@ -30,7 +30,8 @@ import {
   PlayCircleOutlined,
   PauseCircleOutlined,
   FieldTimeOutlined,
-  LineChartOutlined
+  LineChartOutlined,
+  ArrowUpOutlined
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -72,6 +73,7 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
   const { data: clustersData } = useGetClustersQuery();
   const clusters = clustersData?.clusters || [];
   const currentCluster = clusters.find((c: any) => c.id === clusterId);
+  const supportedGadgetVersion = clustersData?.supported_gadget_version || '';
 
   const { data: analyses = [], isLoading: analysesLoading } = useGetAnalysesQuery(
     { cluster_id: clusterId },
@@ -260,6 +262,22 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
                         v{currentCluster.gadget_version}
                       </Text>
                     )}
+                    {currentCluster.gadget_version && supportedGadgetVersion && (() => {
+                      const pa = currentCluster.gadget_version.replace('v','').split('.').map(Number);
+                      const pb = supportedGadgetVersion.replace('v','').split('.').map(Number);
+                      let cmp = 0;
+                      for (let i = 0; i < 3; i++) {
+                        if ((pa[i]||0) < (pb[i]||0)) { cmp = -1; break; }
+                        if ((pa[i]||0) > (pb[i]||0)) { cmp = 1; break; }
+                      }
+                      return cmp < 0 ? (
+                        <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Go to Cluster Management to upgrade.`}>
+                          <Tag color="orange" style={{ marginLeft: 4, fontSize: 10 }}>
+                            <ArrowUpOutlined /> UPGRADE
+                          </Tag>
+                        </Tooltip>
+                      ) : null;
+                    })()}
                   </Text>
                 </div>
               </Space>

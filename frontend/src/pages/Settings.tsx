@@ -93,6 +93,7 @@ interface AnalysisLimits {
   default_continuous_duration_minutes: number;
   max_allowed_duration_minutes: number;
   warning_before_minutes: number;
+  ingestion_rate_limit_per_second: number;
   updated_at?: string;
   updated_by?: number;
 }
@@ -1387,7 +1388,8 @@ const Settings: React.FC = () => {
               continuous_auto_stop_enabled: true,
               default_continuous_duration_minutes: 10,
               max_allowed_duration_minutes: 1440,
-              warning_before_minutes: 2
+              warning_before_minutes: 2,
+              ingestion_rate_limit_per_second: 5000
             }}
           >
             <Row gutter={24}>
@@ -1451,6 +1453,43 @@ const Settings: React.FC = () => {
                     ))}
                     </Space>
                 </Form.Item>
+                
+                <Divider />
+
+                <Row gutter={24}>
+                  <Col xs={24} md={12}>
+                    <Form.Item
+                      name="ingestion_rate_limit_per_second"
+                      label="Event Collection Rate Limit"
+                      rules={[{ required: true }]}
+                      extra="Maximum events per second per collection session. Set 0 for unlimited."
+                    >
+                      <InputNumber min={0} max={50000} addonAfter="events/sec" style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Form.Item label="Rate Limit Presets">
+                      <Space wrap>
+                        {[
+                          { label: 'Unlimited', value: 0 },
+                          { label: '1,000', value: 1000 },
+                          { label: '5,000', value: 5000 },
+                          { label: '10,000', value: 10000 },
+                          { label: '25,000', value: 25000 },
+                        ].map(preset => (
+                          <Button
+                            key={preset.value}
+                            size="small"
+                            onClick={() => analysisForm.setFieldValue('ingestion_rate_limit_per_second', preset.value)}
+                            disabled={!isAdmin}
+                          >
+                            {preset.label}
+                          </Button>
+                        ))}
+                      </Space>
+                    </Form.Item>
+                  </Col>
+                </Row>
                 
                 <Divider />
                 

@@ -275,7 +275,7 @@ CURRENT_MEM_LIM=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o js
 CPU_REQ=${CURRENT_CPU_REQ:-"100m"}
 MEM_REQ=${CURRENT_MEM_REQ:-"512Mi"}
 CPU_LIM=${CURRENT_CPU_LIM:-"1"}
-MEM_LIM=${CURRENT_MEM_LIM:-"12Gi"}
+MEM_LIM=${CURRENT_MEM_LIM:-"6Gi"}
 
 print_status "Resource configuration:"
 print_status "  CPU request: $CPU_REQ, limit: $CPU_LIM"

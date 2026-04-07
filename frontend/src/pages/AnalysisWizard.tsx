@@ -2327,7 +2327,7 @@ const AnalysisWizard: React.FC = () => {
                               <strong>Recurring</strong>
                             </Space>
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                              Cron-based schedule
+                              Scheduled runs (daily/weekly/cron)
                             </Text>
                           </Space>
                         </Radio>
@@ -2548,7 +2548,7 @@ const AnalysisWizard: React.FC = () => {
                             <span>
                               Analysis will run automatically on the configured schedule. Each run collects data for the specified duration, then auto-stops.
                               <br /><br />
-                              <strong>Recommended:</strong> Use <em>Rolling Window</em> retention below to keep disk usage bounded.
+                              <strong>Tip:</strong> Combine with <em>Rolling Window</em> retention (e.g. 10 GB) to collect data continuously at scheduled times while keeping storage bounded. This is ideal for production clusters where you want periodic observability without manual intervention.
                             </span>
                           }
                           type="warning"
@@ -2728,7 +2728,7 @@ const AnalysisWizard: React.FC = () => {
                           <div>
                             <strong>Rolling Window</strong>
                             <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                              Keep fixed size, delete oldest data as new arrives
+                              Keep fixed size (e.g. 10 GB), oldest data auto-deleted as new arrives. Ideal for continuous collection with bounded storage.
                             </Text>
                           </div>
                         </Space>

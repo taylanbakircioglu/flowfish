@@ -335,7 +335,7 @@ async def root():
     """Root endpoint - API information"""
     return {
         "name": "Flowfish Platform API",
-        "version": "1.0.0",
+        "version": __full_version__,
         "description": "eBPF-based Kubernetes Application Communication and Dependency Mapping",
         "status": "healthy",
         "docs_url": "/api/docs",
@@ -378,7 +378,7 @@ async def api_info():
     return {
         "api": {
             "name": "Flowfish Platform API",
-            "version": "1.0.0",
+            "version": __full_version__,
             "description": "eBPF-based Kubernetes Application Communication and Dependency Mapping",
             "environment": settings.ENVIRONMENT
         },

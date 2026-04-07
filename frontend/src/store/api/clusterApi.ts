@@ -6,6 +6,7 @@ interface ClustersResponse {
   clusters: Cluster[];
   count: number;
   message?: string;
+  supported_gadget_version?: string;
 }
 
 // Fields that can be updated in a cluster
@@ -103,6 +104,12 @@ export const clusterApi = createApi({
         responseHandler: 'text',
       }),
     }),
+    getGadgetUpgradeScript: builder.query<string, { clusterId: number; targetVersion?: string; memoryLimit?: string }>({
+      query: ({ clusterId, targetVersion = 'v0.50.1', memoryLimit = '6Gi' }) => ({
+        url: `/${clusterId}/gadget-upgrade-script?target_version=${targetVersion}&memory_limit=${memoryLimit}`,
+        responseHandler: 'text',
+      }),
+    }),
   }),
 });
 
@@ -152,4 +159,5 @@ export const {
   useTestConnectionMutation,
   useGetGadgetInstallScriptQuery,
   useLazyGetGadgetInstallScriptQuery,
+  useLazyGetGadgetUpgradeScriptQuery,
 } = clusterApi;

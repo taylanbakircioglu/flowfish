@@ -407,7 +407,8 @@ class DatabaseManager:
                     text("""
                         SELECT id, name, gadget_endpoint, connection_type, api_server_url,
                                token_encrypted, ca_cert_encrypted, 
-                               kubeconfig_encrypted, skip_tls_verify, gadget_namespace
+                               kubeconfig_encrypted, skip_tls_verify, gadget_namespace,
+                               gadget_version
                         FROM clusters WHERE id = :id
                     """),
                     {"id": cluster_id}
@@ -424,7 +425,8 @@ class DatabaseManager:
                         "ca_cert_encrypted": row[6],
                         "kubeconfig_encrypted": row[7],
                         "skip_tls_verify": row[8] or False,
-                        "gadget_namespace": row[9]
+                        "gadget_namespace": row[9],
+                        "gadget_version": row[10] or ''
                     }
                 return None
         except Exception as e:

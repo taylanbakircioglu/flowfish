@@ -608,8 +608,8 @@ class ClusterValidator:
                 major = int(version_parts[0])
                 minor = int(version_parts[1])
                 
-                if major == 0 and minor < 18:
-                    warnings.append(f"Inspector Gadget {gadget_version} is old (recommend >= v0.18)")
+                if major == 0 and minor < 46:
+                    warnings.append(f"Inspector Gadget {gadget_version} is below minimum supported version (requires >= v0.46.0)")
             except:
                 pass
         

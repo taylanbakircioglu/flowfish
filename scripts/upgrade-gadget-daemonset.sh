@@ -3,7 +3,7 @@
 # Inspektor Gadget DaemonSet Upgrade/Rollback Script
 # 
 # This script upgrades or rolls back Inspektor Gadget DaemonSet in existing clusters.
-# Default upgrade target: v0.48.0 (CVE-2024-24790 fix)
+# Default upgrade target: v0.50.1 (CVE-2024-24790 fix)
 # Rollback target: v0.46.0
 #
 # Usage:
@@ -16,16 +16,16 @@
 # Examples:
 #   # Using ghcr.io (default)
 #   ./upgrade-gadget-daemonset.sh flowfish
-#   ./upgrade-gadget-daemonset.sh flowfish v0.48.0
+#   ./upgrade-gadget-daemonset.sh flowfish v0.50.1
 #   ./upgrade-gadget-daemonset.sh flowfish --rollback
 #
 #   # Using Harbor registry
-#   ./upgrade-gadget-daemonset.sh flowfish v0.48.0 harbor.example.com/flowfish
+#   ./upgrade-gadget-daemonset.sh flowfish v0.50.1 harbor.example.com/flowfish
 #   ./upgrade-gadget-daemonset.sh flowfish --rollback harbor.example.com/flowfish
 #
 #   # Using environment variable
 #   export GADGET_REGISTRY="harbor.example.com/flowfish"
-#   ./upgrade-gadget-daemonset.sh flowfish v0.48.0
+#   ./upgrade-gadget-daemonset.sh flowfish v0.50.1
 #
 
 set -e
@@ -63,7 +63,7 @@ show_usage() {
     echo ""
     echo "Arguments:"
     echo "  namespace     Kubernetes namespace where Inspektor Gadget is deployed"
-    echo "  version       Target version (default: v0.48.0)"
+    echo "  version       Target version (default: v0.50.1)"
     echo "  --rollback    Rollback to v0.46.0"
     echo "  registry      Image registry (default: ghcr.io/inspektor-gadget)"
     echo ""
@@ -72,22 +72,22 @@ show_usage() {
     echo ""
     echo "Examples:"
     echo "  # Using ghcr.io (default)"
-    echo "  $0 flowfish                    # Upgrade to v0.48.0"
-    echo "  $0 flowfish v0.48.0            # Upgrade to v0.48.0"
+    echo "  $0 flowfish                    # Upgrade to v0.50.1"
+    echo "  $0 flowfish v0.50.1            # Upgrade to v0.50.1"
     echo "  $0 flowfish --rollback         # Rollback to v0.46.0"
     echo ""
     echo "  # Using Harbor registry"
-    echo "  $0 flowfish v0.48.0 harbor.example.com/flowfish"
+    echo "  $0 flowfish v0.50.1 harbor.example.com/flowfish"
     echo "  $0 flowfish --rollback harbor.example.com/flowfish"
     echo ""
     echo "  # Using environment variable"
     echo "  export GADGET_REGISTRY=\"harbor.example.com/flowfish\""
-    echo "  $0 flowfish v0.48.0"
+    echo "  $0 flowfish v0.50.1"
     echo ""
 }
 
 # Default versions and registry
-DEFAULT_UPGRADE_VERSION="v0.48.0"
+DEFAULT_UPGRADE_VERSION="v0.50.1"
 DEFAULT_ROLLBACK_VERSION="v0.46.0"
 DEFAULT_REGISTRY="ghcr.io/inspektor-gadget"
 
@@ -343,8 +343,8 @@ echo ""
 
 # Always show rollback command
 if [ "$IS_ROLLBACK" = true ]; then
-    print_header "To upgrade back to v0.48.0:"
-    echo "  $0 $NAMESPACE v0.48.0 ${IMAGE_REGISTRY}"
+    print_header "To upgrade back to v0.50.1:"
+    echo "  $0 $NAMESPACE v0.50.1 ${IMAGE_REGISTRY}"
 else
     print_header "If you encounter issues, rollback with:"
     echo "  $0 $NAMESPACE --rollback ${IMAGE_REGISTRY}"

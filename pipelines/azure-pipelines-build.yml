@@ -30,7 +30,7 @@ variables:
     value: $(Build.BuildId)
   # Inspektor Gadget version - must match constants.py
   - name: GADGET_VERSION
-    value: 'v0.48.0'
+    value: 'v0.50.1'
 
 stages:
   - stage: Build

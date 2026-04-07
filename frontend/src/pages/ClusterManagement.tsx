@@ -42,9 +42,20 @@ import {
   WarningOutlined,
   BookOutlined,
   DownloadOutlined,
-  SettingOutlined
+  SettingOutlined,
+  ArrowUpOutlined
 } from '@ant-design/icons';
-import { useGetClustersQuery, useCreateClusterMutation, useDeleteClusterMutation, useUpdateClusterMutation, useSyncClusterMutation, useTestConnectionMutation, useLazyGetGadgetInstallScriptQuery } from '../store/api/clusterApi';
+import { useGetClustersQuery, useCreateClusterMutation, useDeleteClusterMutation, useUpdateClusterMutation, useSyncClusterMutation, useTestConnectionMutation, useLazyGetGadgetInstallScriptQuery, useLazyGetGadgetUpgradeScriptQuery } from '../store/api/clusterApi';
+
+const compareVersions = (a: string, b: string): number => {
+  const pa = a.replace('v', '').split('.').map(Number);
+  const pb = b.replace('v', '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+  }
+  return 0;
+};
 
 const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
@@ -439,12 +450,19 @@ const ClusterManagement: React.FC = () => {
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<string>('kubernetes');
   
+  // Upgrade modal states
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeCluster, setUpgradeCluster] = useState<ClusterData | null>(null);
+  const [upgradeScript, setUpgradeScript] = useState<string>('');
+  
   const { data, isLoading, refetch } = useGetClustersQuery();
+  const supportedGadgetVersion = data?.supported_gadget_version || '';
   const [createCluster, { isLoading: creating }] = useCreateClusterMutation();
   const [deleteCluster] = useDeleteClusterMutation();
   const [updateCluster, { isLoading: updating }] = useUpdateClusterMutation();
   const [syncCluster] = useSyncClusterMutation();
   const [testConnection, { isLoading: testing }] = useTestConnectionMutation();
+  const [fetchUpgradeScript] = useLazyGetGadgetUpgradeScriptQuery();
   const [testResult, setTestResult] = useState<any>(null);
   
   // Update selectedProvider when form changes
@@ -600,16 +618,44 @@ const ClusterManagement: React.FC = () => {
           unhealthy: 'red',
           unknown: 'gray'
         };
+        const clusterVersion = record.gadget_version || '';
+        const needsUpgrade = clusterVersion && supportedGadgetVersion && 
+          compareVersions(clusterVersion, supportedGadgetVersion) < 0;
         return (
           <Space direction="vertical" size={0}>
             <Tag color={colorMap[status || 'unknown']} icon={status === 'healthy' ? <CheckCircleOutlined /> : <CloseCircleOutlined />}>
               {(status || 'unknown').toUpperCase()}
             </Tag>
-            {record.gadget_version && (
-              <Typography.Text type="secondary" style={{ fontSize: '11px' }}>
-                v{record.gadget_version}
-              </Typography.Text>
-            )}
+            <Space size={4}>
+              {record.gadget_version && (
+                <Typography.Text type="secondary" style={{ fontSize: '11px' }}>
+                  v{record.gadget_version}
+                </Typography.Text>
+              )}
+              {needsUpgrade && (
+                <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Click to view upgrade script.`}>
+                  <Tag
+                    color="orange"
+                    style={{ cursor: 'pointer', fontSize: '10px' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setUpgradeCluster(record);
+                      fetchUpgradeScript({ clusterId: record.id })
+                        .unwrap()
+                        .then(script => {
+                          setUpgradeScript(script);
+                          setUpgradeModalOpen(true);
+                        })
+                        .catch(() => {
+                          message.error('Failed to generate upgrade script');
+                        });
+                    }}
+                  >
+                    <ArrowUpOutlined /> UPGRADE
+                  </Tag>
+                </Tooltip>
+              )}
+            </Space>
           </Space>
         );
       },
@@ -1457,6 +1503,56 @@ const ClusterManagement: React.FC = () => {
         onClose={() => setIsSetupModalOpen(false)}
         provider={selectedProvider}
       />
+
+      {/* Gadget Upgrade Modal */}
+      <Modal
+        title={`Upgrade Inspektor Gadget - ${upgradeCluster?.name || ''}`}
+        open={upgradeModalOpen}
+        onCancel={() => { setUpgradeModalOpen(false); setUpgradeCluster(null); }}
+        footer={null}
+        width={800}
+      >
+        <Alert
+          message="Gadget Upgrade Available"
+          description={
+            <span>
+              Current version: <strong>{upgradeCluster?.gadget_version || 'unknown'}</strong> &rarr; Target: <strong>{supportedGadgetVersion}</strong>
+              <br />
+              Run the script below on a machine with <code>kubectl</code>/<code>oc</code> access to the cluster.
+              Ensure no active analyses are running before upgrading.
+            </span>
+          }
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+        <CodeBlock code={upgradeScript} />
+        <Space style={{ marginTop: 12 }}>
+          <Button
+            icon={<CopyOutlined />}
+            onClick={() => {
+              navigator.clipboard.writeText(upgradeScript);
+              message.success('Script copied to clipboard!');
+            }}
+          >
+            Copy Script
+          </Button>
+          <Button
+            icon={<DownloadOutlined />}
+            onClick={() => {
+              const blob = new Blob([upgradeScript], { type: 'text/plain' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `upgrade-gadget-${upgradeCluster?.name || 'cluster'}.sh`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Download Script
+          </Button>
+        </Space>
+      </Modal>
     </Space>
   );
 };

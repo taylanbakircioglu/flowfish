@@ -123,8 +123,8 @@ RUN set -e && \
 
 # Install kubectl-gadget plugin (from GitHub releases)
 # CVE-2024-24790 fix: v0.36.0+ is built with Go 1.22.4+ which includes the fix
-# v0.48.0 includes latest security patches
-ARG GADGET_VERSION=v0.48.0
+# v0.50.1 includes ring buffer fix + socket cleanup
+ARG GADGET_VERSION=v0.50.1
 RUN set -e && \
     ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then GADGET_ARCH="arm64"; else GADGET_ARCH="amd64"; fi && \

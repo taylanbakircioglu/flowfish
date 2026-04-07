@@ -68,6 +68,12 @@ class AnalysisLimits(BaseModel):
         le=10,
         description="Show warning notification this many minutes before auto-stop"
     )
+    ingestion_rate_limit_per_second: int = Field(
+        5000,
+        ge=0,
+        le=50000,
+        description="Max events per second per ingestion session (0 = unlimited)"
+    )
 
 
 class AnalysisLimitsResponse(AnalysisLimits):
@@ -209,11 +215,27 @@ async def update_analysis_limits(
 @router.get("/analysis-limits/defaults", response_model=AnalysisLimits)
 async def get_analysis_limits_defaults():
     """
-    Get default analysis limits (no authentication required).
+    Get current analysis limits (no authentication required).
     
     This endpoint is used by services that need defaults without auth,
     like the analysis orchestrator during startup.
+    Reads from DB first, falls back to Pydantic defaults if not configured.
     """
+    try:
+        query = """
+            SELECT value FROM system_settings 
+            WHERE key = 'analysis_limits'
+        """
+        row = await database.fetch_one(query)
+        
+        if row:
+            value = row['value']
+            if isinstance(value, str):
+                value = json.loads(value)
+            return AnalysisLimits(**value)
+    except Exception as e:
+        logger.warning("Failed to read analysis limits from DB in /defaults", error=str(e))
+    
     return AnalysisLimits()
 
 

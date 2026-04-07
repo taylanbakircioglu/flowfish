@@ -120,6 +120,10 @@ class IngestionServiceClient:
             if not gadget_namespace:
                 raise ValueError("gadget_namespace is required but not provided")
             
+            # Dynamic OCI tag and rate limiting
+            gadget_version = auth_params.get('gadget_version') or ''
+            max_events_per_second = auth_params.get('max_events_per_second', 0)
+            
             request = ingestion_service_pb2.StartCollectionRequest(
                 task_id=task_id,
                 cluster_id=cluster_id,
@@ -143,7 +147,9 @@ class IngestionServiceClient:
                 gadget_modules=gadget_modules,
                 scope=scope,
                 duration_seconds=duration_seconds,
-                gadget_namespace=gadget_namespace  # CRITICAL: Pass namespace to ingestion service
+                gadget_namespace=gadget_namespace,  # CRITICAL: Pass namespace to ingestion service
+                gadget_version=gadget_version,
+                max_events_per_second=max_events_per_second
             )
             
             # 120 second timeout for start operation - gadget startup can take 60+ seconds

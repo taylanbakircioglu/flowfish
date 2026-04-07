@@ -91,7 +91,7 @@ spec:
           mountPath: /config-generated
       containers:
       - name: gadget
-        image: ghcr.io/inspektor-gadget/inspektor-gadget:v0.48.0
+        image: ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1
         imagePullPolicy: Always
         terminationMessagePolicy: FallbackToLogsOnError
         # NOTE: Only -serve flag, NO -service-host!
@@ -164,7 +164,7 @@ spec:
             memory: 512Mi
           limits:
             cpu: "1"
-            memory: 12Gi
+            memory: 6Gi
         volumeMounts:
         - name: bin
           mountPath: /host/bin

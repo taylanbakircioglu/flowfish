@@ -472,7 +472,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
 );
 INSERT INTO system_settings (key, value, description) VALUES
 ('analysis_limits',
- '{"continuous_auto_stop_enabled": true, "default_continuous_duration_minutes": 10, "max_allowed_duration_minutes": 1440, "warning_before_minutes": 2}',
+ '{"continuous_auto_stop_enabled": true, "default_continuous_duration_minutes": 10, "max_allowed_duration_minutes": 1440, "warning_before_minutes": 2, "ingestion_rate_limit_per_second": 5000}',
  'Global analysis time and size limits')
 ON CONFLICT (key) DO NOTHING;
 

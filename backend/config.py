@@ -114,8 +114,16 @@ class Settings(BaseSettings):
     # Inspektor Gadget
     # NOTE: GADGET_NAMESPACE is now per-cluster, stored in database, provided from UI
     GADGET_IMAGE: str = Field(
-        default="ghcr.io/inspektor-gadget/inspektor-gadget:v0.48.0",  # CVE-2024-24790 fix
+        default="ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1",  # ring buffer fix + socket cleanup
         description="Inspektor Gadget image (used for version reference only)"
+    )
+    GADGET_SUPPORTED_VERSION: str = Field(
+        default="v0.50.1",
+        description="Latest supported gadget version (for upgrade badge in UI)"
+    )
+    GADGET_MIN_SUPPORTED_VERSION: str = Field(
+        default="v0.46.0",
+        description="Minimum supported gadget version for Flowfish compatibility"
     )
     
     # =========================================================================

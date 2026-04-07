@@ -55,6 +55,11 @@ for manifest in *.yaml; do
         # Storage Class
         sed -i -e "s|{{STORAGE_CLASS}}|${STORAGE_CLASS}|g" $manifest
         
+        # Gadget version
+        if [ -n "${GADGET_VERSION}" ]; then
+            sed -i -e "s|{{GADGET_VERSION}}|${GADGET_VERSION}|g" $manifest
+        fi
+        
         # TLS Secret (if variable is set)
         if [ -n "${TLS_SECRET_NAME}" ]; then
             sed -i -e "s|{{TLS_SECRET_NAME}}|${TLS_SECRET_NAME}|g" $manifest

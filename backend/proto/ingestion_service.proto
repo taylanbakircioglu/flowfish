@@ -50,6 +50,8 @@ message StartCollectionRequest {
   analysis.ScopeConfig scope = 19;
   int32 duration_seconds = 20;
   string gadget_namespace = 21;  // Namespace where Inspector Gadget is deployed
+  string gadget_version = 22;  // Cluster-specific gadget version for dynamic OCI tag (e.g. "v0.50.1")
+  int32 max_events_per_second = 23;  // Per-session rate limit from global settings (0=unlimited)
 }
 
 message CollectionSession {
@@ -71,7 +73,7 @@ message GetCollectionStatusRequest {
 message CollectionStatus {
   string session_id = 1;
   string task_id = 2;
-  string status = 3; // running, completed, failed
+  string status = 3; // running, running_with_errors, completed, failed
   int64 events_collected = 4;
   int64 bytes_written = 5;
   int64 errors_count = 6;
@@ -79,6 +81,14 @@ message CollectionStatus {
   common.Timestamp started_at = 8;
   common.Timestamp last_event_at = 9;
   map<string, int64> gadget_stats = 10; // per-gadget statistics
+  repeated GadgetError gadget_errors = 11; // gadget startup errors for user notification
+}
+
+// Gadget startup error information
+message GadgetError {
+  string gadget = 1;   // Gadget name (e.g., trace_tcp, trace_dns)
+  string error = 2;    // User-friendly error message
+  string trace_id = 3; // Internal trace ID for debugging
 }
 
 message RegisterWorkerRequest {

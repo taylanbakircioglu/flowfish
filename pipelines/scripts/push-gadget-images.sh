@@ -11,7 +11,7 @@ echo "================================================"
 # Configuration - GADGET_VERSION must be set externally
 if [ -z "${GADGET_VERSION}" ]; then
     echo "❌ ERROR: GADGET_VERSION environment variable must be set"
-    echo "   Example: export GADGET_VERSION=v0.48.0"
+    echo "   Example: export GADGET_VERSION=v0.50.1"
     exit 1
 fi
 

@@ -31,11 +31,11 @@ data:
   
   # Inspektor Gadget settings
   GADGET_NAMESPACE: "flowfish"
-  GADGET_IMAGE: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.48.0"
+  GADGET_IMAGE: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1"
   # IMPORTANT: Gadget image version MUST match the deployed Inspektor Gadget DaemonSet version
   # Using 'latest' causes CO-RE compatibility issues between gadget eBPF programs and the kernel modules
-  # Current DaemonSet version: v0.48.0 (see 10-inspektor-gadget.yaml)
-  GADGET_IMAGE_VERSION: "v0.48.0"  # CVE-2024-24790 fix
+  # Current DaemonSet version: v0.50.1 (see 10-inspektor-gadget.yaml)
+  GADGET_IMAGE_VERSION: "v0.50.1"  # ring buffer fix + socket cleanup
   # Empty GADGET_REGISTRY = use official ghcr.io/inspektor-gadget/gadget images
   # Set to a custom registry prefix only if you have mirrored images with multi-arch support
   GADGET_REGISTRY: ""

@@ -99,10 +99,10 @@ classic-release/
 | `DEPLOYMENT_ENV` | `pilot` | Release | No |
 | `BUILD_SOURCEVERSION` | `$(Build.SourceVersion)` | Release | No |
 | `release-all` | `false` | Release | No |
-| `GADGET_VERSION` | `v0.48.0` | Release | No |
+| `GADGET_VERSION` | `v0.50.1` | Release | No |
 
 > **GADGET_VERSION:** Inspektor Gadget image versiyonu. Build pipeline'daki değerle aynı olmalıdır.
-> **CVE-2024-24790 fix için v0.48.0 gereklidir.**
+> **v0.50.1 includes ring buffer fix + socket cleanup improvements.**
 
 ### 6.1 Build Pipeline Output Variables (Incremental Deploy İçin)
 
@@ -553,7 +553,7 @@ The following placeholders are replaced during deployment:
 - `{{HARBOR_REGISTRY}}` → Harbor registry URL
 - `{{HARBOR_PROJECT}}` → `flowfish` (hardcoded)
 - `{{IMAGE_TAG}}` → 7-char commit hash
-- `{{GADGET_VERSION}}` → Inspektor Gadget version (e.g., `v0.48.0`)
+- `{{GADGET_VERSION}}` → Inspektor Gadget version (e.g., `v0.50.1`)
 
 ### Service Hosts
 - `{{POSTGRES_HOST}}` → PostgreSQL service host

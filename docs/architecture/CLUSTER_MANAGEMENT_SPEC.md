@@ -92,7 +92,7 @@ CREATE INDEX idx_clusters_created_at ON clusters(created_at DESC);
   "gadget_namespace": "kube-system",  // REQUIRED from UI
   "gadget_endpoint": "inspektor-gadget.kube-system:16060",  // Auto-constructed (deprecated)
   "gadget_auto_detect": true,
-  "gadget_version": "v0.48.0",
+  "gadget_version": "v0.50.1",
   "gadget_capabilities": ["network", "dns", "tcp", "process"],
   "gadget_health_status": "healthy",
   "gadget_last_check": "2024-01-20T10:30:00Z",

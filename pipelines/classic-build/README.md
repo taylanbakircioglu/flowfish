@@ -82,12 +82,12 @@ classic-build/
 |------|-------|------------------------|
 | `build-all` | `false` | ✅ Yes |
 | `DEPLOYMENT_ENV` | `pilot` | ✅ Yes |
-| `GADGET_VERSION` | `v0.48.0` | ✅ Yes |
+| `GADGET_VERSION` | `v0.50.1` | ✅ Yes |
 | `cleanup-keep-count` | `4` | ✅ Yes |
 
 > **GADGET_VERSION:** Inspektor Gadget OCI image'larını Harbor'a mirror etmek için kullanılır.
 > Bu değer `services/ingestion-service/app/constants.py` ile uyumlu olmalıdır.
-> **CVE-2024-24790 fix için v0.48.0 gereklidir.**
+> **v0.50.1 includes ring buffer fix + socket cleanup improvements.**
 >
 > **cleanup-keep-count:** Her servis için registry'de tutulacak image sayısı (latest hariç). Default: 4.
 
@@ -216,7 +216,7 @@ GADGET_VERSION=$(GADGET_VERSION)
 ```
 
 > **🆕 GADGET_VERSION:** Inspektor Gadget image'larını Harbor'a mirror etmek için gerekli.
-> Pipeline Variables'a `GADGET_VERSION=v0.48.0` ekleyin (CVE-2024-24790 fix).
+> Pipeline Variables'a `GADGET_VERSION=v0.50.1` ekleyin (ring buffer fix + socket cleanup).
 
 ---
 

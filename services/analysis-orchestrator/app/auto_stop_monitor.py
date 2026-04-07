@@ -144,7 +144,8 @@ class AutoStopMonitor:
             "continuous_auto_stop_enabled": True,
             "default_continuous_duration_minutes": 10,
             "max_allowed_duration_minutes": 1440,
-            "warning_before_minutes": 2
+            "warning_before_minutes": 2,
+            "ingestion_rate_limit_per_second": 5000
         }
         
         # Cache the defaults too

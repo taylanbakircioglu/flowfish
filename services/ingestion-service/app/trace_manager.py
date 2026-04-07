@@ -235,7 +235,8 @@ class TraceSession:
         scope: dict,
         gadget_namespace: str,  # REQUIRED: From UI via collection request
         pod_discovery: Optional[PodDiscovery] = None,
-        temp_kubeconfig: Optional[str] = None  # Path to temp kubeconfig for cleanup
+        temp_kubeconfig: Optional[str] = None,  # Path to temp kubeconfig for cleanup
+        max_events_per_second: int = 0  # Per-session rate limit from global settings (0=unlimited)
     ):
         self.session_id = session_id
         self.task_id = task_id
@@ -247,6 +248,7 @@ class TraceSession:
         self.gadget_namespace = gadget_namespace  # From UI
         self.pod_discovery = pod_discovery  # For enriching events with pod names
         self.temp_kubeconfig = temp_kubeconfig  # For cleanup on session end
+        self.max_events_per_second = max_events_per_second
         
         self.status = "starting"
         self.started_at = datetime.utcnow()
@@ -364,6 +366,13 @@ class TraceManager:
                 kubeconfig_path = temp_kubeconfig
                 kubectl_context = request.cluster_name or f"cluster-{request.cluster_id}"
             
+            # Dynamic OCI tag: use cluster-specific gadget_version if provided, else settings fallback
+            effective_image_version = settings.gadget_image_version
+            if hasattr(request, 'gadget_version') and request.gadget_version:
+                effective_image_version = request.gadget_version
+                logger.info("Using cluster-specific gadget version for OCI tag",
+                           version=effective_image_version, cluster_id=request.cluster_id)
+            
             # Create Gadget client based on protocol
             if protocol in ('kubectl', 'kubectl-gadget', 'cli'):
                 # Use kubectl-gadget CLI client (v0.46.0+)
@@ -371,7 +380,7 @@ class TraceManager:
                     gadget_namespace=request.gadget_namespace,  # REQUIRED - from collection request
                     kubeconfig=kubeconfig_path,
                     context=kubectl_context,
-                    gadget_image_version=settings.gadget_image_version,
+                    gadget_image_version=effective_image_version,
                     gadget_registry=settings.gadget_registry,
                     gadget_image_prefix=settings.gadget_image_prefix,
                     timeout_seconds=settings.gadget_grpc_timeout
@@ -428,6 +437,11 @@ class TraceManager:
                               error=str(e))
                 pod_discovery = None
             
+            # Per-session rate limit from global settings via gRPC
+            session_rate_limit = 0
+            if hasattr(request, 'max_events_per_second'):
+                session_rate_limit = request.max_events_per_second
+            
             # Create session
             session = TraceSession(
                 session_id=session_id,
@@ -439,7 +453,8 @@ class TraceManager:
                 scope=self._scope_to_dict(request.scope),
                 gadget_namespace=request.gadget_namespace,  # From UI
                 pod_discovery=pod_discovery,
-                temp_kubeconfig=temp_kubeconfig  # For cleanup on session end
+                temp_kubeconfig=temp_kubeconfig,  # For cleanup on session end
+                max_events_per_second=session_rate_limit
             )
             
             self.active_sessions[session_id] = session
@@ -655,9 +670,9 @@ class TraceManager:
                        session_id=session.session_id,
                        trace_id=trace_id)
             
-            # Token bucket rate limiter (if configured)
+            # Token bucket rate limiter: session value > 0 takes priority, else env fallback
             import time as _time
-            max_eps = settings.max_events_per_second
+            max_eps = session.max_events_per_second if session.max_events_per_second > 0 else settings.max_events_per_second
             bucket_tokens = float(max_eps) if max_eps > 0 else 0.0
             bucket_last_refill = _time.monotonic()
             dropped_count = 0

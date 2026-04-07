@@ -15,6 +15,7 @@ from database.postgresql import database
 from services.cluster_cache_service import cluster_cache_service
 from services.cluster_connection_manager import cluster_connection_manager
 from utils.encryption import encrypt_data
+from config import settings as app_settings
 
 logger = structlog.get_logger()
 
@@ -108,7 +109,8 @@ async def get_clusters(is_active: Optional[bool] = None):
         
         return {
             "clusters": [dict(cluster) for cluster in clusters],
-            "count": len(clusters)
+            "count": len(clusters),
+            "supported_gadget_version": app_settings.GADGET_SUPPORTED_VERSION
         }
         
     except Exception as e:
@@ -569,7 +571,7 @@ async def get_gadget_install_script(
     provider: str = Query("openshift", description="Kubernetes provider: openshift, kubernetes"),
     mode: str = Query("install", description="Script mode: install or uninstall"),
     registry: str = Query("ghcr.io/inspektor-gadget/inspektor-gadget", description="Gadget image registry (e.g., harbor.example.com/flowfish/inspektor-gadget)"),
-    version: str = Query("v0.48.0", description="Gadget version tag"),
+    version: str = Query("v0.50.1", description="Gadget version tag"),
     storage_class: str = Query("", description="StorageClass name for persistent gadget data (e.g., standard, gp2, managed-premium). If empty, uses emptyDir (data lost on pod restart)")
 ):
     """
@@ -695,10 +697,7 @@ metadata:
 data:
   config.yaml: |
     events-buffer-length: 16384
-    # Auto-detected by init container at pod startup. Supported platforms:
-    #   K3s/RKE2:  /run/k3s/containerd/containerd.sock
-    #   MicroK8s:  /var/snap/microk8s/common/run/containerd.sock
-    #   Standard:  /run/containerd/containerd.sock
+    # Auto-detected by init container at pod startup
     containerd-socketpath: CONTAINERD_SOCKET_AUTO
     crio-socketpath: /run/crio/crio.sock
     docker-socketpath: /run/docker.sock
@@ -1055,7 +1054,7 @@ spec:
 #   ./setup-flowfish-remote.sh flowfish
 #
 #   # Using internal Harbor registry with persistent storage:
-#   ./setup-flowfish-remote.sh flowfish harbor.example.com/flowfish/inspektor-gadget v0.48.0 standard
+#   ./setup-flowfish-remote.sh flowfish harbor.example.com/flowfish/inspektor-gadget v0.50.1 standard
 #
 #   # Using only storage class (with default registry and version):
 #   ./setup-flowfish-remote.sh flowfish "" "" gp2
@@ -1161,7 +1160,7 @@ if [ -z "$NAMESPACE" ]; then
     GADGET_REGISTRY="${{INPUT_REGISTRY:-$DEFAULT_REGISTRY}}"
     echo ""
     echo -e "${{CYAN}}Version:${{NC}} Inspektor Gadget version tag"
-    echo -e "  Example: v0.46.0, v0.48.0"
+    echo -e "  Example: v0.46.0, v0.50.1"
     echo -e "  Default: $DEFAULT_VERSION"
     read -p "Enter version (press Enter for default): " INPUT_VERSION
     GADGET_VERSION="${{INPUT_VERSION:-$DEFAULT_VERSION}}"
@@ -2546,4 +2545,162 @@ async def test_cluster_connection(test_data: ConnectionTestRequest):
             detail=f"Connection test failed: {str(e)}"
         )
 
+
+@router.get("/clusters/{cluster_id}/gadget-upgrade-script", response_class=PlainTextResponse)
+async def get_gadget_upgrade_script(
+    cluster_id: int,
+    target_version: str = Query("v0.50.1", description="Target gadget version"),
+    memory_limit: str = Query("6Gi", description="Memory limit for gadget containers"),
+):
+    """
+    Generate a cluster-specific upgrade script for Inspektor Gadget DaemonSet.
+    Pre-fills parameters from the cluster's current configuration.
+    """
+    try:
+        query = """
+            SELECT id, name, gadget_namespace, gadget_version, connection_type
+            FROM clusters WHERE id = :id AND status != 'deleted'
+        """
+        cluster = await database.fetch_one(query, {"id": cluster_id})
+        
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        
+        namespace = cluster['gadget_namespace'] or 'flowfish'
+        current_version = cluster['gadget_version'] or 'unknown'
+        cluster_name = cluster['name']
+        
+        script = f'''#!/bin/bash
+# =========================================================================
+# Inspektor Gadget Upgrade Script
+# Generated for cluster: {cluster_name} (ID: {cluster_id})
+# Current version: {current_version}
+# Target version:  {target_version}
+# =========================================================================
+#
+# Usage:
+#   chmod +x upgrade-gadget.sh
+#   ./upgrade-gadget.sh
+#
+# Prerequisites:
+#   - kubectl/oc CLI with cluster access
+#   - Cluster admin permissions
+#   - No active analyses running on this cluster
+#
+# What this script does:
+#   1. Updates the DaemonSet image to the target version
+#   2. Applies memory limit optimization
+#   3. Optimizes events-buffer-length in ConfigMap (reduces idle memory)
+#   4. Waits for rollout and verifies the upgrade
+#
+# =========================================================================
+
+set -euo pipefail
+
+NAMESPACE="{namespace}"
+TARGET_VERSION="{target_version}"
+MEMORY_LIMIT="{memory_limit}"
+EVENTS_BUFFER_LENGTH=8192
+
+echo "======================================================================="
+echo "  Inspektor Gadget Upgrade - {cluster_name}"
+echo "  Current: {current_version} -> Target: $TARGET_VERSION"
+echo "======================================================================="
+echo ""
+
+# Detect CLI tool
+if command -v oc &>/dev/null; then
+    CLI_TOOL="oc"
+elif command -v kubectl &>/dev/null; then
+    CLI_TOOL="kubectl"
+else
+    echo "ERROR: Neither oc nor kubectl found in PATH"
+    exit 1
+fi
+
+echo "[1/6] Checking prerequisites..."
+$CLI_TOOL get namespace "$NAMESPACE" >/dev/null 2>&1 || {{ echo "ERROR: Namespace $NAMESPACE not found"; exit 1; }}
+$CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" >/dev/null 2>&1 || {{ echo "ERROR: DaemonSet not found in $NAMESPACE"; exit 1; }}
+
+CURRENT=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' 2>/dev/null \\
+  | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
+echo "  Current image version: $CURRENT"
+echo "  Target version: $TARGET_VERSION"
+echo ""
+
+read -p "Continue with upgrade? (y/N): " CONFIRM
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "Upgrade cancelled."
+    exit 0
+fi
+
+echo ""
+echo "[2/6] Updating DaemonSet image..."
+REGISTRY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' | sed "s|:.*||")
+$CLI_TOOL set image daemonset/inspektor-gadget -n "$NAMESPACE" gadget="$REGISTRY:$TARGET_VERSION"
+
+echo "[3/6] Updating memory limit to $MEMORY_LIMIT..."
+$CLI_TOOL patch daemonset inspektor-gadget -n "$NAMESPACE" --type=json \\
+  -p="[{{\\"op\\": \\"replace\\", \\"path\\": \\"/spec/template/spec/containers/0/resources/limits/memory\\", \\"value\\": \\"$MEMORY_LIMIT\\"}}]"
+
+echo "[4/6] Optimizing event buffer configuration..."
+if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" >/dev/null 2>&1; then
+    CURRENT_CONFIG=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
+      -o jsonpath='{{{{.data.config\\.yaml}}}}' 2>/dev/null || echo "")
+    if [ -n "$CURRENT_CONFIG" ]; then
+        CURRENT_BUFFER=$(echo "$CURRENT_CONFIG" | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "0")
+        if [ "$CURRENT_BUFFER" -gt "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
+            UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | sed "s/events-buffer-length:.*/events-buffer-length: $EVENTS_BUFFER_LENGTH/")
+            $CLI_TOOL create configmap inspektor-gadget-config -n "$NAMESPACE" \\
+              --from-literal="config.yaml=$UPDATED_CONFIG" --dry-run=client -o yaml \\
+              | $CLI_TOOL apply -f -
+            echo "  Buffer optimized: $CURRENT_BUFFER -> $EVENTS_BUFFER_LENGTH"
+        else
+            echo "  Buffer already optimal (${{CURRENT_BUFFER:-unknown}})"
+        fi
+    else
+        echo "  ConfigMap found but no config.yaml data, skipping buffer optimization"
+    fi
+else
+    echo "  ConfigMap inspektor-gadget-config not found, skipping buffer optimization"
+fi
+
+echo "[5/6] Waiting for rollout..."
+$CLI_TOOL rollout status daemonset/inspektor-gadget -n "$NAMESPACE" --timeout=300s
+
+echo "[6/6] Verifying upgrade..."
+NEW_VERSION=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' \\
+  | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
+READY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.status.numberReady}}}}')
+DESIRED=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
+  -o jsonpath='{{{{.status.desiredNumberScheduled}}}}')
+
+echo ""
+echo "======================================================================="
+echo "  Upgrade Complete!"
+echo "  Version: $NEW_VERSION"
+echo "  Memory Limit: $MEMORY_LIMIT"
+echo "  Events Buffer: $EVENTS_BUFFER_LENGTH"
+echo "  Pods Ready: $READY / $DESIRED"
+echo ""
+echo "  Next steps:"
+echo "  1. Sync the cluster in Flowfish UI to update version info"
+echo "  2. Start a test analysis to verify gadget functionality"
+echo "======================================================================="
+'''
+        
+        return script
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to generate upgrade script", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate upgrade script: {str(e)}"
+        )
 

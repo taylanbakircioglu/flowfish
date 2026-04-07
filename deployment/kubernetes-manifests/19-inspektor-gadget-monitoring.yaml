@@ -65,6 +65,30 @@ spec:
         summary: "Node {{ $labels.instance }} /var partition usage above 75%"
         description: "/var partition on {{ $labels.instance }} is {{ $value | humanizePercentage }} full. Core dump files from Inspektor Gadget may be accumulating."
 
+    # Alert when Inspektor Gadget memory usage is high (>3Gi for 10 minutes)
+    - alert: InspektorGadgetHighMemory
+      expr: |
+        container_memory_working_set_bytes{container="gadget"} > 3 * 1024 * 1024 * 1024
+      for: 10m
+      labels:
+        severity: warning
+        component: inspektor-gadget
+      annotations:
+        summary: "Inspektor Gadget high memory usage on {{ $labels.pod }}"
+        description: "Gadget container in pod {{ $labels.pod }} is using {{ $value | humanize1024 }}B of memory. Limit is 6Gi. Consider syncing cluster or restarting the DaemonSet."
+
+    # Alert when Inspektor Gadget memory usage is critical (>5Gi for 5 minutes)
+    - alert: InspektorGadgetCriticalMemory
+      expr: |
+        container_memory_working_set_bytes{container="gadget"} > 5 * 1024 * 1024 * 1024
+      for: 5m
+      labels:
+        severity: critical
+        component: inspektor-gadget
+      annotations:
+        summary: "CRITICAL: Inspektor Gadget near OOM on {{ $labels.pod }}"
+        description: "Gadget container in pod {{ $labels.pod }} is using {{ $value | humanize1024 }}B of memory. OOM kill imminent (limit 6Gi). Immediate action required."
+
     # Alert when Inspektor Gadget pods are not ready
     - alert: InspektorGadgetPodsNotReady
       expr: |

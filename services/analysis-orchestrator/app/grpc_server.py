@@ -7,6 +7,7 @@ import sys
 import os
 import asyncio
 import threading
+import httpx
 
 # Add proto to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -292,6 +293,18 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                        f"exclude_namespaces={exclude_namespaces}, exclude_pod_patterns={exclude_pod_patterns}, exclude_strategy={exclude_strategy}, "
                        f"gadgets={gadget_modules}, clusters={len(cluster_ids)}")
             
+            # Fetch global ingestion rate limit via isolated HTTP call
+            ingestion_rate_limit = 0
+            try:
+                backend_url = f"http://{settings.backend_service_host}:{settings.backend_service_port}"
+                async with httpx.AsyncClient(timeout=5.0) as http_client:
+                    resp = await http_client.get(f"{backend_url}/api/v1/settings/analysis-limits/defaults")
+                    if resp.status_code == 200:
+                        ingestion_rate_limit = resp.json().get('ingestion_rate_limit_per_second', 0)
+            except Exception as e:
+                logger.warning(f"Failed to fetch ingestion rate limit, using safe fallback (5000 events/sec): {e}")
+                ingestion_rate_limit = 5000
+            
             # Start collection for each cluster
             task_assignments = []
             session_ids = []
@@ -373,6 +386,9 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                     # Call Ingestion Service to start collection
                     # NOTE: analysis_id stays as int; trace_manager formats it as {analysis_id}-{cluster_id}
                     # for multi-cluster when publishing events
+                    # Get cluster's gadget version for dynamic OCI tag
+                    cluster_gadget_version = cluster.get('gadget_version') or ''
+                    
                     session_info = ingestion_client.start_collection(
                         task_id=task_id,
                         analysis_id=request.analysis_id,  # Keep as base analysis_id (int)
@@ -390,7 +406,9 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                         api_server_url=api_server_url,
                         verify_ssl=not skip_tls_verify,
                         gadget_namespace=gadget_namespace,
-                        is_remote_cluster=is_remote
+                        is_remote_cluster=is_remote,
+                        gadget_version=cluster_gadget_version,
+                        max_events_per_second=ingestion_rate_limit
                     )
                     
                     session_ids.append(session_info['session_id'])
