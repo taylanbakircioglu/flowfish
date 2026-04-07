@@ -25,6 +25,9 @@ RUN echo "Source cache bust: $CACHE_BUST"
 # Copy source code from frontend directory
 COPY frontend/ .
 
+# Copy root version.json so build scripts can read it via require('../version.json')
+COPY version.json /version.json
+
 # Set production environment
 ENV NODE_ENV=production
 ENV GENERATE_SOURCEMAP=false

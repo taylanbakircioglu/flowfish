@@ -28,6 +28,9 @@ RUN rm -rf /root/.npm /tmp/* node_modules && \
 # Copy source code from frontend directory
 COPY frontend/ .
 
+# Copy root version.json so build scripts can read it via require('../version.json')
+COPY version.json /version.json
+
 # Build production bundle with increased memory
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN npm run build
