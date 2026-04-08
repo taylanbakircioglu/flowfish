@@ -2743,20 +2743,34 @@ read -p "Enter memory limit (press Enter for recommended): " INPUT_MEM
 MEMORY_LIMIT="${{INPUT_MEM:-$DEFAULT_MEM}}"
 
 # Events buffer
-DEFAULT_BUFFER=8192
+MIN_BUFFER=8192
 CURRENT_BUFFER_VAL=""
 if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
     CURRENT_BUFFER_VAL=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
       -o jsonpath='{{.data.config\\.yaml}}' 2>/dev/null | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "")
 fi
 echo ""
-echo -e "${{CYAN}}Events Buffer Length:${{NC}} eBPF ring buffer size (lower = less idle memory)"
+echo -e "${{CYAN}}Events Buffer Length:${{NC}} eBPF ring buffer size"
 if [ -n "$CURRENT_BUFFER_VAL" ]; then
     echo -e "  Current: $CURRENT_BUFFER_VAL"
+    if [ "$CURRENT_BUFFER_VAL" -ge "$MIN_BUFFER" ] 2>/dev/null; then
+        DEFAULT_BUFFER=$CURRENT_BUFFER_VAL
+        echo -e "  Keeping current value (reducing may cause event loss on busy clusters)"
+    else
+        DEFAULT_BUFFER=$MIN_BUFFER
+        echo -e "  Recommended minimum: $MIN_BUFFER"
+    fi
+else
+    DEFAULT_BUFFER=$MIN_BUFFER
+    echo -e "  Recommended: $DEFAULT_BUFFER"
 fi
-echo -e "  Recommended: $DEFAULT_BUFFER"
-read -p "Enter buffer length (press Enter for recommended, 0 to skip): " INPUT_BUF
+echo -e "  Default: $DEFAULT_BUFFER"
+read -p "Enter buffer length (press Enter for default, 0 to skip): " INPUT_BUF
 EVENTS_BUFFER_LENGTH="${{INPUT_BUF:-$DEFAULT_BUFFER}}"
+if [ "$EVENTS_BUFFER_LENGTH" -lt "$MIN_BUFFER" ] 2>/dev/null && [ "$EVENTS_BUFFER_LENGTH" != "0" ]; then
+    print_warn "Buffer $EVENTS_BUFFER_LENGTH is below minimum ($MIN_BUFFER), may cause event loss"
+    confirm_step "Continue with this value?"
+fi
 
 # =========================================================================
 # Step 3: Review & Confirm
@@ -2769,12 +2783,12 @@ echo "  Namespace:      $NAMESPACE"
 echo "  Image:          $REGISTRY:$TARGET_VERSION"
 echo "  Version:        $CURRENT_VERSION -> $TARGET_VERSION"
 echo "  Memory Limit:   $CURRENT_MEM -> $MEMORY_LIMIT"
-if [ "$EVENTS_BUFFER_LENGTH" != "0" ] && [ -n "$CURRENT_BUFFER_VAL" ] && [ "$CURRENT_BUFFER_VAL" -gt "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
-    echo "  Events Buffer:  $CURRENT_BUFFER_VAL -> $EVENTS_BUFFER_LENGTH"
-elif [ "$EVENTS_BUFFER_LENGTH" = "0" ]; then
+if [ "$EVENTS_BUFFER_LENGTH" = "0" ]; then
     echo "  Events Buffer:  (skipped)"
+elif [ -n "$CURRENT_BUFFER_VAL" ] && [ "$CURRENT_BUFFER_VAL" != "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
+    echo "  Events Buffer:  $CURRENT_BUFFER_VAL -> $EVENTS_BUFFER_LENGTH"
 else
-    echo "  Events Buffer:  (no change needed)"
+    echo "  Events Buffer:  (no change)"
 fi
 echo ""
 echo "  Rollback command (save this):"
@@ -2818,29 +2832,29 @@ print_ok "Memory limit set"
 
 # 4d: Update events buffer
 if [ "$EVENTS_BUFFER_LENGTH" != "0" ]; then
-    print_info "[4/5] Optimizing events buffer..."
+    print_info "[4/5] Updating events buffer..."
     if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
         CUR_CFG=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
           -o jsonpath='{{.data.config\\.yaml}}' 2>/dev/null || echo "")
         if [ -n "$CUR_CFG" ]; then
             CUR_BUF=$(echo "$CUR_CFG" | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "0")
-            if [ "$CUR_BUF" -gt "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
+            if [ "$CUR_BUF" != "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
                 UPD_CFG=$(echo "$CUR_CFG" | sed "s/events-buffer-length:.*/events-buffer-length: $EVENTS_BUFFER_LENGTH/")
                 $CLI_TOOL create configmap inspektor-gadget-config -n "$NAMESPACE" \\
                   --from-literal="config.yaml=$UPD_CFG" --dry-run=client -o yaml \\
                   | $CLI_TOOL apply -f -
-                print_ok "Buffer optimized: $CUR_BUF -> $EVENTS_BUFFER_LENGTH"
+                print_ok "Buffer updated: $CUR_BUF -> $EVENTS_BUFFER_LENGTH"
             else
-                print_ok "Buffer already optimal (${{CUR_BUF:-unknown}})"
+                print_ok "Buffer unchanged (${{CUR_BUF:-unknown}})"
             fi
         else
             print_warn "ConfigMap has no config.yaml data, skipping"
         fi
     else
-        print_warn "ConfigMap not found, skipping buffer optimization"
+        print_warn "ConfigMap not found, skipping buffer update"
     fi
 else
-    print_info "[4/5] Events buffer optimization skipped (user choice)"
+    print_info "[4/5] Events buffer update skipped (user choice)"
 fi
 
 # 4e: Wait for rollout
