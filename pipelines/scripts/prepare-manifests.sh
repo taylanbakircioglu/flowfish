@@ -60,10 +60,6 @@ for manifest in *.yaml; do
             sed -i -e "s|{{GADGET_VERSION}}|${GADGET_VERSION}|g" $manifest
         fi
         
-        # Events buffer length (default: 16384 for production clusters)
-        EVENTS_BUFFER_LENGTH="${EVENTS_BUFFER_LENGTH:-16384}"
-        sed -i -e "s|{{EVENTS_BUFFER_LENGTH}}|${EVENTS_BUFFER_LENGTH}|g" $manifest
-        
         # TLS Secret (if variable is set)
         if [ -n "${TLS_SECRET_NAME}" ]; then
             sed -i -e "s|{{TLS_SECRET_NAME}}|${TLS_SECRET_NAME}|g" $manifest
