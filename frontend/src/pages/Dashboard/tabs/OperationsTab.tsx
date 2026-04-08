@@ -269,9 +269,21 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
                       }
                       return needsUpgrade ? (
                         <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Go to Cluster Management to upgrade.`}>
-                          <Text style={{ marginLeft: 8, fontSize: 12, color: '#fa8c16' }}>
-                            {currentCluster.gadget_version} <ArrowUpOutlined style={{ fontSize: 10 }} />
-                          </Text>
+                          <span
+                            style={{
+                              marginLeft: 8,
+                              fontSize: 11,
+                              color: '#fa8c16',
+                              cursor: 'pointer',
+                              border: '1px solid #ffd591',
+                              borderRadius: 10,
+                              padding: '1px 8px',
+                              background: '#fff7e6',
+                              lineHeight: '18px',
+                            }}
+                          >
+                            {currentCluster.gadget_version} <ArrowUpOutlined style={{ fontSize: 9 }} />
+                          </span>
                         </Tooltip>
                       ) : (
                         <Text type="secondary" style={{ marginLeft: 8 }}>

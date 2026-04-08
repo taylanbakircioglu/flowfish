@@ -629,8 +629,18 @@ const ClusterManagement: React.FC = () => {
             {record.gadget_version && (
               needsUpgrade ? (
                 <Tooltip title={`Upgrade available: ${supportedGadgetVersion}. Click to view upgrade script.`}>
-                  <Typography.Text
-                    style={{ fontSize: '11px', color: '#fa8c16', cursor: 'pointer' }}
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      color: '#fa8c16',
+                      cursor: 'pointer',
+                      border: '1px solid #ffd591',
+                      borderRadius: '10px',
+                      padding: '1px 8px',
+                      background: '#fff7e6',
+                      display: 'inline-block',
+                      lineHeight: '18px',
+                    }}
                     onClick={(e) => {
                       e.stopPropagation();
                       setUpgradeCluster(record);
@@ -645,8 +655,8 @@ const ClusterManagement: React.FC = () => {
                         });
                     }}
                   >
-                    {record.gadget_version} <ArrowUpOutlined style={{ fontSize: '10px' }} />
-                  </Typography.Text>
+                    {record.gadget_version} <ArrowUpOutlined style={{ fontSize: '9px' }} />
+                  </span>
                 </Tooltip>
               ) : (
                 <Typography.Text type="secondary" style={{ fontSize: '11px' }}>
