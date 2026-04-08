@@ -31,6 +31,9 @@ variables:
   # Inspektor Gadget version - must match constants.py
   - name: GADGET_VERSION
     value: 'v0.50.1'
+  # eBPF events buffer size (pages). 16384 for production, 8192 for small clusters
+  - name: EVENTS_BUFFER_LENGTH
+    value: '16384'
 
 stages:
   - stage: Build

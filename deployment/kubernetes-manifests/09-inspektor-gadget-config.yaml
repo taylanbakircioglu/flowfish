@@ -8,7 +8,7 @@ metadata:
     app: inspektor-gadget
 data:
   config.yaml: |
-    events-buffer-length: 8192
+    events-buffer-length: 16384
     # Auto-detected by init container at pod startup. Supported platforms:
     #   K3s/RKE2:  /run/k3s/containerd/containerd.sock
     #   MicroK8s:  /var/snap/microk8s/common/run/containerd.sock
