@@ -2679,15 +2679,15 @@ echo ""
 
 # Read current state from cluster
 CURRENT_IMAGE=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' 2>/dev/null || echo "unknown")
+  -o jsonpath='{{.spec.template.spec.containers[0].image}}' 2>/dev/null || echo "unknown")
 CURRENT_REGISTRY=$(echo "$CURRENT_IMAGE" | sed "s|:.*||")
 CURRENT_VERSION=$(echo "$CURRENT_IMAGE" | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
 CURRENT_MEM=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.spec.template.spec.containers[0].resources.limits.memory}}}}' 2>/dev/null || echo "unknown")
+  -o jsonpath='{{.spec.template.spec.containers[0].resources.limits.memory}}' 2>/dev/null || echo "unknown")
 CURRENT_READY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.status.numberReady}}}}' 2>/dev/null || echo "0")
+  -o jsonpath='{{.status.numberReady}}' 2>/dev/null || echo "0")
 CURRENT_DESIRED=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.status.desiredNumberScheduled}}}}' 2>/dev/null || echo "0")
+  -o jsonpath='{{.status.desiredNumberScheduled}}' 2>/dev/null || echo "0")
 
 print_info "Current state:"
 print_info "  Image:        $CURRENT_IMAGE"
@@ -2739,7 +2739,7 @@ DEFAULT_BUFFER=8192
 CURRENT_BUFFER_VAL=""
 if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
     CURRENT_BUFFER_VAL=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
-      -o jsonpath='{{{{.data.config\\.yaml}}}}' 2>/dev/null | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "")
+      -o jsonpath='{{.data.config\\.yaml}}' 2>/dev/null | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "")
 fi
 echo ""
 echo -e "${{CYAN}}Events Buffer Length:${{NC}} eBPF ring buffer size (lower = less idle memory)"
@@ -2805,7 +2805,7 @@ if [ "$EVENTS_BUFFER_LENGTH" != "0" ]; then
     print_info "[3/4] Optimizing events buffer..."
     if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
         CUR_CFG=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
-          -o jsonpath='{{{{.data.config\\.yaml}}}}' 2>/dev/null || echo "")
+          -o jsonpath='{{.data.config\\.yaml}}' 2>/dev/null || echo "")
         if [ -n "$CUR_CFG" ]; then
             CUR_BUF=$(echo "$CUR_CFG" | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "0")
             if [ "$CUR_BUF" -gt "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
@@ -2844,14 +2844,14 @@ print_ok "Rollout complete"
 print_header "Verification"
 
 NEW_IMAGE=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.spec.template.spec.containers[0].image}}}}' 2>/dev/null || echo "unknown")
+  -o jsonpath='{{.spec.template.spec.containers[0].image}}' 2>/dev/null || echo "unknown")
 NEW_VERSION_ACTUAL=$(echo "$NEW_IMAGE" | grep -oE 'v[0-9]+\\.[0-9]+\\.[0-9]+' || echo "unknown")
 NEW_MEM=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.spec.template.spec.containers[0].resources.limits.memory}}}}' 2>/dev/null || echo "unknown")
+  -o jsonpath='{{.spec.template.spec.containers[0].resources.limits.memory}}' 2>/dev/null || echo "unknown")
 READY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.status.numberReady}}}}' 2>/dev/null || echo "0")
+  -o jsonpath='{{.status.numberReady}}' 2>/dev/null || echo "0")
 DESIRED=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" \\
-  -o jsonpath='{{{{.status.desiredNumberScheduled}}}}' 2>/dev/null || echo "0")
+  -o jsonpath='{{.status.desiredNumberScheduled}}' 2>/dev/null || echo "0")
 
 # Verify version
 if [ "$NEW_VERSION_ACTUAL" = "$TARGET_VERSION" ]; then
