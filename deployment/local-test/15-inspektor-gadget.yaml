@@ -141,7 +141,7 @@ metadata:
     app: inspektor-gadget
 data:
   config.yaml: |
-    events-buffer-length: 16384
+    events-buffer-length: 8192
     # Auto-detected by init container at pod startup. Supported platforms:
     #   K3s/RKE2:  /run/k3s/containerd/containerd.sock
     #   MicroK8s:  /var/snap/microk8s/common/run/containerd.sock
@@ -255,7 +255,7 @@ spec:
             fieldRef:
               fieldPath: metadata.uid
         - name: GADGET_IMAGE
-          value: "ghcr.io/inspektor-gadget/inspektor-gadget"
+          value: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1"
         - name: HOST_ROOT
           value: "/host"
         - name: IG_EXPERIMENTAL
