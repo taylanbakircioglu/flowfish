@@ -2635,12 +2635,20 @@ else
 fi
 print_ok "CLI tool: $CLI_TOOL"
 
-# Check login
-if ! $CLI_TOOL whoami &>/dev/null 2>&1; then
-    print_err "Not logged in. Run '$CLI_TOOL login' first."
-    exit 1
+# Check cluster connectivity and auth
+if [ "$CLI_TOOL" = "oc" ]; then
+    if ! $CLI_TOOL whoami &>/dev/null 2>&1; then
+        print_err "Not logged in. Run 'oc login' first."
+        exit 1
+    fi
+    CURRENT_USER=$($CLI_TOOL whoami 2>/dev/null)
+else
+    if ! $CLI_TOOL cluster-info &>/dev/null 2>&1; then
+        print_err "Cannot reach cluster. Check your kubeconfig and context."
+        exit 1
+    fi
+    CURRENT_USER=$($CLI_TOOL config current-context 2>/dev/null || echo "unknown")
 fi
-CURRENT_USER=$($CLI_TOOL whoami 2>/dev/null || echo "unknown")
 print_ok "Logged in as: $CURRENT_USER"
 
 # Check permissions
