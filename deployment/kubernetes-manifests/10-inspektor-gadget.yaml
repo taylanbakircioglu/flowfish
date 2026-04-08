@@ -114,7 +114,7 @@ spec:
             fieldRef:
               fieldPath: metadata.uid
         - name: GADGET_IMAGE
-          value: "ghcr.io/inspektor-gadget/inspektor-gadget"
+          value: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1"
         - name: HOST_ROOT
           value: "/host"
         - name: IG_EXPERIMENTAL

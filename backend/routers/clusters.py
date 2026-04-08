@@ -2783,8 +2783,8 @@ confirm_step "Apply upgrade?"
 # =========================================================================
 print_header "Applying Upgrade"
 
-# 4a: Update image
-print_info "[1/4] Updating DaemonSet image to $REGISTRY:$TARGET_VERSION ..."
+# 4a: Update container image
+print_info "[1/5] Updating DaemonSet image to $REGISTRY:$TARGET_VERSION ..."
 if ! $CLI_TOOL set image daemonset/inspektor-gadget -n "$NAMESPACE" gadget="$REGISTRY:$TARGET_VERSION"; then
     print_err "Failed to update image!"
     print_info "Rollback: $CLI_TOOL set image daemonset/inspektor-gadget -n $NAMESPACE gadget=$CURRENT_IMAGE"
@@ -2792,17 +2792,25 @@ if ! $CLI_TOOL set image daemonset/inspektor-gadget -n "$NAMESPACE" gadget="$REG
 fi
 print_ok "Image updated"
 
-# 4b: Update memory limit
-print_info "[2/4] Setting memory limit to $MEMORY_LIMIT ..."
+# 4b: Update GADGET_IMAGE env var (used by IG for OCI image pulls)
+print_info "[2/5] Updating GADGET_IMAGE environment variable..."
+if ! $CLI_TOOL set env daemonset/inspektor-gadget -n "$NAMESPACE" -c gadget \\
+  GADGET_IMAGE="$REGISTRY:$TARGET_VERSION"; then
+    print_warn "Failed to update GADGET_IMAGE env var (non-fatal, continuing)"
+fi
+print_ok "GADGET_IMAGE env updated"
+
+# 4c: Update memory limit
+print_info "[3/5] Setting memory limit to $MEMORY_LIMIT ..."
 if ! $CLI_TOOL patch daemonset inspektor-gadget -n "$NAMESPACE" --type=json \\
   -p="[{{\\"op\\": \\"replace\\", \\"path\\": \\"/spec/template/spec/containers/0/resources/limits/memory\\", \\"value\\": \\"$MEMORY_LIMIT\\"}}]"; then
     print_warn "Failed to update memory limit (non-fatal, continuing)"
 fi
 print_ok "Memory limit set"
 
-# 4c: Update events buffer
+# 4d: Update events buffer
 if [ "$EVENTS_BUFFER_LENGTH" != "0" ]; then
-    print_info "[3/4] Optimizing events buffer..."
+    print_info "[4/5] Optimizing events buffer..."
     if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
         CUR_CFG=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
           -o jsonpath='{{.data.config\\.yaml}}' 2>/dev/null || echo "")
@@ -2824,11 +2832,11 @@ if [ "$EVENTS_BUFFER_LENGTH" != "0" ]; then
         print_warn "ConfigMap not found, skipping buffer optimization"
     fi
 else
-    print_info "[3/4] Events buffer optimization skipped (user choice)"
+    print_info "[4/5] Events buffer optimization skipped (user choice)"
 fi
 
-# 4d: Wait for rollout
-print_info "[4/4] Waiting for rollout (timeout: 5 minutes)..."
+# 4e: Wait for rollout
+print_info "[5/5] Waiting for rollout (timeout: 5 minutes)..."
 if ! $CLI_TOOL rollout status daemonset/inspektor-gadget -n "$NAMESPACE" --timeout=300s; then
     print_err "Rollout timed out or failed!"
     print_warn "Check pod status: $CLI_TOOL get pods -l app=inspektor-gadget -n $NAMESPACE"
