@@ -52,6 +52,7 @@ message StartCollectionRequest {
   string gadget_namespace = 21;  // Namespace where Inspector Gadget is deployed
   string gadget_version = 22;  // Cluster-specific gadget version for dynamic OCI tag (e.g. "v0.50.1")
   int32 max_events_per_second = 23;  // Per-session rate limit from global settings (0=unlimited)
+  string network_config_json = 24;  // JSON-encoded network CIDR config from system_settings
 }
 
 message CollectionSession {

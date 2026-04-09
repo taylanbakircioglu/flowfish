@@ -1634,6 +1634,8 @@ class GraphQueryEngine:
             owner_kind = entry.get("owner_kind") or ""
             if port == 0 and not ann and not lbl and not owner_kind and ns in ("external", "cluster-network", ""):
                 return True
+            if ns == "sdn-infrastructure" and not ann and not lbl and not owner_kind:
+                return True
             return False
 
         _KIND_ALIASES = {"ReplicaSet": "Deployment"}

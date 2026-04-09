@@ -31,7 +31,8 @@ import {
   ConfigProvider,
   Dropdown,
   theme,
-  message
+  message,
+  Table
 } from 'antd';
 import { useTheme } from '../contexts/ThemeContext';
 import { 
@@ -5047,6 +5048,39 @@ const MapInner: React.FC = () => {
     const hasNsFilter = selectedNamespaces.length > 0;
     const selectedNsSet = new Set(selectedNamespaces);
     const isExternalSelectedNode = hasNsFilter && !selectedNsSet.has(displayNamespace);
+
+    const isServiceNode = (selectedNode as any)?.owner_kind === 'Service';
+    const serviceType = isServiceNode
+      ? ((selectedNode as any)?.annotations?.['service.type'] || 'ClusterIP')
+      : null;
+    const ipLabel = isServiceNode
+      ? (serviceType === 'LoadBalancer' ? 'Load Balancer IP'
+         : serviceType === 'ExternalName' ? 'External Name'
+         : 'Cluster IP')
+      : 'Pod IP';
+
+    const isAggregated = (selectedNode as any)?._isAggregated === true;
+    const originalNodes: DependencyNode[] = isAggregated
+      ? ((selectedNode as any)?._originalNodes || [])
+      : [];
+    const aggHostIps = isAggregated
+      ? Array.from(new Set(originalNodes.map(p => (p as any).host_ip).filter(Boolean))) as string[]
+      : [];
+    const aggContainers = isAggregated
+      ? Array.from(new Set(originalNodes.map(p => (p as any).container).filter(Boolean))) as string[]
+      : [];
+    const aggServiceAccounts = isAggregated
+      ? Array.from(new Set(originalNodes.map(p => (p as any).service_account).filter(Boolean))) as string[]
+      : [];
+
+    const infoTitle = isAggregated
+      ? 'Workload Information'
+      : isServiceNode ? 'Service Information' : 'Pod Information';
+    const nameLabel = isAggregated
+      ? ((selectedNode as any)?.owner_kind === 'StatefulSet' ? 'StatefulSet Name'
+         : (selectedNode as any)?.owner_kind === 'DaemonSet' ? 'DaemonSet Name'
+         : 'Deployment Name')
+      : isServiceNode ? 'Service Name' : 'Pod Name';
     
     return {
       nodeName,
@@ -5061,6 +5095,14 @@ const MapInner: React.FC = () => {
       nodeEnrichment,
       hasNsFilter,
       isExternalSelectedNode,
+      isServiceNode,
+      ipLabel,
+      infoTitle,
+      nameLabel,
+      isAggregated,
+      aggHostIps,
+      aggContainers,
+      aggServiceAccounts,
     };
   }, [selectedNode, selectedNamespaces, resolveIpToPod, getNodeEnrichment]);
 
@@ -6726,7 +6768,7 @@ const MapInner: React.FC = () => {
       {selectedNode && drawerComputedValues && (() => {
         // Use memoized computed values for better performance
         // All values pre-calculated in drawerComputedValues useMemo
-        const { nodeName, resolvedName, resolvedNode, isResolved, displayNode, displayNamespace, displayName, isNodePublicIP, knownSvc, nodeEnrichment, hasNsFilter, isExternalSelectedNode } = drawerComputedValues;
+        const { nodeName, resolvedName, resolvedNode, isResolved, displayNode, displayNamespace, displayName, isNodePublicIP, knownSvc, nodeEnrichment, hasNsFilter, isExternalSelectedNode, isServiceNode, ipLabel, infoTitle, nameLabel, isAggregated, aggHostIps, aggContainers, aggServiceAccounts } = drawerComputedValues;
         // knownService alias for backward compatibility
         const knownService = knownSvc;
         
@@ -6871,52 +6913,22 @@ const MapInner: React.FC = () => {
                         <Space direction="vertical" style={{ width: '100%' }} size={8}>
                           <Space>
                             <ClusterIcon style={{ color: '#7c3aed' }} />
-                            <Text strong style={{ color: '#5b21b6' }}>Aggregated Workload</Text>
+                            <Text strong style={{ color: isDark ? '#c4b5fd' : '#5b21b6' }}>Aggregated Workload</Text>
                           </Space>
-                          
                           <Space wrap>
                             <Tag color="purple">{(selectedNode as any)._podCount || 1} pods</Tag>
                             {((selectedNode as any)._clusterCount || 1) > 1 && (
                               <Tag color="blue">{(selectedNode as any)._clusterCount} clusters</Tag>
                             )}
                           </Space>
-                          
-                          {/* Cluster bazlı pod dağılımı */}
-                          {(selectedNode as any)._podsByCluster && Object.keys((selectedNode as any)._podsByCluster).length > 0 && (
-                            <div style={{ marginTop: 8 }}>
-                              <Text type="secondary" style={{ fontSize: 10, display: 'block', marginBottom: 6 }}>
-                                Pod Distribution:
-                              </Text>
-                              {Object.entries((selectedNode as any)._podsByCluster).map(([clusterId, podsList]) => {
-                                const cid = parseInt(clusterId, 10);
-                                const cluster = clusterInfoMap.get(cid);
-                                const pods = podsList as DependencyNode[];
-                                
-                                return (
-                                  <div key={clusterId} style={{ marginBottom: 8 }}>
-                                    <ClusterBadge
-                                      clusterId={cid}
-                                      clusterName={cluster?.name || `Cluster ${cid}`}
-                                      environment={cluster?.environment}
-                                      provider={cluster?.provider}
-                                      size="small"
-                                      showTooltip={true}
-                                    />
-                                    <div style={{ marginLeft: 16, marginTop: 4 }}>
-                                      {pods.slice(0, 5).map((pod: DependencyNode) => (
-                                        <Tag key={pod.id} style={{ fontSize: 9, marginBottom: 2 }}>
-                                          {pod.name}
-                                        </Tag>
-                                      ))}
-                                      {pods.length > 5 && (
-                                        <Tag style={{ fontSize: 9, color: isDark ? '#a0a0a0' : '#8c8c8c' }}>+{pods.length - 5} more</Tag>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
+                          {(selectedNode as any)._clusterIds?.map((cid: number) => {
+                            const cluster = clusterInfoMap.get(cid);
+                            return cluster ? (
+                              <ClusterBadge key={cid} clusterId={cid} clusterName={cluster.name}
+                                environment={cluster.environment} provider={cluster.provider}
+                                size="small" showTooltip={true} />
+                            ) : null;
+                          })}
                         </Space>
                       </div>
                     )}
@@ -6990,27 +7002,17 @@ const MapInner: React.FC = () => {
                     )}
                     
                     {/* Basic Info */}
-                    <Descriptions column={1} bordered size="small" title="Pod Information">
-                      <Descriptions.Item label="Pod Name">
+                    <Descriptions column={1} bordered size="small" title={infoTitle}>
+                      <Descriptions.Item label={nameLabel}>
                         <Text strong copyable style={{ fontSize: 11 }}>{selectedNode.name}</Text>
                       </Descriptions.Item>
                       <Descriptions.Item label="Namespace">
                         <Tag color="geekblue">{selectedNode.namespace || 'unknown'}</Tag>
                       </Descriptions.Item>
-                      {/* Pod IP - show if available (for search correlation and network debugging) */}
-                      {((selectedNode as any)?.ip || (selectedNode as any)?.pod_ip) && (
-                        <Descriptions.Item label="Pod IP">
+                      {!isAggregated && ((selectedNode as any)?.ip || (selectedNode as any)?.pod_ip) && (
+                        <Descriptions.Item label={ipLabel}>
                           <Text code copyable style={{ fontSize: 11 }}>
                             {(selectedNode as any)?.ip || (selectedNode as any)?.pod_ip}
-                          </Text>
-                        </Descriptions.Item>
-                      )}
-                      {/* Host IP - show if different from Pod IP */}
-                      {(selectedNode as any)?.host_ip && 
-                       (selectedNode as any)?.host_ip !== ((selectedNode as any)?.ip || (selectedNode as any)?.pod_ip) && (
-                        <Descriptions.Item label="Host IP">
-                          <Text code copyable style={{ fontSize: 11 }}>
-                            {(selectedNode as any)?.host_ip}
                           </Text>
                         </Descriptions.Item>
                       )}
@@ -7149,7 +7151,7 @@ const MapInner: React.FC = () => {
                         </Descriptions.Item>
                       )}
                       <Descriptions.Item label="Kind">
-                        <Tag color="blue">{selectedNode.kind || 'Pod'}</Tag>
+                        <Tag color="blue">{(selectedNode as any)?.owner_kind || selectedNode.kind || 'Pod'}</Tag>
                       </Descriptions.Item>
                       <Descriptions.Item label="Status">
                         <Badge 
@@ -7158,43 +7160,126 @@ const MapInner: React.FC = () => {
                         />
                       </Descriptions.Item>
                     </Descriptions>
+
+                    {/* Pod Details - aggregated node only */}
+                    {isAggregated && (selectedNode as any)?._podsByCluster && (
+                      <div style={{ marginBottom: 16 }}>
+                        <Text strong style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                          Pod Details
+                        </Text>
+                        {Object.entries((selectedNode as any)._podsByCluster).map(([clusterId, podsList]) => {
+                          const cid = parseInt(clusterId, 10);
+                          const cluster = clusterInfoMap.get(cid);
+                          const pods = podsList as DependencyNode[];
+                          return (
+                            <div key={clusterId}>
+                              {((selectedNode as any)._clusterCount || 1) > 1 && (
+                                <div style={{ marginBottom: 4 }}>
+                                  <ClusterBadge clusterId={cid} clusterName={cluster?.name || `Cluster ${cid}`}
+                                    environment={cluster?.environment} provider={cluster?.provider}
+                                    size="small" showTooltip={true} />
+                                </div>
+                              )}
+                              <Table
+                                dataSource={pods}
+                                size="small"
+                                pagination={pods.length > 5 ? { pageSize: 5, size: 'small' as const, simple: true } : false}
+                                showHeader={true}
+                                columns={[
+                                  {
+                                    title: 'Pod', dataIndex: 'name', ellipsis: true,
+                                    render: (name: string) => (
+                                      <Tooltip title={name} mouseEnterDelay={0.5}>
+                                        <Text style={{ fontSize: 10 }}>
+                                          {name.replace(selectedNode.name + '-', '') || name}
+                                        </Text>
+                                      </Tooltip>
+                                    )
+                                  },
+                                  {
+                                    title: 'IP', dataIndex: 'ip', width: 115,
+                                    render: (_: any, record: any) => {
+                                      const ip = (record as any).ip;
+                                      return ip
+                                        ? <Text code style={{ fontSize: 10 }}>{ip}</Text>
+                                        : <Text type="secondary" style={{ fontSize: 10 }}>-</Text>;
+                                    }
+                                  },
+                                  {
+                                    title: 'Node', dataIndex: 'node', ellipsis: true,
+                                    render: (node: string) => (
+                                      <Tooltip title={node} mouseEnterDelay={0.5}>
+                                        <Text style={{ fontSize: 10 }}>{node || '-'}</Text>
+                                      </Tooltip>
+                                    )
+                                  },
+                                ]}
+                                rowKey="id"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                     
-                    {/* Network Info - detailed network information */}
-                    {/* Note: Pod IP and Host IP also shown in basic info above for quick access */}
-                    <Descriptions column={1} bordered size="small" title="Network">
-                      {((selectedNode as any)?.ip || (selectedNode as any)?.pod_ip) && (
-                        <Descriptions.Item label="Pod IP">
-                          <Text copyable style={{ fontFamily: 'monospace', fontSize: 11 }}>
-                            {(selectedNode as any)?.ip || (selectedNode as any)?.pod_ip}
-                          </Text>
-                        </Descriptions.Item>
-                      )}
-                      {(selectedNode as any)?.host_ip && (
-                        <Descriptions.Item label="Host IP">
-                          <Text copyable style={{ fontFamily: 'monospace', fontSize: 11 }}>{(selectedNode as any).host_ip}</Text>
-                        </Descriptions.Item>
-                      )}
-                      {(selectedNode as any)?.node && (
-                        <Descriptions.Item label="Node">
-                          <Text style={{ fontSize: 11 }}>{(selectedNode as any).node}</Text>
-                        </Descriptions.Item>
-                      )}
-                      {nodeEnrichment && nodeEnrichment.listeningPorts.length > 0 && (
-                        <Descriptions.Item label="Listening Ports">
-                          <Space wrap size={4}>
-                            {nodeEnrichment.listeningPorts.slice(0, 10).map(port => (
-                              <Tag key={port} color="cyan" style={{ fontSize: 10 }}>{port}</Tag>
-                            ))}
-                            {nodeEnrichment.listeningPorts.length > 10 && (
-                              <Tag style={{ fontSize: 10 }}>+{nodeEnrichment.listeningPorts.length - 10}</Tag>
-                            )}
-                          </Space>
-                        </Descriptions.Item>
-                      )}
-                    </Descriptions>
+                    {/* Network Info */}
+                    {isAggregated ? (
+                      (aggHostIps.length > 0 ||
+                       (nodeEnrichment && nodeEnrichment.listeningPorts.length > 0)) ? (
+                        <Descriptions column={1} bordered size="small" title="Network">
+                          {aggHostIps.length > 0 && (
+                            <Descriptions.Item label={`Host IPs (${aggHostIps.length})`}>
+                              <Space wrap size={4}>
+                                {aggHostIps.map((ip: string) => <Text key={ip} code style={{ fontSize: 11 }}>{ip}</Text>)}
+                              </Space>
+                            </Descriptions.Item>
+                          )}
+                          {nodeEnrichment && nodeEnrichment.listeningPorts.length > 0 && (
+                            <Descriptions.Item label="Listening Ports">
+                              <Space wrap size={4}>
+                                {nodeEnrichment.listeningPorts.slice(0, 10).map((port: number) => (
+                                  <Tag key={port} color="cyan" style={{ fontSize: 10 }}>{port}</Tag>
+                                ))}
+                                {nodeEnrichment.listeningPorts.length > 10 && (
+                                  <Tag style={{ fontSize: 10 }}>+{nodeEnrichment.listeningPorts.length - 10}</Tag>
+                                )}
+                              </Space>
+                            </Descriptions.Item>
+                          )}
+                        </Descriptions>
+                      ) : null
+                    ) : (
+                      ((!isServiceNode && ((selectedNode as any)?.host_ip || (selectedNode as any)?.node)) ||
+                        (nodeEnrichment && nodeEnrichment.listeningPorts.length > 0)) ? (
+                        <Descriptions column={1} bordered size="small" title="Network">
+                          {!isServiceNode && (selectedNode as any)?.host_ip && (
+                            <Descriptions.Item label="Host IP">
+                              <Text copyable style={{ fontFamily: 'monospace', fontSize: 11 }}>{(selectedNode as any).host_ip}</Text>
+                            </Descriptions.Item>
+                          )}
+                          {!isServiceNode && (selectedNode as any)?.node && (
+                            <Descriptions.Item label="Node">
+                              <Text style={{ fontSize: 11 }}>{(selectedNode as any).node}</Text>
+                            </Descriptions.Item>
+                          )}
+                          {nodeEnrichment && nodeEnrichment.listeningPorts.length > 0 && (
+                            <Descriptions.Item label="Listening Ports">
+                              <Space wrap size={4}>
+                                {nodeEnrichment.listeningPorts.slice(0, 10).map(port => (
+                                  <Tag key={port} color="cyan" style={{ fontSize: 10 }}>{port}</Tag>
+                                ))}
+                                {nodeEnrichment.listeningPorts.length > 10 && (
+                                  <Tag style={{ fontSize: 10 }}>+{nodeEnrichment.listeningPorts.length - 10}</Tag>
+                                )}
+                              </Space>
+                            </Descriptions.Item>
+                          )}
+                        </Descriptions>
+                      ) : null
+                    )}
                     
                     {/* Owner & Container */}
-                    {((selectedNode as any)?.owner_kind || (selectedNode as any)?.container) && (
+                    {((selectedNode as any)?.owner_kind || (selectedNode as any)?.container || aggContainers.length > 0) && (
                       <Descriptions column={1} bordered size="small" title="Workload">
                         {(selectedNode as any)?.owner_kind && (
                           <Descriptions.Item label="Owner">
@@ -7208,14 +7293,28 @@ const MapInner: React.FC = () => {
                             <Text style={{ fontSize: 11, marginLeft: 4 }}>{(selectedNode as any).owner_name}</Text>
                           </Descriptions.Item>
                         )}
-                        {(selectedNode as any)?.container && (
-                          <Descriptions.Item label="Container">
-                            <Text style={{ fontSize: 11 }}>{(selectedNode as any).container}</Text>
+                        {(isAggregated ? aggContainers.length > 0 : (selectedNode as any)?.container) && (
+                          <Descriptions.Item label={isAggregated && aggContainers.length > 1 ? `Containers (${aggContainers.length})` : 'Container'}>
+                            {isAggregated ? (
+                              <Space wrap size={4}>
+                                {aggContainers.map((c: string) => <Tag key={c} style={{ fontSize: 10 }}>{c}</Tag>)}
+                              </Space>
+                            ) : (
+                              <Text style={{ fontSize: 11 }}>{(selectedNode as any).container}</Text>
+                            )}
                           </Descriptions.Item>
                         )}
-                        {(selectedNode as any)?.service_account && (
+                        {(isAggregated ? aggServiceAccounts.length > 0 : (selectedNode as any)?.service_account) && (
                           <Descriptions.Item label="Service Account">
-                            <Tag color="geekblue" style={{ fontSize: 10 }}>{(selectedNode as any).service_account}</Tag>
+                            {isAggregated ? (
+                              <Space wrap size={4}>
+                                {aggServiceAccounts.map((sa: string) => (
+                                  <Tag key={sa} color="geekblue" style={{ fontSize: 10 }}>{sa}</Tag>
+                                ))}
+                              </Space>
+                            ) : (
+                              <Tag color="geekblue" style={{ fontSize: 10 }}>{(selectedNode as any).service_account}</Tag>
+                            )}
                           </Descriptions.Item>
                         )}
                       </Descriptions>

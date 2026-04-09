@@ -259,12 +259,14 @@ class PodDiscovery:
         kubeconfig: Optional[str] = None,
         context: Optional[str] = None,
         refresh_interval_seconds: int = 30,
-        cluster_manager_url: Optional[str] = None
+        cluster_manager_url: Optional[str] = None,
+        network_config: Optional[dict] = None
     ):
         self.kubeconfig = kubeconfig
         self.context = context
         self.refresh_interval = refresh_interval_seconds
         self.cluster_manager_url = cluster_manager_url or "cluster-manager:5001"
+        self._network_config = network_config
         self.cache = PodIPCache()
         self._running = False
         self._refresh_task: Optional[asyncio.Task] = None
@@ -283,31 +285,35 @@ class PodDiscovery:
         # Known CIDR ranges for labeling (configurable)
         # Order matters: more specific ranges should come first
         # Stored as list of tuples for ordered checking
-        # NOTE: Only include CONFIRMED pod/service network ranges
-        # Unknown 10.x.x.x ranges could be datacenter IPs, not pod networks
-        self._known_cidrs_ordered = [
-            # OpenShift DEFAULT ranges (well-documented)
-            ("10.128.0.0/14", "Pod-Network"),       # OpenShift default pod network
-            ("172.30.0.0/16", "Service-Network"),   # OpenShift default service network
-            
-            # Custom OpenShift cluster ranges (configure if needed for your environment)
-            ("10.194.0.0/16", "Pod-Network"),       # Custom pod network (cluster-1)
-            ("10.208.0.0/16", "Pod-Network"),       # Custom pod network (cluster-2)
-            ("10.196.0.0/16", "Service-Network"),   # Custom service CIDR
-            
-            # Common Kubernetes service CIDR ranges
-            ("10.96.0.0/12", "Service-Network"),    # K8s default service-cluster-ip-range
-            
-            # Common pod network ranges (well-known defaults)
-            ("10.244.0.0/16", "Pod-Network"),       # Flannel default
-            ("10.42.0.0/16", "Pod-Network"),        # K3s/RKE default
-            
-            # Generic internal ranges (checked last)
-            # These cover datacenter IPs and unknown pod networks
-            ("10.0.0.0/8", "Internal-Network"),     # General internal (RFC 1918)
-            ("192.168.0.0/16", "Private-Network"),  # Private network (RFC 1918)
-            ("172.16.0.0/12", "Private-Network"),   # Private network (RFC 1918)
-        ]
+        if self._network_config is not None:
+            # Config explicitly provided (from Settings UI) -- use it
+            self._known_cidrs_ordered = [
+                ("10.128.0.0/14", "Pod-Network"),       # OpenShift default
+                ("172.30.0.0/16", "Service-Network"),   # OpenShift default service
+                ("10.96.0.0/12", "Service-Network"),    # K8s default service
+                ("10.244.0.0/16", "Pod-Network"),       # Flannel default
+                ("10.42.0.0/16", "Pod-Network"),        # K3s/RKE default
+            ]
+            for r in self._network_config.get('sdn_pod_cidrs', []):
+                if r.get('enabled', True):
+                    self._known_cidrs_ordered.append((r['cidr'], "Pod-Network"))
+            self._known_cidrs_ordered.extend([
+                ("10.0.0.0/8", "Internal-Network"),
+                ("192.168.0.0/16", "Private-Network"),
+                ("172.16.0.0/12", "Private-Network"),
+            ])
+        else:
+            # No config provided -- use well-known defaults (backward compat)
+            self._known_cidrs_ordered = [
+                ("10.128.0.0/14", "Pod-Network"),       # OpenShift default pod network
+                ("172.30.0.0/16", "Service-Network"),   # OpenShift default service network
+                ("10.96.0.0/12", "Service-Network"),    # K8s default service-cluster-ip-range
+                ("10.244.0.0/16", "Pod-Network"),       # Flannel default
+                ("10.42.0.0/16", "Pod-Network"),        # K3s/RKE default
+                ("10.0.0.0/8", "Internal-Network"),     # General internal (RFC 1918)
+                ("192.168.0.0/16", "Private-Network"),  # Private network (RFC 1918)
+                ("172.16.0.0/12", "Private-Network"),   # Private network (RFC 1918)
+            ]
         
         # Legacy dict for backward compatibility
         self._known_cidrs = {cidr: label for cidr, label in self._known_cidrs_ordered}
@@ -1546,6 +1552,17 @@ class PodDiscovery:
             logger.debug("DNS lookup failed", ip=ip, error=str(e))
             return None
     
+    def _get_confirmed_pod_ranges(self) -> list:
+        """Return CIDR ranges confirmed as pod networks for SDN gateway detection."""
+        if self._network_config is not None:
+            cidrs = self._network_config.get('sdn_pod_cidrs', [])
+            return [r['cidr'] for r in cidrs if r.get('enabled', True)]
+        return [
+            "10.128.0.0/14",  # OpenShift default
+            "10.244.0.0/16",  # Flannel
+            "10.42.0.0/16",   # K3s/RKE
+        ]
+
     def _get_cidr_label(self, ip: str) -> Optional[str]:
         """
         Get a human-readable label based on IP's CIDR range.
@@ -1558,7 +1575,7 @@ class PodDiscovery:
         - *.*.*.2 addresses: SDN gateway (OpenShift OVN)
         
         IMPORTANT: Ordered list is used so more specific ranges are checked first.
-        E.g., 10.194.0.0/16 (Pod-Network) is checked before 10.0.0.0/8 (Internal-Network)
+        E.g., 10.128.0.0/14 (Pod-Network) is checked before 10.0.0.0/8 (Internal-Network)
         """
         try:
             addr = ipaddress.ip_address(ip)
@@ -1571,14 +1588,7 @@ class PodDiscovery:
                 # .1 addresses are typically subnet gateways (first usable IP)
                 # .2 addresses are typically SDN/OVN gateway (secondary)
                 if last_octet in ('1', '2'):
-                    # Only check CONFIRMED pod network ranges (not datacenter IPs)
-                    confirmed_pod_ranges = [
-                        "10.128.0.0/14",  # OpenShift default
-                        "10.194.0.0/16",  # Custom cluster-1
-                        "10.208.0.0/16",  # Custom cluster-2
-                        "10.244.0.0/16",  # Flannel
-                        "10.42.0.0/16",   # K3s/RKE
-                    ]
+                    confirmed_pod_ranges = self._get_confirmed_pod_ranges()
                     for cidr in confirmed_pod_ranges:
                         try:
                             if addr in ipaddress.ip_network(cidr, strict=False):

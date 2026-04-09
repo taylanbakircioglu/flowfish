@@ -3,7 +3,7 @@ System Settings API endpoints
 Enterprise feature for global configuration management
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import structlog
@@ -224,6 +224,159 @@ async def get_analysis_limits_defaults():
         logger.warning("Failed to read analysis limits from DB in /defaults", error=str(e))
     
     return AnalysisLimits()
+
+
+# ============================================
+# Network Configuration (SDN Pod CIDR Ranges)
+# ============================================
+
+class PodCIDRRange(BaseModel):
+    """A single SDN pod network CIDR range for gateway detection"""
+    cidr: str = Field(..., pattern=r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$')
+    label: str = Field(..., min_length=1, max_length=100)
+    enabled: bool = Field(True)
+    is_default: bool = Field(False)
+
+
+class NetworkConfig(BaseModel):
+    """Network configuration for SDN gateway detection and CIDR classification"""
+    sdn_pod_cidrs: List[PodCIDRRange] = Field(default_factory=lambda: [
+        PodCIDRRange(cidr="10.128.0.0/14", label="OpenShift", enabled=True, is_default=True),
+        PodCIDRRange(cidr="10.244.0.0/16", label="Flannel / kubeadm", enabled=True, is_default=True),
+        PodCIDRRange(cidr="10.42.0.0/16", label="K3s / RKE2", enabled=True, is_default=True),
+        PodCIDRRange(cidr="192.168.0.0/16", label="Kind / Minikube", enabled=False, is_default=True),
+    ])
+
+
+class NetworkConfigResponse(NetworkConfig):
+    """Response model including metadata"""
+    updated_at: Optional[str] = None
+    updated_by: Optional[int] = None
+
+
+@router.get("/network-config", response_model=NetworkConfigResponse)
+async def get_network_config(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get current network CIDR configuration.
+    
+    Accessible to all authenticated users.
+    Returns Pydantic defaults if not configured.
+    """
+    try:
+        query = """
+            SELECT value, updated_at, updated_by 
+            FROM system_settings 
+            WHERE key = 'network_config'
+        """
+        row = await database.fetch_one(query)
+        
+        if row:
+            value = row['value']
+            if isinstance(value, str):
+                value = json.loads(value)
+            
+            return NetworkConfigResponse(
+                **value,
+                updated_at=str(row['updated_at']) if row['updated_at'] else None,
+                updated_by=row['updated_by']
+            )
+        
+        logger.info("No network config configured, returning defaults")
+        return NetworkConfigResponse()
+        
+    except Exception as e:
+        logger.error("Failed to get network config", error=str(e))
+        return NetworkConfigResponse()
+
+
+@router.put("/network-config", response_model=NetworkConfigResponse)
+async def update_network_config(
+    config: NetworkConfig,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update network CIDR configuration.
+    
+    **Admin only** - Requires 'Super Admin' or 'Admin' role.
+    
+    These settings control SDN gateway detection and IP classification
+    across all new analysis sessions.
+    """
+    check_admin_role(current_user)
+    
+    try:
+        query = """
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES (
+                'network_config', 
+                CAST(:value AS jsonb), 
+                'Network CIDR configuration for SDN gateway detection',
+                NOW(),
+                :user_id
+            )
+            ON CONFLICT (key) DO UPDATE SET 
+                value = CAST(:value AS jsonb), 
+                updated_at = NOW(),
+                updated_by = :user_id
+            RETURNING updated_at
+        """
+        
+        result = await database.fetch_one(query, {
+            "value": json.dumps(config.dict()),
+            "user_id": current_user.get('user_id')
+        })
+        
+        logger.info(
+            "Network config updated",
+            user_id=current_user.get('user_id'),
+            username=current_user.get('username'),
+            cidr_count=len(config.sdn_pod_cidrs)
+        )
+        
+        return NetworkConfigResponse(
+            **config.dict(),
+            updated_at=str(result['updated_at']) if result else None,
+            updated_by=current_user.get('user_id')
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update network config", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update network config: {str(e)}"
+        )
+
+
+@router.get("/network-config/defaults", response_model=NetworkConfig, responses={204: {"description": "Not configured"}})
+async def get_network_config_defaults():
+    """
+    Get current network config (no authentication required).
+    
+    Used by the analysis orchestrator to pass CIDR configuration
+    to the ingestion service during collection startup.
+    Returns 204 if not explicitly configured -- orchestrator should
+    let PodDiscovery use its hardcoded defaults for backward compatibility.
+    """
+    try:
+        query = """
+            SELECT value FROM system_settings 
+            WHERE key = 'network_config'
+        """
+        row = await database.fetch_one(query)
+        
+        if row:
+            value = row['value']
+            if isinstance(value, str):
+                value = json.loads(value)
+            return NetworkConfig(**value)
+    except Exception as e:
+        logger.warning("Failed to read network config from DB in /defaults", error=str(e))
+    
+    return Response(status_code=204)
 
 
 # ============================================

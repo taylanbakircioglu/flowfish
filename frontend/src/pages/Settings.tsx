@@ -222,6 +222,19 @@ interface IntegrationSettings {
   webhook_secret: string;
 }
 
+interface PodCIDRRange {
+  cidr: string;
+  label: string;
+  enabled: boolean;
+  is_default: boolean;
+}
+
+interface NetworkConfig {
+  sdn_pod_cidrs: PodCIDRRange[];
+  updated_at?: string;
+  updated_by?: number;
+}
+
 // ================== MAIN COMPONENT ==================
 
 const Settings: React.FC = () => {
@@ -310,6 +323,12 @@ const Settings: React.FC = () => {
   const [creatingBackup, setCreatingBackup] = useState(false);
   const [restoringBackup, setRestoringBackup] = useState<string | null>(null);
   
+  // Network Config State
+  const [networkConfig, setNetworkConfig] = useState<NetworkConfig>({ sdn_pod_cidrs: [] });
+  const [networkLoading, setNetworkLoading] = useState(false);
+  const [newCidr, setNewCidr] = useState('');
+  const [newCidrLabel, setNewCidrLabel] = useState('');
+
   // System Info
   const [systemInfo, setSystemInfo] = useState<SystemInfo>({
     version: '1.0.0',
@@ -402,7 +421,8 @@ const Settings: React.FC = () => {
         fetchAlertRules(),
         fetchIntegrationSettings(),
         fetchAuditLogs(),
-        fetchBackups()
+        fetchBackups(),
+        fetchNetworkConfig()
       ]);
     } finally {
       setLoading(false);
@@ -928,6 +948,50 @@ const Settings: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to load analysis settings:', error);
+    }
+  };
+
+  const fetchNetworkConfig = async () => {
+    setNetworkLoading(true);
+    try {
+      const response = await fetch('/api/v1/settings/network-config', {
+        headers: { 'Authorization': `Bearer ${getToken()}` }
+      });
+
+      if (response.ok) {
+        const data: NetworkConfig = await response.json();
+        setNetworkConfig(data);
+      }
+    } catch (error) {
+      console.error('Failed to load network config:', error);
+    } finally {
+      setNetworkLoading(false);
+    }
+  };
+
+  const saveNetworkConfig = async () => {
+    setSaving('network');
+    try {
+      const response = await fetch('/api/v1/settings/network-config', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`
+        },
+        body: JSON.stringify({ sdn_pod_cidrs: networkConfig.sdn_pod_cidrs })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setNetworkConfig(data);
+        message.success('Network configuration saved');
+      } else {
+        handleSaveError(response);
+      }
+    } catch (error) {
+      message.error('Failed to save network configuration');
+    } finally {
+      setSaving(null);
     }
   };
   
@@ -3515,6 +3579,181 @@ const Settings: React.FC = () => {
                     </Row>
                   </Space>
                 </Card>
+              </Col>
+            </Row>
+          </TabPane>
+
+          <TabPane
+            tab={<span><GlobalOutlined /> Network</span>}
+            key="network"
+          >
+            <Row gutter={[24, 24]}>
+              <Col span={24}>
+                <Card bordered={false} title="SDN Pod Network CIDR Ranges">
+                  <Alert
+                    message="Configure known pod network CIDR ranges for SDN gateway detection. These ranges help classify IP traffic during analysis."
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                  />
+
+                  <Spin spinning={networkLoading}>
+                    <Table
+                      dataSource={networkConfig.sdn_pod_cidrs}
+                      rowKey={(_, index) => String(index)}
+                      pagination={false}
+                      size="small"
+                      columns={[
+                        {
+                          title: 'Enabled',
+                          dataIndex: 'enabled',
+                          width: 80,
+                          render: (enabled: boolean, _: PodCIDRRange, index: number) => (
+                            <Switch
+                              size="small"
+                              checked={enabled}
+                              disabled={!isAdmin}
+                              onChange={(checked) => {
+                                const updated = [...networkConfig.sdn_pod_cidrs];
+                                updated[index] = { ...updated[index], enabled: checked };
+                                setNetworkConfig({ ...networkConfig, sdn_pod_cidrs: updated });
+                              }}
+                            />
+                          )
+                        },
+                        {
+                          title: 'CIDR',
+                          dataIndex: 'cidr',
+                          render: (cidr: string) => (
+                            <Text code style={{ fontSize: 12 }}>{cidr}</Text>
+                          )
+                        },
+                        {
+                          title: 'Label',
+                          dataIndex: 'label'
+                        },
+                        {
+                          title: 'Type',
+                          dataIndex: 'is_default',
+                          width: 100,
+                          render: (isDefault: boolean) => (
+                            <Tag color={isDefault ? 'blue' : 'green'}>
+                              {isDefault ? 'Default' : 'Custom'}
+                            </Tag>
+                          )
+                        },
+                        {
+                          title: 'Action',
+                          width: 80,
+                          render: (_: any, record: PodCIDRRange, index: number) => (
+                            !record.is_default && isAdmin ? (
+                              <Popconfirm
+                                title="Remove this CIDR range?"
+                                onConfirm={() => {
+                                  const updated = networkConfig.sdn_pod_cidrs.filter((_, i) => i !== index);
+                                  setNetworkConfig({ ...networkConfig, sdn_pod_cidrs: updated });
+                                }}
+                              >
+                                <Button type="link" danger size="small" icon={<DeleteOutlined />} />
+                              </Popconfirm>
+                            ) : null
+                          )
+                        }
+                      ]}
+                    />
+
+                    {isAdmin && (
+                      <>
+                        <Divider orientation="left" plain style={{ fontSize: 12 }}>Add Custom CIDR</Divider>
+                        <Space>
+                          <Input
+                            placeholder="10.100.0.0/16"
+                            value={newCidr}
+                            onChange={(e) => setNewCidr(e.target.value)}
+                            style={{ width: 180, fontFamily: 'monospace' }}
+                          />
+                          <Input
+                            placeholder="Label"
+                            value={newCidrLabel}
+                            onChange={(e) => setNewCidrLabel(e.target.value)}
+                            style={{ width: 180 }}
+                          />
+                          <Button
+                            icon={<PlusOutlined />}
+                            onClick={() => {
+                              const cidrPattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/;
+                              if (!cidrPattern.test(newCidr)) {
+                                message.error('Invalid CIDR format. Example: 10.100.0.0/16');
+                                return;
+                              }
+                              const mask = parseInt(newCidr.split('/')[1], 10);
+                              if (mask < 8 || mask > 32) {
+                                message.error('Subnet mask must be between 8 and 32');
+                                return;
+                              }
+                              if (!newCidrLabel.trim()) {
+                                message.error('Label is required');
+                                return;
+                              }
+                              if (networkConfig.sdn_pod_cidrs.some(r => r.cidr === newCidr)) {
+                                message.warning('This CIDR range already exists');
+                                return;
+                              }
+                              setNetworkConfig({
+                                ...networkConfig,
+                                sdn_pod_cidrs: [
+                                  ...networkConfig.sdn_pod_cidrs,
+                                  { cidr: newCidr, label: newCidrLabel.trim(), enabled: true, is_default: false }
+                                ]
+                              });
+                              setNewCidr('');
+                              setNewCidrLabel('');
+                            }}
+                          >
+                            Add
+                          </Button>
+                        </Space>
+
+                        <div style={{ marginTop: 24 }}>
+                          <Button
+                            type="primary"
+                            icon={<SaveOutlined />}
+                            onClick={saveNetworkConfig}
+                            loading={saving === 'network'}
+                          >
+                            Save Network Configuration
+                          </Button>
+                        </div>
+                      </>
+                    )}
+                  </Spin>
+                </Card>
+              </Col>
+              <Col span={24}>
+                <Collapse>
+                  <Panel header="How to find your cluster's pod CIDR ranges" key="cidr-help">
+                    <Paragraph>
+                      <Text strong>Kubernetes (kubeadm):</Text>
+                      <br />
+                      <Text code>kubectl cluster-info dump | grep -m 1 cluster-cidr</Text>
+                    </Paragraph>
+                    <Paragraph>
+                      <Text strong>OpenShift:</Text>
+                      <br />
+                      <Text code>oc get network.config/cluster -o jsonpath='{'{.spec.clusterNetwork[*].cidr}'}'</Text>
+                    </Paragraph>
+                    <Paragraph>
+                      <Text strong>K3s / RKE2:</Text>
+                      <br />
+                      <Text code>cat /etc/rancher/k3s/config.yaml | grep cluster-cidr</Text>
+                    </Paragraph>
+                    <Paragraph>
+                      <Text strong>Flannel:</Text>
+                      <br />
+                      <Text code>kubectl -n kube-flannel get cm kube-flannel-cfg -o jsonpath='{'{.data.net-conf\\.json}'}'</Text>
+                    </Paragraph>
+                  </Panel>
+                </Collapse>
               </Col>
             </Row>
           </TabPane>

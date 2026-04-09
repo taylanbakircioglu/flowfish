@@ -295,9 +295,9 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             
             # Fetch global ingestion rate limit via synchronous HTTP call
             # NOTE: StartAnalysis is a sync gRPC method, so we must use httpx.Client (not AsyncClient)
+            backend_url = f"http://{settings.backend_service_host}:{settings.backend_service_port}"
             ingestion_rate_limit = 0
             try:
-                backend_url = f"http://{settings.backend_service_host}:{settings.backend_service_port}"
                 with httpx.Client(timeout=5.0) as http_client:
                     resp = http_client.get(f"{backend_url}/api/v1/settings/analysis-limits/defaults")
                     if resp.status_code == 200:
@@ -305,6 +305,16 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             except Exception as e:
                 logger.warning(f"Failed to fetch ingestion rate limit, using safe fallback (5000 events/sec): {e}")
                 ingestion_rate_limit = 5000
+
+            # Fetch network CIDR config for SDN gateway detection
+            network_config_json = ''
+            try:
+                with httpx.Client(timeout=5.0) as http_client:
+                    resp = http_client.get(f"{backend_url}/api/v1/settings/network-config/defaults")
+                    if resp.status_code == 200:
+                        network_config_json = resp.text
+            except Exception as e:
+                logger.warning(f"Failed to fetch network config, ingestion will use defaults: {e}")
             
             # Start collection for each cluster
             task_assignments = []
@@ -409,7 +419,8 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                         gadget_namespace=gadget_namespace,
                         is_remote_cluster=is_remote,
                         gadget_version=cluster_gadget_version,
-                        max_events_per_second=ingestion_rate_limit
+                        max_events_per_second=ingestion_rate_limit,
+                        network_config_json=network_config_json
                     )
                     
                     session_ids.append(session_info['session_id'])

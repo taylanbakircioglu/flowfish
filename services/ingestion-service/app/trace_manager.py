@@ -9,6 +9,7 @@ import asyncio
 import uuid
 import tempfile
 import os
+import json
 import yaml
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -394,6 +395,14 @@ class TraceManager:
             if not connected:
                 raise Exception("Failed to connect to Inspektor Gadget")
             
+            # Parse network config from orchestrator (for SDN gateway CIDR detection)
+            network_config = None
+            if hasattr(request, 'network_config_json') and request.network_config_json:
+                try:
+                    network_config = json.loads(request.network_config_json)
+                except json.JSONDecodeError:
+                    logger.warning("Invalid network_config_json, PodDiscovery will use defaults")
+
             # Start pod discovery for destination enrichment (best effort)
             # NOTE: We discover ALL namespaces, not just scope namespaces,
             # because we need to resolve external IPs that may be in other namespaces
@@ -404,7 +413,8 @@ class TraceManager:
                     kubeconfig=kubeconfig_path,
                     context=kubectl_context,
                     refresh_interval_seconds=settings.pod_discovery_refresh_interval,
-                    cluster_manager_url=settings.cluster_manager_url
+                    cluster_manager_url=settings.cluster_manager_url,
+                    network_config=network_config
                 )
                 # Discover ALL pods in cluster for IP -> name resolution
                 # External connections often go to pods in other namespaces
