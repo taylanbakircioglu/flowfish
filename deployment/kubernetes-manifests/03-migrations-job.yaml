@@ -1670,7 +1670,9 @@ spec:
           UNION ALL SELECT 
               'two_factor_codes', COUNT(*) FROM two_factor_codes
           UNION ALL SELECT 
-              'blast_radius_assessments', COUNT(*) FROM blast_radius_assessments;
+              'blast_radius_assessments', COUNT(*) FROM blast_radius_assessments
+          UNION ALL SELECT 
+              'scheduled_simulations', COUNT(*) FROM scheduled_simulations;
           EOSQL
           
           # =========================================
@@ -1689,6 +1691,43 @@ spec:
           CREATE INDEX IF NOT EXISTS idx_analyses_next_run_at ON analyses(next_run_at);
           EOSQL
           echo "Scheduling columns migration complete."
+
+          # =========================================
+          # Migration 021: Scheduled Simulations
+          # =========================================
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          DO $BODY$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 21) THEN
+              CREATE TABLE IF NOT EXISTS scheduled_simulations (
+                  id VARCHAR(50) PRIMARY KEY,
+                  name VARCHAR(255) NOT NULL,
+                  description TEXT,
+                  cluster_id VARCHAR(50) NOT NULL,
+                  analysis_id VARCHAR(50),
+                  target_name VARCHAR(255) NOT NULL,
+                  target_namespace VARCHAR(255) NOT NULL,
+                  target_kind VARCHAR(50) DEFAULT 'Deployment',
+                  change_type VARCHAR(50) NOT NULL,
+                  schedule_type VARCHAR(20) DEFAULT 'once',
+                  scheduled_time TIMESTAMP NOT NULL,
+                  notify_before_minutes INT DEFAULT 15,
+                  auto_rollback BOOLEAN DEFAULT FALSE,
+                  rollback_on_failure BOOLEAN DEFAULT TRUE,
+                  status VARCHAR(20) DEFAULT 'scheduled',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  created_by VARCHAR(100),
+                  last_run_at TIMESTAMP,
+                  last_run_result TEXT
+              );
+              CREATE INDEX IF NOT EXISTS idx_scheduled_sim_status ON scheduled_simulations(status);
+              CREATE INDEX IF NOT EXISTS idx_scheduled_sim_time ON scheduled_simulations(scheduled_time);
+              INSERT INTO schema_migrations (version, name) VALUES (21, 'scheduled_simulations') ON CONFLICT (version) DO NOTHING;
+              RAISE NOTICE 'Migration 021: scheduled_simulations table created';
+            END IF;
+          END $BODY$;
+          EOSQL
+          echo "Migration 021 completed!"
 
           echo ""
           echo "--- Fix blast_radius_assessments FK constraint (add ON DELETE SET NULL) ---"

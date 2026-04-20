@@ -5,7 +5,6 @@ import {
   DashboardOutlined,
   ExperimentOutlined,
   GlobalOutlined,
-  AppstoreOutlined,
   SecurityScanOutlined,
   SettingOutlined,
   CloudServerOutlined,
@@ -13,11 +12,7 @@ import {
   ClockCircleOutlined,
   FileTextOutlined,
   ApiOutlined,
-  SwapOutlined,
   CodeOutlined,
-  RadarChartOutlined,
-  AlertOutlined,
-  RocketOutlined,
 } from '@ant-design/icons';
 import FlowfishLogo from '../FlowfishLogo';
 import type { MenuProps } from 'antd';
