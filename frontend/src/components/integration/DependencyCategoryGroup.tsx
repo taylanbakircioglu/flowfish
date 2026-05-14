@@ -13,9 +13,10 @@ const CATEGORY_COLORS: Record<string, string> = {
 interface DependencyCategoryGroupProps {
   group: DependencySummaryGroup;
   title: string;
+  showL7Details?: boolean;
 }
 
-const DependencyCategoryGroup: React.FC<DependencyCategoryGroupProps> = ({ group, title }) => {
+const DependencyCategoryGroup: React.FC<DependencyCategoryGroupProps> = ({ group, title, showL7Details }) => {
   const { token } = theme.useToken();
   if (!group || group.total === 0) {
     return <Empty description={`No ${title.toLowerCase()}`} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
@@ -75,6 +76,22 @@ const DependencyCategoryGroup: React.FC<DependencyCategoryGroupProps> = ({ group
                   ? <Tag color="orange">{v} hops</Tag>
                   : <Tag color="green">direct</Tag>,
               }] : []),
+              ...(showL7Details ? [
+                {
+                  title: 'Protocol',
+                  dataIndex: 'protocol' as const,
+                  key: 'protocol',
+                  width: 80,
+                  render: (v: string) => v ? <Tag color="purple">{v}</Tag> : '-',
+                },
+                {
+                  title: 'Avg Latency',
+                  dataIndex: 'avg_latency_ms' as const,
+                  key: 'latency',
+                  width: 100,
+                  render: (v: number) => v != null ? `${v.toFixed(1)}ms` : '-',
+                },
+              ] : []),
               {
                 title: 'Annotations',
                 key: 'ann',

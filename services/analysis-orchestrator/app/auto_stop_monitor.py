@@ -8,6 +8,7 @@ Monitors running analyses and stops them when:
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Set
@@ -407,46 +408,47 @@ class AutoStopMonitor:
     ANALYSIS_EVENT_TABLES = [
         'network_flows', 'dns_queries', 'tcp_lifecycle', 'process_events',
         'file_operations', 'capability_checks', 'oom_kills', 'bind_events',
-        'sni_events', 'mount_events', 'workload_metadata'
+        'sni_events', 'mount_events', 'workload_metadata',
+        # L7 (Beyla) — optional tables; missing tables are skipped per-query
+        'l7_http_flows', 'l7_grpc_flows', 'l7_dns_flows',
     ]
     
     async def _get_analysis_data_size(self, analysis_id: int) -> float:
         """
         Query ClickHouse to get the current data size for an analysis.
         
-        Queries all event tables with UNION ALL and uses count(*) as a proxy
-        for data size (~1KB per event estimate). Returns size in MB.
+        Sums count(*) across event tables (~1KB per event estimate). Returns size in MB.
+        Each table is queried separately so missing L7 tables do not fail the whole sum.
         """
-        try:
-            subqueries = " UNION ALL ".join([
-                f"SELECT count(*) as cnt FROM flowfish.{table} "
-                f"WHERE analysis_id = '{analysis_id}' OR analysis_id LIKE '{analysis_id}-%'"
-                for table in self.ANALYSIS_EVENT_TABLES
-            ])
-            query = f"SELECT sum(cnt) / 1024 as size_mb FROM ({subqueries})"
-            
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(
-                    f"{self.clickhouse_url}/",
-                    params={
-                        "query": query,
-                        "default_format": "JSON",
-                        "user": settings.clickhouse_user,
-                        "password": settings.clickhouse_password
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get('data') and len(result['data']) > 0:
-                        size_mb = float(result['data'][0].get('size_mb', 0) or 0)
-                        return size_mb
-            
-            return 0.0
-            
-        except Exception as e:
-            logger.warning(f"Failed to get analysis data size from ClickHouse: {e}")
-            return 0.0
+        aid = str(analysis_id)
+        where = f"analysis_id = '{aid}' OR analysis_id LIKE '{aid}-%'"
+        total_rows = 0
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for table in self.ANALYSIS_EVENT_TABLES:
+                query = f"SELECT count(*) AS cnt FROM flowfish.{table} WHERE {where}"
+                try:
+                    response = await client.post(
+                        f"{self.clickhouse_url}/",
+                        params={
+                            "query": query,
+                            "default_format": "JSON",
+                            "user": settings.clickhouse_user,
+                            "password": settings.clickhouse_password
+                        }
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result.get("data") and len(result["data"]) > 0:
+                            total_rows += int(result["data"][0].get("cnt", 0) or 0)
+                    else:
+                        logger.debug(
+                            "ClickHouse size query non-200 for %s: %s",
+                            table,
+                            response.status_code,
+                        )
+                except Exception as e:
+                    logger.warning(f"Analysis data size query failed for table {table}: {e}")
+        return total_rows / 1024.0
     
     # ============================================
     # Rolling Window Data Retention
@@ -593,6 +595,40 @@ class AutoStopMonitor:
                 if analysis_id in self.active_sessions:
                     del self.active_sessions[analysis_id]
             
+            # Stop L7 collection if applicable
+            l7_stop_failed = False
+            try:
+                from app.l7_ingestion_client import L7IngestionClient
+                from app.config import settings
+                analysis_obj = await db_manager.get_analysis(analysis_id)
+                level = ((getattr(analysis_obj, "analysis_level", None) or "")).strip().lower() if analysis_obj else ""
+                if level in ("l7", "both"):
+                    l7_client = L7IngestionClient(host=settings.l7_ingestion_host, port=settings.l7_ingestion_port)
+                    try:
+                        raw_ids = getattr(analysis_obj, "cluster_ids", None) or []
+                        if isinstance(raw_ids, str):
+                            try:
+                                raw_ids = json.loads(raw_ids)
+                            except (json.JSONDecodeError, TypeError):
+                                raw_ids = []
+                        if not isinstance(raw_ids, list):
+                            raw_ids = []
+                        cluster_ids = raw_ids
+                        if not cluster_ids:
+                            cid = getattr(analysis_obj, "cluster_id", None)
+                            cluster_ids = [cid] if cid else []
+                        for cid in cluster_ids:
+                            result = l7_client.stop_l7_collection(str(analysis_id), cluster_id=str(cid))
+                            if not result.get("success"):
+                                logger.warning("L7 stop returned failure for analysis %s cluster %s: %s", analysis_id, cid, result)
+                                l7_stop_failed = True
+                        logger.info("Auto-stopped L7 collection for analysis %s", analysis_id)
+                    finally:
+                        l7_client.close()
+            except Exception as e:
+                logger.warning("Failed to auto-stop L7 collection: %s", e)
+                l7_stop_failed = True
+
             # Clear from warned set
             self._warned_analyses.discard(analysis_id)
             
@@ -608,7 +644,8 @@ class AutoStopMonitor:
                 **existing_output_config,
                 "auto_stopped": True,
                 "auto_stop_reason": reason,
-                "auto_stopped_at": stopped_at.isoformat()
+                "auto_stopped_at": stopped_at.isoformat(),
+                **({"l7_stop_failed": True} if l7_stop_failed else {}),
             }
             
             # Update analysis status to 'completed' (auto-stopped = completed successfully)

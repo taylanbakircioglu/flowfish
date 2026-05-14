@@ -297,6 +297,160 @@ async def get_communication_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- L7 (Beyla) graph endpoints ---
+
+@app.get("/l7/communications")
+async def get_l7_communications(
+    analysis_id: str = Query(..., description="Analysis ID"),
+    cluster_id: Optional[str] = None,
+    namespace: Optional[str] = None,
+    protocol: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=10000),
+):
+    """List L7 workload-to-workload communications (L7_COMMUNICATES_WITH)."""
+    try:
+        return graph_query_engine.get_l7_communications(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            namespace=namespace,
+            protocol=protocol,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 communications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/dependencies/graph")
+async def get_l7_dependency_graph(
+    analysis_id: str = Query(..., description="Analysis ID"),
+    cluster_id: Optional[str] = None,
+    namespace: Optional[str] = None,
+    protocol: Optional[str] = None,
+    protocols: Optional[str] = Query(None, description="Comma-separated protocol list (e.g. http,grpc)"),
+    namespaces: Optional[str] = Query(None, description="Comma-separated namespace list"),
+    include_metadata: str = Query("true", description="Include labels/annotations/owner_kind"),
+):
+    """L7 dependency graph: L7Workload nodes and L7_COMMUNICATES_WITH edges."""
+    try:
+        return graph_query_engine.get_l7_dependency_graph(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            namespace=namespace,
+            protocol=protocol,
+            protocols=protocols,
+            namespaces=namespaces,
+            include_metadata=include_metadata.lower() != "false",
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 dependency graph: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/communications/stats")
+async def get_l7_communication_stats(
+    analysis_id: str = Query(..., description="Analysis ID"),
+    cluster_id: Optional[str] = None,
+):
+    """Aggregated L7 communication statistics."""
+    try:
+        return graph_query_engine.get_l7_communication_stats(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 communication stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/communications/error-stats")
+async def get_l7_error_stats(
+    analysis_id: str = Query(..., description="Analysis ID"),
+    cluster_id: Optional[str] = None,
+    namespace: Optional[str] = None,
+):
+    """L7 error totals and breakdown by protocol."""
+    try:
+        return graph_query_engine.get_l7_error_stats(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            namespace=namespace,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 error stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/dependencies/summary")
+async def get_l7_dependency_summary(
+    analysis_id: str = Query(..., description="Analysis ID"),
+    cluster_id: Optional[str] = None,
+    namespace: Optional[str] = Query(None, description="Filter to namespace"),
+    include_metadata: str = Query("true", description="Include labels/annotations/owner_kind"),
+    annotation_key: Optional[str] = Query(None, description="Filter workloads by annotation key (supports fnmatch globs)"),
+    annotation_value: Optional[str] = Query(None, description="Filter workloads by annotation value (supports fnmatch globs)"),
+    label_key: Optional[str] = Query(None, description="Filter workloads by label key (supports fnmatch globs)"),
+    label_value: Optional[str] = Query(None, description="Filter workloads by label value (supports fnmatch globs)"),
+    owner_name: Optional[str] = Query(None, description="Alias for workload_name (case-insensitive substring match)"),
+    pod_name: Optional[str] = Query(None, description="Case-insensitive substring match against workload name"),
+    workload_name: Optional[str] = Query(None, description="Case-insensitive substring match against L7Workload.name"),
+    filter_noise_annotations: bool = Query(False, description="Strip Kubernetes infrastructure annotations from response"),
+):
+    """Per-workload L7 dependency summary for Integration Hub."""
+    try:
+        return graph_query_engine.get_l7_dependency_summary(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            namespace=namespace,
+            include_metadata=include_metadata.lower() != "false",
+            annotation_key=annotation_key,
+            annotation_value=annotation_value,
+            label_key=label_key,
+            label_value=label_value,
+            owner_name=owner_name,
+            pod_name=pod_name,
+            workload_name=workload_name,
+            filter_noise_annotations=filter_noise_annotations,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 dependency summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/dependencies/tree-summary")
+async def get_l7_dependency_tree_summary(
+    analysis_id: str = Query(..., description="Analysis ID"),
+    cluster_id: Optional[str] = None,
+    workload_name: Optional[str] = Query(None, description="Filter to specific workload name"),
+    namespace: Optional[str] = Query(None, description="Filter to namespace"),
+    depth: int = Query(1, ge=1, le=3),
+    label_key: Optional[str] = Query(None, description="Filter workloads by label key"),
+    label_value: Optional[str] = Query(None, description="Filter workloads by label value"),
+    annotation_key: Optional[str] = Query(None, description="Filter workloads by annotation key"),
+    annotation_value: Optional[str] = Query(None, description="Filter workloads by annotation value"),
+    include_metadata: str = Query("true", description="Include labels/annotations/owner_kind"),
+    workload_name_exact: bool = Query(True, description="Exact name match (default True for backward compat); set False for case-insensitive substring"),
+):
+    """L7 dependency tree: upstream workloads with downstream/callers grouped by protocol."""
+    try:
+        return graph_query_engine.find_l7_workload_dependencies(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            workload_name=workload_name,
+            namespace=namespace,
+            depth=depth,
+            label_key=label_key,
+            label_value=label_value,
+            annotation_key=annotation_key,
+            annotation_value=annotation_value,
+            include_metadata=include_metadata.lower() != "false",
+            workload_name_exact=workload_name_exact,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 dependency tree summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/cross-namespace")
 async def get_cross_namespace_communications(
     analysis_id: Optional[str] = None,
@@ -437,11 +591,24 @@ async def get_dependency_summary(
     annotation_value: Optional[str] = None,
     ip: Optional[str] = None,
     depth: int = Query(1, ge=1, le=5, description="Traversal depth"),
+    # Plan v3 Akış D m.8 — Discovery mode. When true, no service
+    # identification method is required; the query returns every
+    # workload in scope (bounded by cluster_id or namespace as a
+    # tenant guard inside `find_pod_dependencies`).
+    match_all: bool = Query(
+        False,
+        description="Opt into discovery mode — return every workload in scope without a service identification filter. Requires cluster_id or namespace as a tenant guard. depth is silently capped at 2.",
+    ),
 ):
     """
     AI-agent-friendly dependency summary. Returns grouped, compact JSON.
 
-    Requires at least one analysis_id and one search parameter.
+    Requires at least one analysis_id. By default also requires one
+    service identification parameter (annotation, label, owner_name,
+    pod_name, or ip). Pass `match_all=true` to opt into discovery mode
+    which lifts that requirement — see the parameter description for
+    the tenant guards that apply in discovery mode.
+
     Dependencies are grouped by service_category with annotations/labels
     prominently exposed for cross-project impact analysis.
     """
@@ -458,10 +625,57 @@ async def get_dependency_summary(
             annotation_value=annotation_value,
             ip=ip,
             depth=depth,
+            match_all=match_all,
         )
         return graph_query_engine.format_dependency_summary(stream_result, analysis_ids)
     except Exception as e:
         logger.error(f"Failed to get dependency summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/dependencies/unified-summary")
+async def get_unified_dependency_summary(
+    analysis_ids: List[str] = Query(..., description="Analysis IDs (required, at least one)"),
+    cluster_id: Optional[str] = None,
+    pod_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+    owner_name: Optional[str] = None,
+    label_key: Optional[str] = None,
+    label_value: Optional[str] = None,
+    annotation_key: Optional[str] = None,
+    annotation_value: Optional[str] = None,
+    ip: Optional[str] = None,
+    depth: int = Query(1, ge=1, le=5, description="Traversal depth"),
+    include_l7: bool = Query(True, description="Include L7 metrics enrichment"),
+):
+    """
+    Unified L4+L7 dependency summary. Returns L4 dependencies enriched with
+    L7 application-layer metrics (request counts, error rates, latency).
+    """
+    try:
+        stream_result = graph_query_engine.find_unified_dependencies(
+            analysis_ids=analysis_ids,
+            depth=depth,
+            include_l7=include_l7,
+            cluster_id=cluster_id,
+            pod_name=pod_name,
+            namespace=namespace,
+            owner_name=owner_name,
+            label_key=label_key,
+            label_value=label_value,
+            annotation_key=annotation_key,
+            annotation_value=annotation_value,
+            ip=ip,
+        )
+        formatted = graph_query_engine.format_dependency_summary(stream_result, analysis_ids)
+
+        for key in ("l7_lookup_status", "l7_pairs_checked", "l7_pairs_matched",
+                     "l7_batch_success", "l7_batch_fail"):
+            if key in stream_result:
+                formatted[key] = stream_result[key]
+        return formatted
+    except Exception as e:
+        logger.error(f"Failed to get unified dependency summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

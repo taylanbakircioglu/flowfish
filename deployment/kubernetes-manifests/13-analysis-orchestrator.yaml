@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: analysis-orchestrator
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: analysis-orchestrator
     component: analysis-orchestrator
@@ -24,7 +24,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: analysis-orchestrator
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: analysis-orchestrator
     component: analysis-orchestrator
@@ -44,7 +44,7 @@ spec:
       serviceAccountName: flowfish
       containers:
         - name: analysis-orchestrator
-          image: taylanbakircioglu/flowfish:analysis-orchestrator-latest
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-analysis-orchestrator:{{IMAGE_TAG}}
           imagePullPolicy: Always
           ports:
             - name: grpc
@@ -111,6 +111,11 @@ spec:
               value: "http://timeseries-query:8002"
             - name: GRAPH_QUERY_URL
               value: "http://graph-query:8001"
+            # L7 Ingestion Service (gRPC)
+            - name: L7_INGESTION_HOST
+              value: "l7-ingestion-service"
+            - name: L7_INGESTION_PORT
+              value: "5006"
           resources:
             requests:
               cpu: 100m

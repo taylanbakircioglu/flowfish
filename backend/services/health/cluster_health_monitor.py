@@ -103,7 +103,7 @@ class ClusterHealthMonitor:
     async def _get_active_clusters(self) -> list:
         """Get list of active clusters from database"""
         query = """
-            SELECT id, name, connection_type, gadget_namespace
+            SELECT id, name, connection_type, gadget_namespace, beyla_namespace
             FROM clusters
             WHERE status = 'active'
             ORDER BY id
@@ -150,6 +150,33 @@ class ClusterHealthMonitor:
                         "version": gadget_health.get("version")
                     }
                 )
+
+                stored_beyla_ns = cluster.get("beyla_namespace") or ""
+                beyla_ns = stored_beyla_ns or cluster.get("gadget_namespace") or ""
+                if beyla_ns:
+                    try:
+                        beyla_health = await asyncio.wait_for(
+                            cluster_connection_manager.check_beyla_health(cluster_id, beyla_ns),
+                            timeout=30.0
+                        )
+                        update_sql = """UPDATE clusters SET
+                                beyla_health_status = :status,
+                                beyla_version = :version,
+                                beyla_last_check = NOW()"""
+                        params = {
+                            "cluster_id": cluster_id,
+                            "status": beyla_health.get("health_status", "unknown"),
+                            "version": beyla_health.get("version", "")
+                        }
+                        if not stored_beyla_ns and beyla_health.get("health_status") in ("healthy", "degraded"):
+                            update_sql += ", beyla_namespace = :beyla_namespace"
+                            params["beyla_namespace"] = beyla_ns
+                            logger.info("Auto-discovered beyla_namespace", cluster_id=cluster_id, namespace=beyla_ns)
+                        update_sql += " WHERE id = :cluster_id"
+                        await database.execute(update_sql, params)
+                    except Exception as beyla_err:
+                        logger.debug("Beyla health check failed", cluster_id=cluster_id, error=str(beyla_err))
+
                 self._last_check[cluster_id] = datetime.utcnow()
                 self._failure_counts[cluster_id] = 0
                 
@@ -346,11 +373,31 @@ class ClusterHealthMonitor:
                 gadget_health = {"health_status": "unknown", "error": "timeout"}
                 result["gadget_health"] = gadget_health
             
+            # Check Beyla health (non-blocking, best-effort)
+            beyla_health = None
+            try:
+                stored_beyla_ns = (cluster.get("beyla_namespace") or "") if cluster else ""
+                beyla_ns = stored_beyla_ns or (cluster.get("gadget_namespace") or "") if cluster else ""
+                if beyla_ns:
+                    beyla_health = await asyncio.wait_for(
+                        cluster_connection_manager.check_beyla_health(cluster_id, beyla_ns),
+                        timeout=30.0
+                    )
+                    result["beyla_health"] = beyla_health
+                    if not stored_beyla_ns and beyla_health.get("health_status") in ("healthy", "degraded"):
+                        await database.execute(
+                            "UPDATE clusters SET beyla_namespace = :ns WHERE id = :id",
+                            {"ns": beyla_ns, "id": cluster_id},
+                        )
+            except Exception:
+                pass
+
             # Update database
             await self._update_cluster_status(
                 cluster_id=cluster_id,
                 cluster_info=cluster_info,
-                gadget_health=gadget_health
+                gadget_health=gadget_health,
+                beyla_health=beyla_health,
             )
             
             # Reset failure count on success
@@ -375,33 +422,42 @@ class ClusterHealthMonitor:
         self, 
         cluster_id: int, 
         cluster_info: Dict[str, Any],
-        gadget_health: Dict[str, Any]
+        gadget_health: Dict[str, Any],
+        beyla_health: Dict[str, Any] = None,
     ) -> None:
         """Update cluster status in database - preserves existing values on error"""
         
         # Check if cluster_info has error - if so, don't update resource counts
         has_cluster_info_error = cluster_info.get("error") is not None
         
+        beyla_sql = ""
+        beyla_params: Dict[str, Any] = {}
+        if beyla_health:
+            beyla_sql = ", beyla_health_status = :beyla_health_status, beyla_version = :beyla_version, beyla_last_check = NOW()"
+            beyla_params = {
+                "beyla_health_status": beyla_health.get("health_status", "unknown"),
+                "beyla_version": beyla_health.get("version", ""),
+            }
+
         if has_cluster_info_error:
-            # Only update gadget health, preserve existing resource counts
-            query = """
+            query = f"""
                 UPDATE clusters SET
                     gadget_health_status = :gadget_health_status,
                     gadget_version = :gadget_version,
-                    gadget_last_check = NOW(),
+                    gadget_last_check = NOW(){beyla_sql},
                     updated_at = NOW()
                 WHERE id = :cluster_id
             """
             params = {
                 "cluster_id": cluster_id,
-                "gadget_health_status": gadget_health.get("health_status", "unknown"),
-                "gadget_version": gadget_health.get("version")
+                "gadget_health_status": gadget_health.get("health_status", "not_installed"),
+                "gadget_version": gadget_health.get("version"),
+                **beyla_params,
             }
             logger.warning("Cluster info has error, preserving existing resource counts", 
                           cluster_id=cluster_id, error=cluster_info.get("error"))
         else:
-            # Full update - cluster info is valid
-            query = """
+            query = f"""
                 UPDATE clusters SET
                     total_nodes = :total_nodes,
                     total_pods = :total_pods,
@@ -409,7 +465,7 @@ class ClusterHealthMonitor:
                     k8s_version = :k8s_version,
                     gadget_health_status = :gadget_health_status,
                     gadget_version = :gadget_version,
-                    gadget_last_check = NOW(),
+                    gadget_last_check = NOW(){beyla_sql},
                     updated_at = NOW()
                 WHERE id = :cluster_id
             """
@@ -419,8 +475,9 @@ class ClusterHealthMonitor:
                 "total_pods": cluster_info.get("total_pods", 0),
                 "total_namespaces": cluster_info.get("total_namespaces", 0),
                 "k8s_version": cluster_info.get("k8s_version"),
-                "gadget_health_status": gadget_health.get("health_status", "unknown"),
-                "gadget_version": gadget_health.get("version")
+                "gadget_health_status": gadget_health.get("health_status", "not_installed"),
+                "gadget_version": gadget_health.get("version"),
+                **beyla_params,
             }
         
         try:
@@ -499,7 +556,7 @@ class ClusterHealthMonitor:
     async def force_check(self, cluster_id: int) -> Dict[str, Any]:
         """Force an immediate health check for a specific cluster"""
         cluster = await database.fetch_one(
-            "SELECT id, name, connection_type, gadget_namespace FROM clusters WHERE id = :cluster_id",
+            "SELECT id, name, connection_type, gadget_namespace, beyla_namespace FROM clusters WHERE id = :cluster_id",
             {"cluster_id": cluster_id}
         )
         

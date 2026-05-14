@@ -1,4 +1,4 @@
-import React, { useState, Suspense, lazy, useCallback, useEffect, useRef } from 'react';
+import React, { useState, Suspense, lazy, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { 
   Tabs, 
@@ -52,6 +52,7 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import { useGetClustersQuery } from '../../store/api/clusterApi';
 import { useGetAnalysesQuery } from '../../store/api/analysisApi';
 import { Analysis } from '../../types';
+import { useL4Analyses, useL4AnalysisGuard } from '../../utils/analysisFilters';
 
 dayjs.extend(relativeTime);
 
@@ -198,10 +199,11 @@ const Dashboard: React.FC = () => {
     }
   }, [searchParams, selectedAnalysisId]);
 
-  // Filter to running/completed analyses
-  const availableAnalyses = Array.isArray(analyses) 
+  const statusFilteredAnalyses = Array.isArray(analyses)
     ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
     : [];
+  const availableAnalyses = useL4Analyses(statusFilteredAnalyses);
+  useL4AnalysisGuard(selectedAnalysisId, setSelectedAnalysisId, availableAnalyses);
 
   const runningAnalysesCount = Array.isArray(analyses) 
     ? analyses.filter((a: Analysis) => a.status === 'running').length 
@@ -279,6 +281,23 @@ const Dashboard: React.FC = () => {
       }
     }
   }, [selectedAnalysisId, analyses]);
+
+  // Plan v3 Akış E (B1.5 fix): for the Security and Overview tabs we need
+  // an `undefined`-tolerant cluster id so multi-cluster analyses aggregate
+  // their security/OOM/event totals across every cluster instead of just
+  // the primary one. Other tabs (Operations, Network, Workloads, Changes)
+  // still use `selectedClusterId` because their data sources are inherently
+  // single-cluster (one Neo4j graph per cluster, etc.).
+  const selectedAnalysis = useMemo(() => {
+    if (!selectedAnalysisId || !Array.isArray(analyses)) return null;
+    return analyses.find((a: Analysis) => a.id === selectedAnalysisId) || null;
+  }, [selectedAnalysisId, analyses]);
+  const isMultiClusterAnalysis = Boolean(
+    selectedAnalysis &&
+      (selectedAnalysis.is_multi_cluster ||
+        (selectedAnalysis.cluster_ids && selectedAnalysis.cluster_ids.length > 1)),
+  );
+  const securityClusterId = isMultiClusterAnalysis ? undefined : selectedClusterId;
 
   // Refresh all data
   const handleRefresh = useCallback(async (silent = false) => {
@@ -408,13 +427,22 @@ const Dashboard: React.FC = () => {
       analysisId: selectedAnalysisId,
     };
 
+    // Pass the `undefined`-tolerant security cluster + multi-cluster flag to
+    // tabs that aggregate security/OOM data so they can switch between
+    // single- and multi-cluster query shapes (Plan v3 Akış E).
+    const securityProps = {
+      ...commonProps,
+      securityClusterId,
+      isMultiClusterAnalysis,
+    };
+
     switch (activeTab) {
       case 'overview':
-        return <OverviewTab {...commonProps} />;
+        return <OverviewTab {...securityProps} />;
       case 'operations':
         return <OperationsTab {...commonProps} />;
       case 'security':
-        return <SecurityTab {...commonProps} />;
+        return <SecurityTab {...securityProps} />;
       case 'network':
         return <NetworkTab {...commonProps} />;
       case 'changes':
@@ -422,7 +450,7 @@ const Dashboard: React.FC = () => {
       case 'workloads':
         return <WorkloadTab {...commonProps} />;
       default:
-        return <OverviewTab {...commonProps} />;
+        return <OverviewTab {...securityProps} />;
     }
   };
 

@@ -303,10 +303,13 @@ class PodDiscovery:
                 ("172.16.0.0/12", "Private-Network"),
             ])
         else:
-            # No config provided -- use well-known defaults (backward compat)
+            # No config provided -- preserve exact current hardcoded behavior (backward compat)
             self._known_cidrs_ordered = [
                 ("10.128.0.0/14", "Pod-Network"),       # OpenShift default pod network
                 ("172.30.0.0/16", "Service-Network"),   # OpenShift default service network
+                ("10.194.0.0/16", "Pod-Network"),       # OpenShift additional pod range
+                ("10.208.0.0/16", "Pod-Network"),       # OpenShift additional pod range
+                ("10.196.0.0/16", "Service-Network"),   # OpenShift additional service range
                 ("10.96.0.0/12", "Service-Network"),    # K8s default service-cluster-ip-range
                 ("10.244.0.0/16", "Pod-Network"),       # Flannel default
                 ("10.42.0.0/16", "Pod-Network"),        # K3s/RKE default
@@ -1559,6 +1562,8 @@ class PodDiscovery:
             return [r['cidr'] for r in cidrs if r.get('enabled', True)]
         return [
             "10.128.0.0/14",  # OpenShift default
+            "10.194.0.0/16",  # OpenShift additional pod range
+            "10.208.0.0/16",  # OpenShift additional pod range
             "10.244.0.0/16",  # Flannel
             "10.42.0.0/16",   # K3s/RKE
         ]
@@ -1575,7 +1580,7 @@ class PodDiscovery:
         - *.*.*.2 addresses: SDN gateway (OpenShift OVN)
         
         IMPORTANT: Ordered list is used so more specific ranges are checked first.
-        E.g., 10.128.0.0/14 (Pod-Network) is checked before 10.0.0.0/8 (Internal-Network)
+        E.g., 10.194.0.0/16 (Pod-Network) is checked before 10.0.0.0/8 (Internal-Network)
         """
         try:
             addr = ipaddress.ip_address(ip)

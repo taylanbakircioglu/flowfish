@@ -87,7 +87,7 @@ classic-build/
 
 > **GADGET_VERSION:** Inspektor Gadget OCI image'larını Harbor'a mirror etmek için kullanılır.
 > Bu değer `services/ingestion-service/app/constants.py` ile uyumlu olmalıdır.
-> **v0.50.1 includes ring buffer fix + socket cleanup improvements.**
+> **CVE-2024-24790 fix için v0.50.1 gereklidir.**
 >
 > **cleanup-keep-count:** Her servis için registry'de tutulacak image sayısı (latest hariç). Default: 4.
 
@@ -211,12 +211,14 @@ GRAPH_WRITER_CHANGED=$(DetectChanges.DetectChanges.GRAPH_WRITER_CHANGED)
 GRAPH_QUERY_CHANGED=$(DetectChanges.DetectChanges.GRAPH_QUERY_CHANGED)
 TIMESERIES_WRITER_CHANGED=$(DetectChanges.DetectChanges.TIMESERIES_WRITER_CHANGED)
 INGESTION_SERVICE_CHANGED=$(DetectChanges.DetectChanges.INGESTION_SERVICE_CHANGED)
+L7_INGESTION_SERVICE_CHANGED=$(DetectChanges.DetectChanges.L7_INGESTION_SERVICE_CHANGED)
+L7_COLLECTOR_CHANGED=$(DetectChanges.DetectChanges.L7_COLLECTOR_CHANGED)
 BUILD_SOURCEVERSION=$(Build.SourceVersion)
 GADGET_VERSION=$(GADGET_VERSION)
 ```
 
 > **🆕 GADGET_VERSION:** Inspektor Gadget image'larını Harbor'a mirror etmek için gerekli.
-> Pipeline Variables'a `GADGET_VERSION=v0.50.1` ekleyin (ring buffer fix + socket cleanup).
+> Pipeline Variables'a `GADGET_VERSION=v0.50.1` ekleyin (CVE-2024-24790 fix).
 
 ---
 
@@ -290,6 +292,8 @@ GADGET_VERSION=$(GADGET_VERSION)
 | BuildMicroservices | `GRAPH_QUERY_CHANGED` | `$(DetectChanges.DetectChanges.GRAPH_QUERY_CHANGED)` |
 | BuildMicroservices | `TIMESERIES_WRITER_CHANGED` | `$(DetectChanges.DetectChanges.TIMESERIES_WRITER_CHANGED)` |
 | BuildMicroservices | `INGESTION_SERVICE_CHANGED` | `$(DetectChanges.DetectChanges.INGESTION_SERVICE_CHANGED)` |
+| BuildMicroservices | `L7_INGESTION_SERVICE_CHANGED` | `$(DetectChanges.DetectChanges.L7_INGESTION_SERVICE_CHANGED)` |
+| BuildMicroservices | `L7_COLLECTOR_CHANGED` | `$(DetectChanges.DetectChanges.L7_COLLECTOR_CHANGED)` |
 
 > **Format:** `$(JobName.TaskReferenceName.VARIABLE_NAME)`
 > - JobName: `DetectChanges` (job display name, boşluksuz)

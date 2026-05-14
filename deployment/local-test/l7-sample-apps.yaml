@@ -1,0 +1,254 @@
+# Sample workloads for L7 / Beyla local testing (namespace l7-test-apps).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: l7-test-apps
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-nginx
+  namespace: l7-test-apps
+data:
+  nginx.conf: |
+    worker_processes auto;
+    events {
+      worker_connections 1024;
+    }
+    http {
+      upstream users_upstream {
+        server users-svc:8080;
+      }
+      upstream orders_upstream {
+        server orders-svc:8080;
+      }
+      upstream products_upstream {
+        server products-svc:8080;
+      }
+      server {
+        listen 80;
+        location = /health {
+          default_type text/plain;
+          return 200 'ok';
+        }
+        location /api/users/ {
+          proxy_pass http://users_upstream/;
+        }
+        location /api/orders/ {
+          proxy_pass http://orders_upstream/;
+        }
+        location /api/products/ {
+          proxy_pass http://products_upstream/;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-app
+  namespace: l7-test-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend-app
+  template:
+    metadata:
+      labels:
+        app: frontend-app
+    spec:
+      containers:
+        - name: frontend
+          image: curlimages/curl:8.5.0
+          args:
+            - /bin/sh
+            - -c
+            - |
+              while true; do
+                curl -sS "http://api-gateway/health" || true
+                curl -sS "http://api-gateway/api/users/" || true
+                curl -sS "http://api-gateway/api/orders/" || true
+                curl -sS "http://api-gateway/api/products/" || true
+                sleep 3
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: l7-test-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25-alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: api-gateway-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: l7-test-apps
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: users-svc
+  namespace: l7-test-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: users-svc
+  template:
+    metadata:
+      labels:
+        app: users-svc
+    spec:
+      containers:
+        - name: server
+          image: python:3.11-alpine
+          ports:
+            - containerPort: 8080
+          command:
+            - python
+            - -c
+            - |
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              class H(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'users')
+                  def log_message(self, *args):
+                      pass
+              HTTPServer(('0.0.0.0', 8080), H).serve_forever()
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: users-svc
+  namespace: l7-test-apps
+spec:
+  selector:
+    app: users-svc
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-svc
+  namespace: l7-test-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orders-svc
+  template:
+    metadata:
+      labels:
+        app: orders-svc
+    spec:
+      containers:
+        - name: server
+          image: python:3.11-alpine
+          ports:
+            - containerPort: 8080
+          command:
+            - python
+            - -c
+            - |
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              class H(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'orders')
+                  def log_message(self, *args):
+                      pass
+              HTTPServer(('0.0.0.0', 8080), H).serve_forever()
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-svc
+  namespace: l7-test-apps
+spec:
+  selector:
+    app: orders-svc
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: products-svc
+  namespace: l7-test-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: products-svc
+  template:
+    metadata:
+      labels:
+        app: products-svc
+    spec:
+      containers:
+        - name: server
+          image: python:3.11-alpine
+          ports:
+            - containerPort: 8080
+          command:
+            - python
+            - -c
+            - |
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              class H(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'products')
+                  def log_message(self, *args):
+                      pass
+              HTTPServer(('0.0.0.0', 8080), H).serve_forever()
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: products-svc
+  namespace: l7-test-apps
+spec:
+  selector:
+    app: products-svc
+  ports:
+    - port: 8080
+      targetPort: 8080

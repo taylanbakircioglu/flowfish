@@ -13,6 +13,7 @@ import {
   FileTextOutlined,
   ApiOutlined,
   CodeOutlined,
+  LineChartOutlined,
 } from '@ant-design/icons';
 import FlowfishLogo from '../FlowfishLogo';
 import type { MenuProps } from 'antd';
@@ -28,28 +29,34 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
   const navigate = useNavigate();
   const location = useLocation();
 
+  const link = (path: string, text: string) => (
+    <a
+      href={path}
+      onClick={(e) => {
+        if (!e.ctrlKey && !e.metaKey && !e.shiftKey && e.button === 0) {
+          e.preventDefault();
+          navigate(path);
+        }
+      }}
+      style={{ color: 'inherit', textDecoration: 'none' }}
+    >
+      {text}
+    </a>
+  );
+
   const menuItems: MenuProps['items'] = [
     {
       key: '/dashboard',
       icon: <DashboardOutlined />,
-      label: 'Dashboard',
-      onClick: () => navigate('/dashboard'),
+      label: link('/dashboard', 'Dashboard'),
     },
     {
       key: 'analysis',
       icon: <ExperimentOutlined />,
       label: 'Analysis',
       children: [
-        {
-          key: '/analysis/wizard',
-          label: 'New Analysis',
-          onClick: () => navigate('/analysis/wizard'),
-        },
-        {
-          key: '/analyses',
-          label: 'My Analyses',
-          onClick: () => navigate('/analyses'),
-        },
+        { key: '/analysis/wizard', label: link('/analysis/wizard', 'New Analysis') },
+        { key: '/analyses', label: link('/analyses', 'My Analyses') },
       ],
     },
     {
@@ -57,16 +64,24 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
       icon: <GlobalOutlined />,
       label: 'Discovery',
       children: [
-        {
-          key: '/discovery/map',
-          label: 'Dependency Map',
-          onClick: () => navigate('/discovery/map'),
-        },
-        {
-          key: '/discovery/network-explorer',
-          label: 'Network Explorer',
-          onClick: () => navigate('/discovery/network-explorer'),
-        },
+        { key: '/discovery/map', label: link('/discovery/map', 'Network Map') },
+        { key: '/discovery/service-map', label: link('/discovery/service-map', 'Service Map') },
+        { key: '/discovery/trace-explorer', label: link('/discovery/trace-explorer', 'Trace Explorer') },
+        { key: '/discovery/network-explorer', label: link('/discovery/network-explorer', 'Network Explorer') },
+      ],
+    },
+    {
+      // APM section (Phase 2). Lives next to Discovery because operators
+      // typically pivot between Service Map (topology) and APM Services
+      // (golden signals). Trace Explorer stays under Discovery for
+      // bookmark continuity but is also reachable via APM Service Detail.
+      // LineChartOutlined chosen to avoid icon collision with Impact section
+      // (which already uses ThunderboltOutlined).
+      key: 'apm',
+      icon: <LineChartOutlined />,
+      label: 'APM',
+      children: [
+        { key: '/apm/services', label: link('/apm/services', 'Services') },
       ],
     },
     {
@@ -74,21 +89,9 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
       icon: <ThunderboltOutlined />,
       label: 'Impact',
       children: [
-        {
-          key: '/impact/simulation',
-          label: 'Impact Simulation',
-          onClick: () => navigate('/impact/simulation'),
-        },
-        {
-          key: '/impact/blast-radius',
-          label: 'Blast Radius',
-          onClick: () => navigate('/impact/blast-radius'),
-        },
-        {
-          key: '/impact/change-detection',
-          label: 'Change Detection',
-          onClick: () => navigate('/impact/change-detection'),
-        },
+        { key: '/impact/simulation', label: link('/impact/simulation', 'Impact Simulation') },
+        { key: '/impact/blast-radius', label: link('/impact/blast-radius', 'Blast Radius') },
+        { key: '/impact/change-detection', label: link('/impact/change-detection', 'Change Detection') },
       ],
     },
     {
@@ -96,11 +99,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
       icon: <ApiOutlined />,
       label: 'Integration',
       children: [
-        {
-          key: '/integration/hub',
-          label: 'Integration Hub',
-          onClick: () => navigate('/integration/hub'),
-        },
+        { key: '/integration/hub', label: link('/integration/hub', 'Integration Hub') },
       ],
     },
     {
@@ -108,16 +107,8 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
       icon: <ClockCircleOutlined />,
       label: 'Observability',
       children: [
-        {
-          key: '/observability/activity',
-          label: 'Activity Monitor',
-          onClick: () => navigate('/observability/activity'),
-        },
-        {
-          key: '/observability/events',
-          label: 'Events Timeline',
-          onClick: () => navigate('/observability/events'),
-        },
+        { key: '/observability/activity', label: link('/observability/activity', 'Activity Monitor') },
+        { key: '/observability/events', label: link('/observability/events', 'Events Timeline') },
       ],
     },
     {
@@ -125,34 +116,21 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
       icon: <SecurityScanOutlined />,
       label: 'Security',
       children: [
-        {
-          key: '/security/center',
-          label: 'Security Center',
-          onClick: () => navigate('/security/center'),
-        },
+        { key: '/security/center', label: link('/security/center', 'Security Center') },
       ],
     },
     {
       key: '/reports',
       icon: <FileTextOutlined />,
-      label: 'Reports',
-      onClick: () => navigate('/reports'),
+      label: link('/reports', 'Reports'),
     },
     {
       key: 'dev',
       icon: <CodeOutlined />,
       label: 'Developer',
       children: [
-        {
-          key: '/dev/console',
-          label: 'Query Console',
-          onClick: () => navigate('/dev/console'),
-        },
-        {
-          key: '/dev/api-docs',
-          label: 'APIs',
-          onClick: () => navigate('/dev/api-docs'),
-        },
+        { key: '/dev/console', label: link('/dev/console', 'Query Console') },
+        { key: '/dev/api-docs', label: link('/dev/api-docs', 'APIs') },
       ],
     },
     {
@@ -160,23 +138,14 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
       icon: <CloudServerOutlined />,
       label: 'Management',
       children: [
-        {
-          key: '/management/clusters',
-          label: 'Clusters',
-          onClick: () => navigate('/management/clusters'),
-        },
-        {
-          key: '/management/users',
-          label: 'Users & Roles',
-          onClick: () => navigate('/management/users'),
-        },
+        { key: '/management/clusters', label: link('/management/clusters', 'Clusters') },
+        { key: '/management/users', label: link('/management/users', 'Users & Roles') },
       ],
     },
     {
       key: '/settings',
       icon: <SettingOutlined />,
-      label: 'Settings',
-      onClick: () => navigate('/settings'),
+      label: link('/settings', 'Settings'),
     },
   ];
 
@@ -189,6 +158,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
     // Add parent keys for nested routes
     if (path.startsWith('/analysis') || path.startsWith('/analyses')) keys.push('analysis');
     if (path.startsWith('/discovery')) keys.push('discovery');
+    if (path.startsWith('/apm')) keys.push('apm');
     if (path.startsWith('/impact')) keys.push('impact');
     if (path.startsWith('/integration')) keys.push('integration');
     if (path.startsWith('/observability')) keys.push('observability');
@@ -251,7 +221,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed }) => {
         theme="dark"
         mode="inline"
         selectedKeys={getSelectedKeys()}
-        defaultOpenKeys={['analysis', 'discovery', 'impact', 'integration', 'observability', 'security', 'dev', 'management']}
+        defaultOpenKeys={['analysis', 'discovery', 'apm', 'impact', 'integration', 'observability', 'security', 'dev', 'management']}
         items={menuItems}
         style={{
           borderRight: 0,

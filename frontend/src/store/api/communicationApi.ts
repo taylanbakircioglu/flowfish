@@ -336,6 +336,10 @@ export interface DependencySummaryParams {
   label_value?: string;
   ip?: string;
   depth?: number;
+  // Plan v3 Akış D m.8 — discovery mode. Set true when no
+  // identification method is given; backend enforces a cluster_id /
+  // namespace tenant guard and caps depth at 2.
+  match_all?: boolean;
 }
 
 export interface DependencySummaryService {
@@ -348,6 +352,8 @@ export interface DependencySummaryService {
   service_type?: string;
   port?: number;
   hop_count?: number;
+  protocol?: string;
+  avg_latency_ms?: number;
 }
 
 export interface DependencySummaryGroup {

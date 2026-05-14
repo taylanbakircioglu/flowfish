@@ -9,7 +9,7 @@ set -e
 # ==============================================================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🔧 FRONTEND BUILD"
+echo "[BUILD] FRONTEND BUILD"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd ${BUILD_SOURCESDIRECTORY}
@@ -19,20 +19,20 @@ environment=${DEPLOYMENT_ENV:-pilot}
 HARBOR_PROJECT="flowfish"
 
 echo ""
-echo "📦 Commit Hash: $cmtHashShort"
-echo "🌍 Environment: $environment"
-echo "📋 FRONTEND_CHANGED: ${FRONTEND_CHANGED:-0}"
+echo "[INFO] Commit Hash: $cmtHashShort"
+echo "Environment: $environment"
+echo "[INFO] FRONTEND_CHANGED: ${FRONTEND_CHANGED:-0}"
 
 # Frontend değişikliği var mı kontrol et (varsayılan 0)
 if [ "${FRONTEND_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🔨 Building Frontend..."
+    echo "[BUILD] Building Frontend..."
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # Harbor credentials check
     if [ -z "${HARBOR_REGISTRY}" ] || [ -z "${HARBOR_USER}" ] || [ -z "${HARBOR_PASSWORD}" ]; then
-        echo "❌ ERROR: Harbor credentials not set!"
+        echo "[ERROR] ERROR: Harbor credentials not set!"
         exit 1
     fi
     
@@ -40,7 +40,7 @@ if [ "${FRONTEND_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
     
     # Generate unique cache bust value
     CACHE_BUST_VAL=$(date +%s)
-    echo "🔄 Cache bust value: $CACHE_BUST_VAL"
+    echo "[RESTART] Cache bust value: $CACHE_BUST_VAL"
     
     podman build --no-cache --rm=false \
         -t ${HARBOR_REGISTRY}/$HARBOR_PROJECT/flowfish-frontend:$cmtHashShort \
@@ -53,14 +53,14 @@ if [ "${FRONTEND_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
     podman push ${HARBOR_REGISTRY}/$HARBOR_PROJECT/flowfish-frontend:$cmtHashShort
     podman push ${HARBOR_REGISTRY}/$HARBOR_PROJECT/flowfish-frontend:latest
     
-    echo "✅ Frontend build complete!"
+    echo "[OK] Frontend build complete!"
     echo "##vso[task.setvariable variable=FRONTEND_BUILT;isOutput=true]true"
     echo "##vso[task.setvariable variable=FRONTEND_TAG;isOutput=true]$cmtHashShort"
 else
     echo ""
-    echo "⏭️  Skipping Frontend build - No changes detected"
+    echo "[SKIP] Skipping Frontend build - No changes detected"
     echo "##vso[task.setvariable variable=FRONTEND_BUILT;isOutput=true]false"
 fi
 
 echo ""
-echo "🎉 Frontend build task completed!"
+echo "[DONE] Frontend build task completed!"

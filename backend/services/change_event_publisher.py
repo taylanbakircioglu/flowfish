@@ -50,13 +50,20 @@ class ChangeEventPublisher:
                 settings.RABBITMQ_PASSWORD
             )
             
+            # heartbeat=60 + blocked_connection_timeout=120 mirrors the
+            # tuning applied to ingestion-service / l7-ingestion-service /
+            # timeseries-writer so backend-driven disconnects are detected
+            # within a minute instead of after ten. Long idle windows
+            # between change events are exactly the scenario where the
+            # broker drops the TCP socket and the next publish would
+            # otherwise log a full pika ERROR traceback.
             parameters = pika.ConnectionParameters(
                 host=settings.RABBITMQ_HOST,
                 port=settings.RABBITMQ_PORT,
                 virtual_host=settings.RABBITMQ_VHOST,
                 credentials=credentials,
-                heartbeat=600,
-                blocked_connection_timeout=300,
+                heartbeat=60,
+                blocked_connection_timeout=120,
             )
             
             self.connection = pika.BlockingConnection(parameters)

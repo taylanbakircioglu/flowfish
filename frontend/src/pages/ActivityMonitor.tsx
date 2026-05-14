@@ -69,6 +69,7 @@ import {
 } from '../store/api/eventsApi';
 import { Analysis } from '../types';
 import { ClusterBadge } from '../components/Common';
+import { useL4Analyses, useL4AnalysisGuard } from '../utils/analysisFilters';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -207,9 +208,12 @@ const ActivityMonitor: React.FC = () => {
   // Fetch ALL analyses (no cluster filter) - user selects analysis first
   const { data: analyses = [], isLoading: isAnalysesLoading } = useGetAnalysesQuery({});
   
-  const availableAnalyses = Array.isArray(analyses) 
-    ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
-    : [];
+  const availableAnalyses = useL4Analyses(
+    Array.isArray(analyses)
+      ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
+      : [],
+  );
+  useL4AnalysisGuard(selectedAnalysisId, setSelectedAnalysisId, availableAnalyses);
 
   // Handle analysis change - set analysis ID and clear cluster (useEffect will set correct cluster)
   const handleAnalysisChange = useCallback((analysisId: number | undefined) => {

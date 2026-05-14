@@ -62,6 +62,12 @@ def main():
     else:
         logger.info("⏸️  Change events consumer DISABLED (CHANGE_EVENTS_CONSUMER_ENABLED=false)")
     
+    if settings.l7_enabled:
+        consumers.append(RabbitMQConsumer(settings.queue_l7_http_flows, "l7_http_flow"))
+        consumers.append(RabbitMQConsumer(settings.queue_l7_grpc_flows, "l7_grpc_flow"))
+        consumers.append(RabbitMQConsumer(settings.queue_l7_dns_flows, "l7_dns_flow"))
+        logger.info("L7 consumers ENABLED (L7_ENABLED=true)")
+    
     # Start all consumers
     for consumer in consumers:
         consumer.start()
@@ -70,6 +76,8 @@ def main():
     event_types = "network_flow, dns_query, tcp_connection, process_event, file_event, security_event, oom_event, bind_event, sni_event, mount_event, workload_metadata"
     if settings.change_events_consumer_enabled:
         event_types += ", change_event"
+    if settings.l7_enabled:
+        event_types += ", l7_http_flow, l7_grpc_flow, l7_dns_flow"
     logger.info(f"   Event types: {event_types}")
     
     # Handle shutdown signals

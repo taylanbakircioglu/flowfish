@@ -276,6 +276,12 @@ class ClickHouseEventRepository(EventRepository):
         "sni_event": "sni_events",
         "mount_event": "mount_events",
     }
+
+    L7_EVENT_TABLES = {
+        "l7_http_flow": "l7_http_flows",
+        "l7_grpc_flow": "l7_grpc_flows",
+        "l7_dns_flow": "l7_dns_flows",
+    }
     
     def __init__(
         self,
@@ -474,24 +480,55 @@ class ClickHouseEventRepository(EventRepository):
         total = 0
         where_clause = self._build_where_clause(cluster_id, analysis_id)
         
-        for event_type, table_name in self.EVENT_TABLES.items():
-            # For security events, only count denied capability checks
-            # This filters out millions of noise events from routine operations
+        all_tables = {**self.EVENT_TABLES, **self.L7_EVENT_TABLES}
+        for event_type, table_name in all_tables.items():
             effective_where = where_clause
             if table_name == "capability_checks":
                 effective_where += " AND verdict = 'denied'"
             
             sql = f"SELECT count() as cnt FROM {table_name} WHERE {effective_where}"
-            result = await self._execute_query(sql)
-            
-            if result and len(result) > 0:
-                cnt = int(result[0].get("cnt", 0))
-                if cnt > 0:
-                    counts[event_type] = cnt
-                    total += cnt
+            try:
+                result = await self._execute_query(sql)
+                if result and len(result) > 0:
+                    cnt = int(result[0].get("cnt", 0))
+                    if cnt > 0:
+                        counts[event_type] = cnt
+                        total += cnt
+            except Exception:
+                pass
         
         return counts
-    
+
+    async def get_l7_event_counts(
+        self,
+        analysis_id: Optional[int] = None,
+        cluster_id: Optional[int] = None
+    ) -> Dict[str, int]:
+        """Get L7 event counts per protocol, resilient to missing tables."""
+        l7_tables = {
+            "l7_http": "l7_http_flows",
+            "l7_grpc": "l7_grpc_flows",
+            "l7_dns": "l7_dns_flows",
+        }
+        counts: Dict[str, int] = {}
+        for key, table in l7_tables.items():
+            where_parts = ["1=1"]
+            if analysis_id is not None:
+                where_parts.append(f"analysis_id = '{analysis_id}'")
+            if cluster_id is not None:
+                where_parts.append(f"cluster_id = '{cluster_id}'")
+            where_clause = " AND ".join(where_parts)
+            sql = f"SELECT count() as cnt FROM {table} WHERE {where_clause}"
+            try:
+                result = await self._execute_query(sql)
+                if result and len(result) > 0:
+                    cnt = int(result[0].get("cnt", 0))
+                    if cnt > 0:
+                        counts[key] = cnt
+            except Exception:
+                pass
+        return counts
+
     async def get_top_namespaces(
         self,
         cluster_id: Optional[int] = None,
@@ -988,7 +1025,6 @@ class ClickHouseEventRepository(EventRepository):
         
         Uses UNION ALL to query multiple tables and merge results.
         """
-        # Filter tables based on event_types
         tables_to_query = self.EVENT_TABLES.copy()
         if event_types:
             tables_to_query = {k: v for k, v in self.EVENT_TABLES.items() if k in event_types}
@@ -1018,12 +1054,14 @@ class ClickHouseEventRepository(EventRepository):
             )
             count_queries.append(f"SELECT count() as cnt FROM {table_name} WHERE {where_clause}")
         
-        # Sum all counts
         total = 0
         for cq in count_queries:
-            result = await self._execute_query(cq)
-            if result:
-                total += int(result[0].get("cnt", 0))
+            try:
+                result = await self._execute_query(cq)
+                if result:
+                    total += int(result[0].get("cnt", 0))
+            except Exception:
+                pass
         
         # Build UNION ALL for data
         data_queries = []
@@ -1266,7 +1304,11 @@ class ClickHouseEventRepository(EventRepository):
             'mount_events',
             'workload_metadata',
             'communication_edges',  # Added: also needs to be deleted
-            'change_events'  # Change events (ClickHouse-only storage)
+            'change_events',  # Change events (ClickHouse-only storage)
+            'l7_http_flows',
+            'l7_grpc_flows',
+            'l7_dns_flows',
+            'l7_http_flows_5min_mv',
         ]
         
         # Step 0: Diagnostic - check for orphaned records (empty analysis_id)

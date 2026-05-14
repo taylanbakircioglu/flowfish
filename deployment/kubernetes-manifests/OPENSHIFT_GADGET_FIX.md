@@ -25,12 +25,15 @@ oc apply -f 10-inspektor-gadget-rbac-cluster.yaml
 
 ### 3. Create ConfigMap
 ```bash
-oc apply -f 09-inspektor-gadget-config.yaml
+# Namespace'i değiştir
+export OPENSHIFT_NAMESPACE="flowfish"
+sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 09-inspektor-gadget-config.yaml | oc apply -f -
 ```
 
 ### 4. Update DaemonSet
 ```bash
-oc apply -f 10-inspektor-gadget.yaml
+# Namespace'i değiştir
+sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 10-inspektor-gadget.yaml | oc apply -f -
 ```
 
 ### 5. Verify
@@ -66,6 +69,8 @@ oc logs -n $OPENSHIFT_NAMESPACE -l app=inspektor-gadget -c detect-runtime
 # Expected: "Detected standard containerd socket" or "Detected K3s/RKE2 containerd socket"
 ```
 
+The DaemonSet requires `hostPID: true` and `hostNetwork: true` for eBPF tracing. On OpenShift, the SCC (`inspektor-gadget-scc`) grants these permissions.
+
 ## Quick Deploy Script (Automated)
 
 **Recommended Method:** Use the provided deployment script:
@@ -90,22 +95,22 @@ The script (`deploy-inspektor-gadget.sh`) will automatically:
 
 ### Manual Deployment (Alternative)
 
-If you prefer manual deployment (manifests use flowfish namespace by default):
+If you prefer manual deployment:
 
 ```bash
-export OPENSHIFT_NAMESPACE="${OPENSHIFT_NAMESPACE:-flowfish}"
+export OPENSHIFT_NAMESPACE="flowfish"
 
 echo "1. Applying Trace CRD..."
 oc apply -f 09-inspektor-gadget-crds.yaml
 
 echo "2. Applying RBAC (requires cluster-admin)..."
-oc apply -f 10-inspektor-gadget-rbac-cluster.yaml
+sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 10-inspektor-gadget-rbac-cluster.yaml | oc apply -f -
 
 echo "3. Creating ConfigMap..."
-oc apply -f 09-inspektor-gadget-config.yaml
+sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 09-inspektor-gadget-config.yaml | oc apply -f -
 
 echo "4. Updating DaemonSet..."
-oc apply -f 10-inspektor-gadget.yaml
+sed "s/{{OPENSHIFT_NAMESPACE}}/$OPENSHIFT_NAMESPACE/g" 10-inspektor-gadget.yaml | oc apply -f -
 
 echo "5. Restarting pods..."
 oc delete pods -l app=inspektor-gadget -n $OPENSHIFT_NAMESPACE

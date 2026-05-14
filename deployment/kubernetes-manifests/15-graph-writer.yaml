@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: graph-writer
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: graph-writer
     component: writer
@@ -23,7 +23,7 @@ spec:
       serviceAccountName: flowfish
       containers:
         - name: graph-writer
-          image: taylanbakircioglu/flowfish:graph-writer-latest
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-graph-writer:{{IMAGE_TAG}}
           imagePullPolicy: Always
           env:
             - name: SERVICE_NAME
@@ -59,6 +59,17 @@ spec:
                   key: NEO4J_PASSWORD
             - name: NEO4J_DATABASE
               value: "neo4j"
+            - name: L7_ENABLED
+              value: "true"
+            - name: L7_TRACING_ENABLED
+              # When "true" graph-writer aggregates trace_count and persists
+              # trace metadata on L7Workload / L7_COMMUNICATES_WITH and
+              # creates SAME_WORKLOAD bridges between equivalent endpoints
+              # observed in different clusters (the cross-cluster correlation
+              # feature). With "false" L7 graph still works but bridges are
+              # not generated. Safe to enable any time — Cypher migration
+              # only adds composite indexes that are idempotent.
+              value: "true"
           resources:
             requests:
               cpu: 100m

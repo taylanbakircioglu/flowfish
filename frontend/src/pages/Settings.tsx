@@ -23,6 +23,7 @@ import {
   Col,
   Tooltip,
   Input,
+  Slider,
   Tabs,
   Tag,
   Badge,
@@ -235,6 +236,30 @@ interface NetworkConfig {
   updated_by?: number;
 }
 
+interface DnsSearchDomain {
+  domain: string;
+  label: string;
+  enabled: boolean;
+  is_default: boolean;
+}
+
+interface DnsConfig {
+  search_domains: DnsSearchDomain[];
+  updated_at?: string;
+  updated_by?: number;
+}
+
+interface BeylaSettings {
+  default_protocols: string[];
+  l7_sampling_rate: number;
+  l7_enabled: boolean;
+  beyla_version: string;
+  max_events_per_second: number;
+  default_beyla_mem_limit: string;
+  default_collector_mem_limit: string;
+  default_excluded_namespaces: string[];
+}
+
 // ================== MAIN COMPONENT ==================
 
 const Settings: React.FC = () => {
@@ -285,6 +310,15 @@ const Settings: React.FC = () => {
   const [apiTokensLoading, setApiTokensLoading] = useState(false);
   const [apiTokenModalVisible, setApiTokenModalVisible] = useState(false);
   const [newlyCreatedToken, setNewlyCreatedToken] = useState<string | null>(null);
+  // Round 2 audit (R-NEW-1) — when an operator clicks the "Generate
+  // API Key (scope: read|blast-radius)" button on Integration Hub we
+  // pre-select the matching scope here so they don't accidentally
+  // ship a key with the wrong logical scope. Falls back to the
+  // historical default (`blast-radius`) when no hint is supplied.
+  const suggestedScope = searchParams.get('suggestScope');
+  const initialApiKeyScopes: string[] = suggestedScope === 'read' || suggestedScope === 'blast-radius' || suggestedScope === 'write'
+    ? [suggestedScope]
+    : ['blast-radius'];
   
   // Pipeline Clusters State
   const [pipelineClusters, setPipelineClusters] = useState<PipelineCluster[]>([]);
@@ -328,6 +362,14 @@ const Settings: React.FC = () => {
   const [networkLoading, setNetworkLoading] = useState(false);
   const [newCidr, setNewCidr] = useState('');
   const [newCidrLabel, setNewCidrLabel] = useState('');
+
+  // DNS Config State
+  const [dnsConfig, setDnsConfig] = useState<DnsConfig>({ search_domains: [] });
+  const [dnsLoading, setDnsLoading] = useState(false);
+  const [newDnsDomain, setNewDnsDomain] = useState('');
+  const [newDnsLabel, setNewDnsLabel] = useState('');
+
+  const [beylaForm] = Form.useForm();
 
   // System Info
   const [systemInfo, setSystemInfo] = useState<SystemInfo>({
@@ -422,7 +464,9 @@ const Settings: React.FC = () => {
         fetchIntegrationSettings(),
         fetchAuditLogs(),
         fetchBackups(),
-        fetchNetworkConfig()
+        fetchNetworkConfig(),
+        fetchDnsConfig(),
+        fetchBeylaSettings()
       ]);
     } finally {
       setLoading(false);
@@ -969,6 +1013,60 @@ const Settings: React.FC = () => {
     }
   };
 
+  const fetchBeylaSettings = async () => {
+    try {
+      const response = await fetch('/api/v1/settings/beyla', {
+        headers: { 'Authorization': `Bearer ${getToken()}` }
+      });
+      if (response.ok) {
+        const data: BeylaSettings = await response.json();
+        beylaForm.setFieldsValue({
+          default_protocols: data.default_protocols,
+          l7_enabled: data.l7_enabled,
+          beyla_version: data.beyla_version,
+          max_events_per_second: data.max_events_per_second,
+          default_beyla_mem_limit: data.default_beyla_mem_limit,
+          default_collector_mem_limit: data.default_collector_mem_limit,
+          default_excluded_namespaces: data.default_excluded_namespaces,
+          l7_sampling_pct: Math.round((data.l7_sampling_rate ?? 1) * 100),
+        });
+      }
+    } catch (error) {
+      console.error('Failed to fetch Beyla settings:', error);
+    }
+  };
+
+  const saveBeylaSettings = async () => {
+    if (!isAdmin) return;
+    const values = await beylaForm.validateFields();
+    const { l7_sampling_pct, ...rest } = values;
+    const payload: BeylaSettings = {
+      ...(rest as Omit<BeylaSettings, 'l7_sampling_rate'>),
+      l7_sampling_rate: (l7_sampling_pct ?? 100) / 100,
+    };
+    setSaving('beyla');
+    try {
+      const response = await fetch('/api/v1/settings/beyla', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`
+        },
+        body: JSON.stringify(payload)
+      });
+      if (response.ok) {
+        message.success('L7 / Beyla settings saved');
+        fetchBeylaSettings();
+      } else {
+        handleSaveError(response);
+      }
+    } catch {
+      message.error('Failed to save Beyla settings');
+    } finally {
+      setSaving(null);
+    }
+  };
+
   const saveNetworkConfig = async () => {
     setSaving('network');
     try {
@@ -995,6 +1093,48 @@ const Settings: React.FC = () => {
     }
   };
   
+  const fetchDnsConfig = async () => {
+    setDnsLoading(true);
+    try {
+      const response = await fetch('/api/v1/settings/dns-config', {
+        headers: { 'Authorization': `Bearer ${getToken()}` }
+      });
+      if (response.ok) {
+        const data: DnsConfig = await response.json();
+        setDnsConfig(data);
+      }
+    } catch (error) {
+      console.error('Failed to load DNS config:', error);
+    } finally {
+      setDnsLoading(false);
+    }
+  };
+
+  const saveDnsConfig = async () => {
+    setSaving('dns');
+    try {
+      const response = await fetch('/api/v1/settings/dns-config', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`
+        },
+        body: JSON.stringify({ search_domains: dnsConfig.search_domains })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setDnsConfig(data);
+        message.success('DNS search domain configuration saved');
+      } else {
+        handleSaveError(response);
+      }
+    } catch (error) {
+      message.error('Failed to save DNS configuration');
+    } finally {
+      setSaving(null);
+    }
+  };
+
   const fetchSMTPSettings = async () => {
     try {
       const response = await fetch('/api/v1/settings/smtp', {
@@ -3201,6 +3341,15 @@ const Settings: React.FC = () => {
                     </Button>
                   }
                 >
+                  {suggestedScope && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 16 }}
+                      message={<span>Integration Hub recommended scope: <Tag color={suggestedScope === 'blast-radius' ? 'orange' : suggestedScope === 'read' ? 'blue' : 'green'} style={{ marginLeft: 4 }}>{suggestedScope}</Tag></span>}
+                      description={`Click "Generate New API Key" to create a key with the ${suggestedScope} scope pre-selected.`}
+                    />
+                  )}
                   <Alert
                     message="API Keys for CI/CD Pipelines"
                     description={
@@ -3584,6 +3733,83 @@ const Settings: React.FC = () => {
           </TabPane>
 
           <TabPane
+            tab={<span><ThunderboltOutlined /> L7 / Beyla</span>}
+            key="beyla-l7"
+          >
+            <Card bordered={false} title="L7 / Beyla configuration">
+              <Alert
+                message="Defaults for L7 capture (Beyla) apply when starting L7-capable analyses and collector deployments."
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+              />
+              <Form
+                form={beylaForm}
+                layout="vertical"
+                onFinish={saveBeylaSettings}
+                disabled={!isAdmin}
+                initialValues={{
+                  l7_enabled: false,
+                  default_protocols: ['http', 'grpc'],
+                  l7_sampling_pct: 100,
+                  max_events_per_second: 5000,
+                  default_beyla_mem_limit: '256Mi',
+                  default_collector_mem_limit: '256Mi',
+                  default_excluded_namespaces: ['kube-system', 'ibmblockstorage', 'external-secrets'],
+                  beyla_version: 'v3.9.5',
+                }}
+              >
+                <Form.Item name="l7_enabled" label="L7 feature enabled" valuePropName="checked">
+                  <Switch checkedChildren="On" unCheckedChildren="Off" />
+                </Form.Item>
+                <Form.Item name="beyla_version" label="Beyla version">
+                  <Input readOnly />
+                </Form.Item>
+                <Form.Item name="l7_sampling_pct" label="Default sampling rate">
+                  <Slider min={1} max={100} marks={{ 1: '1%', 50: '50%', 100: '100%' }} />
+                </Form.Item>
+                <Form.Item name="default_protocols" label="Default protocols">
+                  <Checkbox.Group
+                    options={[
+                      { label: 'HTTP', value: 'http' },
+                      { label: 'gRPC', value: 'grpc' },
+                      { label: 'TCP', value: 'tcp' },
+                      { label: 'TLS', value: 'tls' },
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item name="default_excluded_namespaces" label="Default excluded namespaces">
+                  <Select mode="tags" placeholder="kube-system" style={{ width: '100%' }} tokenSeparators={[',']} />
+                </Form.Item>
+                <Form.Item name="max_events_per_second" label="Max events per second">
+                  <InputNumber min={100} max={100000} style={{ width: '100%' }} />
+                </Form.Item>
+                <Row gutter={16}>
+                  <Col xs={24} md={12}>
+                    <Form.Item name="default_beyla_mem_limit" label="Default Beyla memory limit">
+                      <Input placeholder="256Mi" />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Form.Item name="default_collector_mem_limit" label="Default collector memory limit">
+                      <Input placeholder="256Mi" />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Button
+                  type="primary"
+                  htmlType="submit"
+                  icon={<SaveOutlined />}
+                  loading={saving === 'beyla'}
+                  disabled={!isAdmin}
+                >
+                  Save L7 / Beyla settings
+                </Button>
+              </Form>
+            </Card>
+          </TabPane>
+
+          <TabPane
             tab={<span><GlobalOutlined /> Network</span>}
             key="network"
           >
@@ -3755,6 +3981,142 @@ const Settings: React.FC = () => {
                   </Panel>
                 </Collapse>
               </Col>
+
+              {/* DNS Search Domains */}
+              <Col span={24}>
+                <Card bordered={false} title="DNS Search Domain Normalization">
+                  <Alert
+                    message="Configure DNS search domains to normalize Kubernetes search domain expansion artifacts on the Network Map. System domains are always active."
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                  />
+
+                  <Spin spinning={dnsLoading}>
+                    <Table
+                      dataSource={dnsConfig.search_domains}
+                      rowKey={(_, index) => String(index)}
+                      pagination={false}
+                      size="small"
+                      columns={[
+                        {
+                          title: 'Enabled',
+                          dataIndex: 'enabled',
+                          width: 80,
+                          render: (enabled: boolean, record: DnsSearchDomain, index: number) => (
+                            <Tooltip title={record.is_default ? 'Built-in Kubernetes normalization, always active' : undefined}>
+                              <Switch
+                                size="small"
+                                checked={enabled}
+                                disabled={!isAdmin || record.is_default}
+                                onChange={(checked) => {
+                                  const updated = [...dnsConfig.search_domains];
+                                  updated[index] = { ...updated[index], enabled: checked };
+                                  setDnsConfig({ ...dnsConfig, search_domains: updated });
+                                }}
+                              />
+                            </Tooltip>
+                          )
+                        },
+                        {
+                          title: 'Domain',
+                          dataIndex: 'domain',
+                          render: (domain: string) => (
+                            <Text code style={{ fontSize: 12 }}>{domain}</Text>
+                          )
+                        },
+                        {
+                          title: 'Label',
+                          dataIndex: 'label'
+                        },
+                        {
+                          title: 'Type',
+                          dataIndex: 'is_default',
+                          width: 100,
+                          render: (isDefault: boolean) => (
+                            <Tag color={isDefault ? 'purple' : 'green'}>
+                              {isDefault ? 'System' : 'Custom'}
+                            </Tag>
+                          )
+                        },
+                        {
+                          title: 'Action',
+                          width: 80,
+                          render: (_: any, record: DnsSearchDomain, index: number) => (
+                            !record.is_default && isAdmin ? (
+                              <Popconfirm
+                                title="Remove this search domain?"
+                                onConfirm={() => {
+                                  const updated = dnsConfig.search_domains.filter((_d, i) => i !== index);
+                                  setDnsConfig({ ...dnsConfig, search_domains: updated });
+                                }}
+                              >
+                                <Button type="link" danger size="small" icon={<DeleteOutlined />} />
+                              </Popconfirm>
+                            ) : null
+                          )
+                        }
+                      ]}
+                    />
+
+                    {isAdmin && (
+                      <>
+                        <Divider orientation="left" plain style={{ fontSize: 12 }}>Add Custom Search Domain</Divider>
+                        <Space>
+                          <Input
+                            placeholder="example.corp"
+                            value={newDnsDomain}
+                            onChange={(e) => setNewDnsDomain(e.target.value)}
+                            style={{ width: 220, fontFamily: 'monospace' }}
+                          />
+                          <Input
+                            placeholder="Label"
+                            value={newDnsLabel}
+                            onChange={(e) => setNewDnsLabel(e.target.value)}
+                            style={{ width: 180 }}
+                          />
+                          <Button
+                            icon={<PlusOutlined />}
+                            onClick={() => {
+                              const domain = newDnsDomain.trim().toLowerCase().replace(/^\.+/, '');
+                              if (!domain || !domain.includes('.')) {
+                                message.error('Domain must contain at least one dot (e.g. example.corp)');
+                                return;
+                              }
+                              if (dnsConfig.search_domains.some((d) => d.domain === domain)) {
+                                message.warning('This domain already exists');
+                                return;
+                              }
+                              setDnsConfig({
+                                ...dnsConfig,
+                                search_domains: [
+                                  ...dnsConfig.search_domains,
+                                  { domain, label: newDnsLabel || domain, enabled: true, is_default: false },
+                                ],
+                              });
+                              setNewDnsDomain('');
+                              setNewDnsLabel('');
+                            }}
+                          >
+                            Add
+                          </Button>
+                        </Space>
+
+                        <div style={{ marginTop: 24 }}>
+                          <Button
+                            type="primary"
+                            icon={<SaveOutlined />}
+                            onClick={saveDnsConfig}
+                            loading={saving === 'dns'}
+                          >
+                            Save DNS Configuration
+                          </Button>
+                        </div>
+                      </>
+                    )}
+                  </Spin>
+                </Card>
+              </Col>
             </Row>
           </TabPane>
         </Tabs>
@@ -3777,7 +4139,7 @@ const Settings: React.FC = () => {
           layout="vertical"
           onFinish={createApiToken}
           initialValues={{
-            scopes: ['blast-radius'],
+            scopes: initialApiKeyScopes,
             expires_in_days: null,
           }}
         >

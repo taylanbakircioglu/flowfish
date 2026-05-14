@@ -91,3 +91,8 @@ svglib==1.5.1  # SVG support for reportlab
 python-dateutil==2.8.2
 pytz==2023.3
 typing-extensions>=4.10.0  # Required by starlette>=0.49.1
+# user-agents — used by activity_service.log_activity to enrich the
+# JSONB `details` column with parsed browser/OS/device info so the
+# Activity Logs detail drawer can render structured fields instead of
+# raw User-Agent headers (Plan v3 Akış F m.10, B4.7).
+user-agents==2.2.0

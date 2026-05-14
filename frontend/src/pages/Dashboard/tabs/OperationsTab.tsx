@@ -133,11 +133,6 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
     mount_event: '#8fa855',
   };
 
-  if (!clusterId) {
-    return <Empty description="Select a cluster to view operations data" />;
-  }
-
-  // Donut chart data for event distribution
   const eventDonutData = useMemo(() => {
     if (!eventStats?.event_counts) return [];
     return Object.entries(eventStats.event_counts)
@@ -149,6 +144,10 @@ const OperationsTab: React.FC<OperationsTabProps> = ({ clusterId, analysisId }) 
         color: eventTypeColors[type] || '#8c8c8c',
       }));
   }, [eventStats]);
+
+  if (!clusterId) {
+    return <Empty description="Select a cluster to view operations data" />;
+  }
 
   return (
     <div>

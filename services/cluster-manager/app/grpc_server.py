@@ -15,6 +15,7 @@ Multi-Cluster Support:
 
 import grpc
 import json
+import logging
 from concurrent import futures
 import structlog
 import asyncio
@@ -23,6 +24,38 @@ import base64
 from typing import Optional, Dict, Any
 
 from app.config import settings
+
+
+# ---------------------------------------------------------------------------
+# Logging configuration
+#
+# The Dockerfile entrypoint runs `python -m app.grpc_server`, so the parent
+# `main.py` (which had `logging.basicConfig(...)`) is never imported. Without
+# any explicit setup, structlog falls back to its development defaults and
+# emits *every* log level — which is why operators were seeing a flood of
+# `[debug ] Cluster configured as in-cluster` lines on every cluster scan.
+#
+# We respect the LOG_LEVEL env var (defaults to INFO) and apply it to both
+# the stdlib root logger AND structlog's filtering bound logger so that
+# `logger.debug(...)` calls are dropped at the structlog layer before they
+# even reach the formatter.
+# ---------------------------------------------------------------------------
+_log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+structlog.configure(
+    wrapper_class=structlog.make_filtering_bound_logger(_log_level),
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer(),
+    ],
+    cache_logger_on_first_use=True,
+)
 from app.kubernetes_client import kubernetes_client, KubernetesClient, KubernetesClientFactory
 from app.database import db_manager
 
@@ -184,6 +217,11 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
             KubernetesClientFactory.invalidate(cluster_id)
             raise
     
+    def _invalidate_on_error(self, cluster_id: str):
+        """Invalidate cached K8s client for remote clusters on API errors."""
+        if cluster_id and cluster_id not in ("default", "0"):
+            KubernetesClientFactory.invalidate(cluster_id)
+
     async def GetClusterInfo(self, request, context):
         """Get basic cluster information"""
         cluster_id = request.cluster_id or "default"
@@ -203,6 +241,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=info.get("error") or ""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("GetClusterInfo failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ClusterInfoResponse(error=str(e))
     
@@ -233,6 +272,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListNamespaces failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListNamespacesResponse(error=str(e))
     
@@ -270,6 +310,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListDeployments failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListDeploymentsResponse(error=str(e))
     
@@ -316,6 +357,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                     labels=pod.get("labels") or {},
                     annotations=self._filter_annotations(pod.get("annotations")),
                     ip=pod.get("ip") or "",
+                    image=pod.get("image") or "",
                     created_at=pod.get("created_at") or ""
                 )
                 for pod in pods
@@ -327,6 +369,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListPods failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListPodsResponse(error=str(e))
     
@@ -371,6 +414,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListServices failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListServicesResponse(error=str(e))
     
@@ -407,6 +451,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListStatefulSets failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListStatefulSetsResponse(error=str(e))
 
@@ -437,6 +482,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListConfigMaps failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListConfigMapsResponse(error=str(e))
 
@@ -468,6 +514,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListSecrets failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListSecretsResponse(error=str(e))
 
@@ -488,6 +535,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
             ]
             return cluster_manager_pb2.ListNetworkPoliciesResponse(network_policies=infos, count=len(infos), error="")
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListNetworkPolicies failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListNetworkPoliciesResponse(error=str(e))
 
@@ -509,6 +557,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
             ]
             return cluster_manager_pb2.ListIngressesResponse(ingresses=infos, count=len(infos), error="")
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListIngresses failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListIngressesResponse(error=str(e))
 
@@ -530,6 +579,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
             ]
             return cluster_manager_pb2.ListRoutesResponse(routes=infos, count=len(infos), error="")
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListRoutes failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListRoutesResponse(error=str(e))
 
@@ -566,6 +616,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("ListNodes failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.ListNodesResponse(error=str(e))
     
@@ -587,6 +638,7 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 error=""
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("GetLabels failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.GetLabelsResponse(error=str(e))
     
@@ -620,8 +672,8 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
         if not gadget_namespace:
             logger.error("gadget_namespace is required but not provided")
             return cluster_manager_pb2.GadgetHealthResponse(
-                health_status="unknown",
-                error="gadget_namespace is required",
+                health_status="not_installed",
+                error="gadget_namespace not configured",
                 pods_ready=0,
                 pods_total=0
             )
@@ -643,12 +695,47 @@ class ClusterManagerServicer(cluster_manager_pb2_grpc.ClusterManagerServiceServi
                 issues=health.get("details", {}).get("issues", [])
             )
         except Exception as e:
+            self._invalidate_on_error(cluster_id)
             logger.error("CheckGadgetHealth failed", cluster_id=cluster_id, error=str(e))
             return cluster_manager_pb2.GadgetHealthResponse(
                 health_status="unknown",
                 error=str(e),
                 pods_ready=0,
                 pods_total=0
+            )
+
+    async def CheckBeylaHealth(self, request, context):
+        """Check Grafana Beyla DaemonSet + L7 Collector health"""
+        cluster_id = request.cluster_id or "default"
+        beyla_namespace = request.beyla_namespace
+
+        if not beyla_namespace:
+            logger.error("beyla_namespace is required but not provided")
+            return cluster_manager_pb2.BeylaHealthResponse(
+                health_status="not_installed",
+                error="beyla_namespace is required",
+            )
+        logger.info("CheckBeylaHealth called", cluster_id=cluster_id, beyla_namespace=beyla_namespace)
+
+        try:
+            k8s_client = await self._get_k8s_client(cluster_id)
+            health = await k8s_client.check_beyla_health(beyla_namespace)
+
+            return cluster_manager_pb2.BeylaHealthResponse(
+                health_status=health.get("health_status", "unknown"),
+                version=health.get("version") or "",
+                error=health.get("error") or "",
+                daemonset_ready=health.get("daemonset_ready", 0),
+                daemonset_total=health.get("daemonset_total", 0),
+                collector_ready=health.get("collector_ready", False),
+                issues=health.get("issues", []),
+            )
+        except Exception as e:
+            self._invalidate_on_error(cluster_id)
+            logger.error("CheckBeylaHealth failed", cluster_id=cluster_id, error=str(e))
+            return cluster_manager_pb2.BeylaHealthResponse(
+                health_status="unknown",
+                error=str(e),
             )
 
 

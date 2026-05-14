@@ -41,7 +41,8 @@ async def get_workloads(
     cluster_id: int = Query(..., description="Cluster ID"),
     namespace: Optional[str] = Query(None, description="Filter by namespace"),
     workload_type: Optional[str] = Query(None, description="Filter by workload type"),
-    is_active: bool = Query(True, description="Filter by active status")
+    is_active: bool = Query(True, description="Filter by active status"),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get workloads from database"""
     try:
@@ -110,7 +111,8 @@ class WorkloadStatsResponse(BaseModel):
 @router.get("/workloads/stats/{cluster_id}", response_model=WorkloadStatsResponse)
 async def get_workload_stats(
     cluster_id: int,
-    analysis_id: Optional[int] = Query(None, description="Optional analysis ID for analysis-specific stats")
+    analysis_id: Optional[int] = Query(None, description="Optional analysis ID for analysis-specific stats"),
+    current_user: dict = Depends(get_current_user),
 ):
     """Get workload statistics for a cluster.
     
@@ -220,7 +222,8 @@ async def get_workload_stats(
 
 @router.post("/discover/{cluster_id}")
 async def discover_cluster_workloads(
-    cluster_id: int
+    cluster_id: int,
+    current_user: dict = Depends(get_current_user),
 ):
     """Trigger workload discovery for cluster"""
     try:

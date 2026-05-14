@@ -73,6 +73,10 @@ tags:
     description: Data import and export in CSV, JSON, and graph formats
   - name: Settings
     description: System configuration and enterprise settings
+  - name: L7 Communications
+    description: Application-layer (HTTP/gRPC/DNS) workload dependency graph from Beyla eBPF — isolated L7Workload graph in Neo4j
+  - name: L7 Events
+    description: L7 HTTP, gRPC, and DNS flow events and histograms from ClickHouse (Beyla-sourced)
 
 components:
   securitySchemes:
@@ -1755,3 +1759,390 @@ paths:
                   message:
                     type: string
 
+  # ========================================================================
+  # L7 Communications (Beyla - Neo4j graph)
+  # ========================================================================
+  /l7/communications:
+    get:
+      tags: [L7 Communications]
+      summary: List L7 workload-to-workload communications
+      parameters:
+        - name: analysis_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: protocol
+          in: query
+          schema: { type: string, enum: [http, grpc, dns] }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: L7 communication list
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/dependencies/graph:
+    get:
+      tags: [L7 Communications]
+      summary: L7 dependency graph (nodes and edges)
+      parameters:
+        - name: analysis_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: protocol
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Graph with L7Workload nodes and L7_COMMUNICATES_WITH edges
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/communications/stats:
+    get:
+      tags: [L7 Communications]
+      summary: Aggregated L7 communication statistics
+      parameters:
+        - name: analysis_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Stats including total workloads, edges, requests, errors, avg latency
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/communications/error-stats:
+    get:
+      tags: [L7 Communications]
+      summary: L7 error totals and breakdown by protocol
+      parameters:
+        - name: analysis_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Error stats per protocol
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/dependencies/summary:
+    get:
+      tags: [L7 Communications]
+      summary: Per-workload L7 dependency summary
+      description: |
+        Returns one entry per L7 workload (Beyla-observed application identity)
+        with aggregated inbound/outbound edge counts, request totals, error totals,
+        and error rate.
+
+        When any of `annotation_key`, `annotation_value`, `label_key`,
+        `label_value`, `owner_name`, `pod_name`, or `workload_name` is supplied,
+        the response narrows to matched workloads + their immediate neighbours
+        and each workload carries an `is_matched` flag. Glob patterns
+        (`*`, `?`, `[seq]`) are supported on annotation/label key and value
+        fields. `owner_name` is an L4-compatibility alias for `workload_name`.
+      parameters:
+        - name: analysis_id
+          in: query
+          required: true
+          description: Analysis ID; accepts the parent analysis ID or a multi-cluster sub-analysis ID
+          schema: { type: string }
+        - name: cluster_id
+          in: query
+          schema: { type: string }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: include_metadata
+          in: query
+          description: Include labels/annotations/owner_kind on each workload
+          schema: { type: string, default: 'true' }
+        - name: annotation_key
+          in: query
+          description: Filter by annotation key (fnmatch glob supported)
+          schema: { type: string }
+        - name: annotation_value
+          in: query
+          description: Filter by annotation value (fnmatch glob supported; omit for any-value)
+          schema: { type: string }
+        - name: label_key
+          in: query
+          schema: { type: string }
+        - name: label_value
+          in: query
+          schema: { type: string }
+        - name: owner_name
+          in: query
+          description: L4-compatibility alias for `workload_name`
+          schema: { type: string }
+        - name: pod_name
+          in: query
+          description: Case-insensitive substring match against workload name
+          schema: { type: string }
+        - name: workload_name
+          in: query
+          description: Case-insensitive substring match against L7Workload.name
+          schema: { type: string }
+        - name: filter_noise_annotations
+          in: query
+          description: Strip Kubernetes infrastructure annotations from response
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Per-workload inbound/outbound/request/error summary
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/dependencies/tree-summary:
+    get:
+      tags: [L7 Communications]
+      summary: L7 dependency tree with downstream/callers grouped by protocol
+      parameters:
+        - name: analysis_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: cluster_id
+          in: query
+          schema: { type: string }
+        - name: workload_name
+          in: query
+          schema: { type: string }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: depth
+          in: query
+          schema: { type: integer, default: 1, minimum: 1, maximum: 3 }
+        - name: label_key
+          in: query
+          schema: { type: string }
+        - name: label_value
+          in: query
+          schema: { type: string }
+        - name: annotation_key
+          in: query
+          schema: { type: string }
+        - name: annotation_value
+          in: query
+          schema: { type: string }
+        - name: include_metadata
+          in: query
+          schema: { type: string, default: 'true' }
+        - name: workload_name_exact
+          in: query
+          description: |
+            If true (default) match `workload_name` exactly. Pass false for
+            case-insensitive substring match (L4 `owner_name` parity).
+          schema: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Tree-structured dependency summary
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  # ========================================================================
+  # L7 Events (Beyla - ClickHouse time-series)
+  # ========================================================================
+  /l7/events/http:
+    get:
+      tags: [L7 Events]
+      summary: Query L7 HTTP flow events
+      parameters:
+        - name: analysis_id
+          in: query
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: method
+          in: query
+          schema: { type: string }
+        - name: path
+          in: query
+          schema: { type: string }
+        - name: status_code
+          in: query
+          schema: { type: integer }
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: Paginated HTTP flow events
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/events/grpc:
+    get:
+      tags: [L7 Events]
+      summary: Query L7 gRPC flow events
+      parameters:
+        - name: analysis_id
+          in: query
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: grpc_service
+          in: query
+          schema: { type: string }
+        - name: grpc_method
+          in: query
+          schema: { type: string }
+        - name: grpc_status_code
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: Paginated gRPC flow events
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/events/dns:
+    get:
+      tags: [L7 Events]
+      summary: Query L7 DNS flow events
+      parameters:
+        - name: analysis_id
+          in: query
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: query_name
+          in: query
+          schema: { type: string }
+        - name: query_type
+          in: query
+          schema: { type: string }
+        - name: response_code
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: Paginated DNS flow events
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/events/stats:
+    get:
+      tags: [L7 Events]
+      summary: Aggregate L7 event statistics across protocols
+      parameters:
+        - name: analysis_id
+          in: query
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Per-protocol event counts and totals
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /l7/events/histogram:
+    get:
+      tags: [L7 Events]
+      summary: L7 HTTP request histogram (5-min buckets)
+      parameters:
+        - name: analysis_id
+          in: query
+          schema: { type: integer }
+        - name: cluster_id
+          in: query
+          schema: { type: integer }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+        - name: bucket_count
+          in: query
+          schema: { type: integer, default: 60, minimum: 1, maximum: 200 }
+      responses:
+        '200':
+          description: Time-bucketed request counts with error rates
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }

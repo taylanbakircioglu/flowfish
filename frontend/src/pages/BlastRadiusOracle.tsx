@@ -58,6 +58,8 @@ import {
 import { Link, useSearchParams } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
 import { useGetAnalysesQuery } from '../store/api/analysisApi';
+import { useL4Analyses, useL4AnalysisGuard } from '../utils/analysisFilters';
+import type { Analysis } from '../types';
 import { colors } from '../styles/colors';
 import CodeBlock from '../components/integration/CodeBlock';
 import {
@@ -147,10 +149,16 @@ const BlastRadiusOracle: React.FC = () => {
   const { data: analysesData } = useGetAnalysesQuery({});
   const analyses: any[] = Array.isArray(analysesData) ? analysesData : [];
   
-  // Filter analyses by selected cluster
-  const filteredAnalyses = selectedTestClusterId 
+  const clusterScoped = selectedTestClusterId
     ? analyses.filter((a: any) => a.cluster_id === selectedTestClusterId)
     : [];
+  const filteredAnalyses = useL4Analyses(clusterScoped as Analysis[]);
+  const watchedAnalysisId = Form.useWatch('analysis_id', testForm);
+  useL4AnalysisGuard(
+    watchedAnalysisId,
+    (id) => testForm.setFieldsValue({ analysis_id: id }),
+    filteredAnalyses,
+  );
   
   // Fetch workloads when cluster changes
   const fetchWorkloads = useCallback(async (clusterId: number) => {

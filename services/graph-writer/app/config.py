@@ -29,6 +29,25 @@ class Settings(BaseSettings):
     queue_bind_events: str = "flowfish.queue.bind_events.graph"
     queue_sni_events: str = "flowfish.queue.sni_events.graph"
     
+    # L7 application flows (Beyla eBPF)
+    l7_enabled: bool = False
+    queue_l7_http_flows: str = "flowfish.queue.l7_http_flows.graph"
+    queue_l7_grpc_flows: str = "flowfish.queue.l7_grpc_flows.graph"
+    queue_l7_dns_flows: str = "flowfish.queue.l7_dns_flows.graph"
+    
+    # L7 Distributed Tracing (W3C OpenTelemetry trace context)
+    # Requires l7_enabled=true. Controls whether trace properties are written to
+    # L7_COMMUNICATES_WITH relationships and whether SAME_WORKLOAD periodic task runs.
+    # Off by default for backward compatibility.
+    l7_tracing_enabled: bool = False
+    
+    # SAME_WORKLOAD periodic task interval (seconds)
+    # Cross-cluster L7Workload deduplication using trace_id + name + hostname matching
+    same_workload_interval: int = 60
+    
+    backend_service_host: str = "backend"
+    backend_service_port: int = 8000
+    
     # Prefetch count for consumer
     prefetch_count: int = 100
     

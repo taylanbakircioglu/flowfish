@@ -22,7 +22,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: change-detection-worker
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: change-detection-worker
     component: worker
@@ -56,6 +56,13 @@ spec:
       initContainers:
       - name: wait-for-postgres
         image: busybox:1.36
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
         command:
         - sh
         - -c
@@ -72,7 +79,7 @@ spec:
       
       containers:
       - name: worker
-        image: taylanbakircioglu/flowfish:change-worker-latest
+        image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-change-worker:{{IMAGE_TAG}}
         imagePullPolicy: Always
         
         ports:
@@ -232,7 +239,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: change-detection-worker
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: change-detection-worker
   annotations:
@@ -255,7 +262,7 @@ spec:
 # kind: HorizontalPodAutoscaler
 # metadata:
 #   name: change-detection-worker-hpa
-#   namespace: flowfish
+#   namespace: {{OPENSHIFT_NAMESPACE}}
 # spec:
 #   scaleTargetRef:
 #     apiVersion: apps/v1

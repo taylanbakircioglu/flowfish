@@ -166,6 +166,15 @@ class GraphBuilder:
     def __init__(self):
         self.vertex_cache = {}  # Cache to avoid duplicate vertex creation
         self.edge_cache = {}    # Cache to aggregate edge updates
+        self._custom_search_domains: list = []  # sorted by length desc, updated by config poller
+
+    def update_search_domains(self, domains: list):
+        """Update cached custom search domains (called by config poller)."""
+        cleaned = sorted(
+            set(d.strip().lower().lstrip('.') for d in domains if d.strip()),
+            key=len, reverse=True
+        )
+        self._custom_search_domains = cleaned
     
     def _make_vid(self, analysis_id: Any, cluster_id: Any, namespace: str, workload: str) -> str:
         """
@@ -229,12 +238,12 @@ class GraphBuilder:
                 if 128 <= parts[1] <= 131:
                     return 'Pod-Network'
                 
-                # Custom OpenShift cluster ranges (configure via CUSTOM_POD_CIDRS env var if needed)
-                if parts[1] == 194:  # 10.194.0.0/16 - Custom pod network (cluster-1)
+                # OpenShift additional pod/service CIDR ranges (common in multi-cluster deployments)
+                if parts[1] == 194:  # 10.194.0.0/16 - OpenShift additional pod range
                     return 'Pod-Network'
-                if parts[1] == 208:  # 10.208.0.0/16 - Custom pod network (cluster-2)
+                if parts[1] == 208:  # 10.208.0.0/16 - OpenShift additional pod range
                     return 'Pod-Network'
-                if parts[1] == 196:  # 10.196.0.0/16 - Custom service CIDR
+                if parts[1] == 196:  # 10.196.0.0/16 - OpenShift additional service range
                     return 'Service-Network'
                 
                 # Kubernetes default service network: 10.96.0.0/12 (10.96-10.111)
@@ -388,13 +397,16 @@ class GraphBuilder:
         return name
     
     def _strip_custom_search_domains(self, name: str) -> str:
-        """Strip custom DNS search domains configured via DNS_SEARCH_DOMAINS env var."""
-        raw = os.environ.get('DNS_SEARCH_DOMAINS', '')
-        if not raw:
-            return name
-        
-        domains = [d.strip().lower().lstrip('.') for d in raw.split(',') if d.strip()]
-        domains.sort(key=len, reverse=True)
+        """Strip custom DNS search domains from Settings API / resolv.conf / env var."""
+        domains = self._custom_search_domains
+        if not domains:
+            raw = os.environ.get('DNS_SEARCH_DOMAINS', '')
+            if not raw:
+                return name
+            domains = sorted(
+                [d.strip().lower().lstrip('.') for d in raw.split(',') if d.strip()],
+                key=len, reverse=True
+            )
         
         lower = name.lower()
         for domain in domains:

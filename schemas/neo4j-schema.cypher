@@ -45,6 +45,10 @@ FOR (svc:Service) REQUIRE svc.id IS UNIQUE;
 CREATE CONSTRAINT external_endpoint_ip IF NOT EXISTS
 FOR (e:ExternalEndpoint) REQUIRE e.ip_address IS UNIQUE;
 
+// L7 Workload constraints (Application-level service map)
+CREATE CONSTRAINT l7_workload_id IF NOT EXISTS
+FOR (w:L7Workload) REQUIRE w.id IS UNIQUE;
+
 /* ============================================================================
    INDEXES (Performance Optimization)
    ============================================================================ */
@@ -94,6 +98,26 @@ CREATE INDEX service_type IF NOT EXISTS FOR (svc:Service) ON (svc.service_type);
 
 // External endpoint indexes
 CREATE INDEX external_endpoint_hostname IF NOT EXISTS FOR (e:ExternalEndpoint) ON (e.hostname);
+
+// L7 Workload indexes (Application-level service map)
+CREATE INDEX l7_workload_name IF NOT EXISTS FOR (w:L7Workload) ON (w.name);
+CREATE INDEX l7_workload_namespace IF NOT EXISTS FOR (w:L7Workload) ON (w.namespace);
+CREATE INDEX l7_workload_cluster IF NOT EXISTS FOR (w:L7Workload) ON (w.cluster);
+CREATE INDEX l7_workload_analysis IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id);
+CREATE INDEX l7_workload_owner_kind IF NOT EXISTS FOR (w:L7Workload) ON (w.owner_kind);
+CREATE INDEX l7_workload_network_type IF NOT EXISTS FOR (w:L7Workload) ON (w.network_type);
+
+// L7 Workload composite index for SAME_WORKLOAD cross-cluster matching
+// Used by exact-name layer to lookup workloads with same (analysis_id, cluster, name)
+CREATE INDEX l7_workload_composite IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id, w.cluster, w.name);
+
+// L7 relationship indexes (query performance for dependency lookups)
+CREATE INDEX l7_comm_analysis IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.analysis_id);
+CREATE INDEX l7_comm_protocol IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.protocol);
+
+// L7 Distributed Tracing — index for trace_id lookup on relationships
+// Used by SAME_WORKLOAD trace-based matching layer (cross-cluster correlation)
+CREATE INDEX l7_comm_trace IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.last_trace_id);
 
 /* ============================================================================
    NODE TYPES (Labels) AND PROPERTIES
@@ -311,6 +335,32 @@ Properties:
   - http_status_codes: STRING - JSON object with counts
   - dns_names: STRING - JSON array (if DNS involved)
   - metadata: STRING - JSON additional metadata
+*/
+
+/*
+Relationship: L7_COMMUNICATES_WITH
+Represents L7 (HTTP/gRPC/DNS) communication between L7Workload nodes (Beyla eBPF).
+Separate from L4 COMMUNICATES_WITH to allow independent lifecycle.
+
+Properties:
+  Analysis context:
+  - analysis_id: STRING - Analysis ID for scope filtering
+  - cluster_id: STRING - Cluster ID
+  - cluster_name: STRING - Cluster name
+
+  Communication details:
+  - protocol: STRING - 'HTTP', 'GRPC', 'DNS' (uppercase)
+  - http_method: STRING - HTTP method (GET, POST, etc.) or gRPC method
+  - http_path: STRING - Request path or gRPC service path or DNS query info
+
+  Metrics:
+  - request_count: INT - Total requests observed
+  - error_count: INT - Total error responses
+  - total_latency_ms: FLOAT - Cumulative latency in milliseconds
+  - avg_latency_ms: FLOAT - Average latency in milliseconds
+
+  Temporal data:
+  - last_seen: DATETIME - Last communication timestamp
 */
 
 /*

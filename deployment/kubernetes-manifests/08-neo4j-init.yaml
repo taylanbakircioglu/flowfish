@@ -5,7 +5,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: neo4j-init
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: neo4j
     component: init
@@ -24,6 +24,13 @@ spec:
       initContainers:
       - name: wait-for-neo4j
         image: busybox:latest
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
         command:
         - sh
         - -c
@@ -31,14 +38,14 @@ spec:
           echo "Waiting for Neo4j to be ready..."
           
           # Wait for HTTP port
-          until nc -z -w 2 neo4j.flowfish.svc.cluster.local 7474 2>/dev/null; do
+          until nc -z -w 2 neo4j.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local 7474 2>/dev/null; do
             echo "Neo4j HTTP not ready yet..."
             sleep 3
           done
           echo "Neo4j HTTP port is open"
           
           # Wait for Bolt port
-          until nc -z -w 2 neo4j.flowfish.svc.cluster.local 7687 2>/dev/null; do
+          until nc -z -w 2 neo4j.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local 7687 2>/dev/null; do
             echo "Neo4j Bolt not ready yet..."
             sleep 3
           done
@@ -54,7 +61,8 @@ spec:
       # Volumes for temporary workspace
       volumes:
       - name: workspace
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 64Mi
       
       containers:
       - name: init-neo4j
@@ -62,7 +70,7 @@ spec:
         
         env:
         - name: NEO4J_URI
-          value: "bolt://neo4j.flowfish.svc.cluster.local:7687"
+          value: "bolt://neo4j.{{OPENSHIFT_NAMESPACE}}.svc.cluster.local:7687"
         - name: NEO4J_AUTH
           valueFrom:
             secretKeyRef:
@@ -139,6 +147,23 @@ spec:
           CREATE INDEX workload_is_active IF NOT EXISTS FOR (w:Workload) ON (w.is_active);
           CREATE INDEX namespace_cluster IF NOT EXISTS FOR (n:Namespace) ON (n.cluster);
           
+          // L7 Workload constraints and indexes (Application-level service map)
+          CREATE CONSTRAINT l7_workload_id IF NOT EXISTS
+          FOR (w:L7Workload) REQUIRE w.id IS UNIQUE;
+          CREATE INDEX l7_workload_name IF NOT EXISTS FOR (w:L7Workload) ON (w.name);
+          CREATE INDEX l7_workload_namespace IF NOT EXISTS FOR (w:L7Workload) ON (w.namespace);
+          CREATE INDEX l7_workload_cluster IF NOT EXISTS FOR (w:L7Workload) ON (w.cluster);
+          CREATE INDEX l7_workload_analysis IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id);
+          CREATE INDEX l7_workload_owner_kind IF NOT EXISTS FOR (w:L7Workload) ON (w.owner_kind);
+          // Composite index for SAME_WORKLOAD cross-cluster matching
+          CREATE INDEX l7_workload_composite IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id, w.cluster, w.name);
+          
+          // L7 relationship indexes
+          CREATE INDEX l7_comm_analysis IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.analysis_id);
+          CREATE INDEX l7_comm_protocol IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.protocol);
+          // Trace ID lookup for SAME_WORKLOAD trace-based matching layer
+          CREATE INDEX l7_comm_trace IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.last_trace_id);
+          
           // Create relationship property indexes for COMMUNICATES_WITH
           // Note: Relationship property indexes require Neo4j Enterprise Edition
           // For Community Edition, we filter at query time
@@ -212,6 +237,30 @@ spec:
             cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
               "CREATE INDEX workload_analysis_id IF NOT EXISTS FOR (w:Workload) ON (w.analysis_id);" 2>&1 || true
             
+            sleep 2
+            
+            echo "Creating L7 Workload constraint and indexes..."
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE CONSTRAINT l7_workload_id IF NOT EXISTS FOR (w:L7Workload) REQUIRE w.id IS UNIQUE;" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_workload_name IF NOT EXISTS FOR (w:L7Workload) ON (w.name);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_workload_namespace IF NOT EXISTS FOR (w:L7Workload) ON (w.namespace);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_workload_cluster IF NOT EXISTS FOR (w:L7Workload) ON (w.cluster);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_workload_analysis IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_workload_owner_kind IF NOT EXISTS FOR (w:L7Workload) ON (w.owner_kind);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_comm_analysis IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.analysis_id);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_comm_protocol IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.protocol);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_workload_composite IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id, w.cluster, w.name);" 2>&1 || true
+            cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain \
+              "CREATE INDEX l7_comm_trace IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.last_trace_id);" 2>&1 || true
+            
             # Check if fallback succeeded
             echo "Verifying constraints..."
             if cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain "SHOW CONSTRAINTS;" 2>&1; then
@@ -229,9 +278,9 @@ spec:
             echo "=========================================="
             echo ""
             echo "Database: neo4j (Community Edition default)"
-            echo "Node Labels: Workload, Namespace, Cluster"
-            echo "Relationships: COMMUNICATES_WITH, DEPENDS_ON, PART_OF"
-            echo "Constraints: workload_id, namespace_name, cluster_name"
+            echo "Node Labels: Workload, Namespace, Cluster, L7Workload"
+            echo "Relationships: COMMUNICATES_WITH, L7_COMMUNICATES_WITH, DEPENDS_ON, PART_OF"
+            echo "Constraints: workload_id, namespace_name, cluster_name, l7_workload_id"
             echo "Indexes: Created for performance"
             echo ""
             echo "Neo4j is ready for Flowfish platform!"

@@ -41,6 +41,32 @@ class Settings(BaseSettings):
     # Workload metadata (pod info for IP -> name lookups)
     queue_workload_metadata: str = "flowfish.queue.workload_metadata.timeseries"
     
+    # L7 application flows (Beyla eBPF)
+    l7_enabled: bool = False
+    queue_l7_http_flows: str = "flowfish.queue.l7_http_flows.timeseries"
+    queue_l7_grpc_flows: str = "flowfish.queue.l7_grpc_flows.timeseries"
+    queue_l7_dns_flows: str = "flowfish.queue.l7_dns_flows.timeseries"
+    
+    # L7 Distributed Tracing (W3C OpenTelemetry trace context)
+    # Requires l7_enabled=true. Controls whether trace_id/span_id columns are populated
+    # in ClickHouse l7_*_flows tables. Off by default for backward compatibility.
+    l7_tracing_enabled: bool = False
+
+    # Phase 4 — PID-temporal virtual_trace_id correlation.
+    # Requires l7_tracing_enabled=true. When True, the writer attempts to
+    # populate (pid, ppid, container_id, virtual_trace_id) columns on
+    # l7_http_flows and l7_grpc_flows. Events without W3C trace_id but with
+    # a valid PID get bundled by (cluster, src_pod, container_id, pid,
+    # 50ms-window) into a sha1-derived virtual_trace_id; events with a
+    # real W3C trace_id are left untouched. The writer auto-falls-back to
+    # the legacy with-trace INSERT when the PID columns aren't yet
+    # migrated (Plan Section 16.A — manual migration required).
+    l7_pid_correlation_enabled: bool = False
+    # Time window in milliseconds used for PID-temporal bucketing. 50ms is
+    # the empirical default — short enough that PID reuse within a window
+    # is implausible, long enough to bundle a 3-4 hop synchronous chain.
+    l7_pid_correlation_window_ms: int = 50
+    
     # Change events (from Change Detection Worker -> ClickHouse)
     queue_change_events: str = "flowfish.queue.change_events.timeseries"
     change_events_consumer_enabled: bool = True  # Consume change events from RabbitMQ, write to ClickHouse

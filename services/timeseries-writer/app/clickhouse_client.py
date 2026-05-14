@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from clickhouse_driver import Client
 from clickhouse_driver.errors import Error as ClickHouseError
 from app.config import settings
+from app import virtual_trace_correlator
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,137 @@ def parse_latency_ns(value: Any) -> int:
     return 0
 
 
+def parse_l7_timestamp(ts: Any) -> datetime:
+    """Parse L7 event timestamp (ISO string, datetime, or Unix ms int from ingestion)."""
+    if ts is None:
+        logger.warning("L7 timestamp is None, using current time")
+        return datetime.now(timezone.utc)
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    if isinstance(ts, (int, float)):
+        t = float(ts)
+        if t > 1e15:
+            t = t / 1e6
+        elif t > 1e12:
+            t = t / 1000.0
+        return datetime.fromtimestamp(t, tz=timezone.utc)
+    if isinstance(ts, str):
+        return parse_timestamp(ts)
+    logger.warning("L7 timestamp has unexpected type %s, using current time", type(ts).__name__)
+    return datetime.now(timezone.utc)
+
+
+def _l7_flat_endpoint(data: Dict[str, Any], side: str) -> Dict[str, Any]:
+    """Resolve src/dst fields from flat keys or nested {src|dst} dict (L7 ingestion format).
+
+    Empty namespace/workload are normalised to 'unknown' so ClickHouse stays
+    consistent with the graph-writer's Neo4j node IDs.
+    """
+    nested = data.get(side)
+    if isinstance(nested, dict):
+        wl = (
+            nested.get("workload_name")
+            or nested.get("pod_name")
+            or nested.get("name")
+            or nested.get("ip")
+            or "unknown"
+        )
+        return {
+            "namespace": nested.get("namespace") or "unknown",
+            "workload": wl,
+            "pod": nested.get("pod_name") or nested.get("name") or "",
+            "ip": nested.get("ip", ""),
+            "port": nested.get("port"),
+            "service_name": nested.get("name") or "",
+        }
+    prefix = "src_" if side == "src" else "dst_"
+    return {
+        "namespace": data.get(f"{prefix}namespace") or "unknown",
+        "workload": data.get(f"{prefix}workload") or data.get(f"{prefix}workload_name") or "unknown",
+        "pod": data.get(f"{prefix}pod", ""),
+        "ip": data.get(f"{prefix}ip", ""),
+        "port": data.get(f"{prefix}port"),
+        "service_name": data.get("dst_service", "") if side == "dst" else "",
+    }
+
+
+def _l7_labels_json(val: Any) -> str:
+    if val is None:
+        return "{}"
+    if isinstance(val, str):
+        return val if val.strip() else "{}"
+    if isinstance(val, dict):
+        return json.dumps(val, default=str)
+    return json.dumps(sanitize_labels(val), default=str)
+
+
+# Synthetic namespaces produced upstream when a Beyla endpoint cannot be
+# resolved to a real Kubernetes object. Spans whose source or destination
+# falls into one of these buckets carry no distributed-observability value
+# and pollute aggregate Service Map metrics (e.g. Flowfish's own gadget
+# gRPC streams produce per-connection durations measured in minutes).
+# The flowfish-l7-collector already drops these at ingestion; this set is
+# the second layer of defense so a stale collector or operator-applied
+# Beyla configuration cannot leak self-monitoring traffic into ClickHouse.
+_L7_NOISE_NAMESPACES: frozenset = frozenset({"loopback"})
+
+
+def _l7_endpoint_namespace(data: Dict[str, Any], side: str) -> str:
+    """Extract namespace from either the flat or nested endpoint format.
+
+    Order: flat top-level (`src_namespace` / `dst_namespace`) → nested
+    (`src.namespace` / `dst.namespace`). Returns empty string for any
+    shape we don't recognize so a malformed upstream message cannot
+    crash the writer batch path.
+    """
+    flat = data.get(f"{side}_namespace")
+    if isinstance(flat, str) and flat:
+        return flat
+    nested = data.get(side)
+    if isinstance(nested, dict):
+        ns = nested.get("namespace")
+        if isinstance(ns, str):
+            return ns
+    return ""
+
+
+def _is_l7_self_monitoring(msg: Any) -> bool:
+    """Return True when an L7 message represents pod-internal localhost traffic.
+
+    Inspects both the flat src_namespace/dst_namespace fields used by the
+    intermediate Flowfish event format and the nested data.src/data.dst
+    endpoint dicts produced by the collector. Tolerates malformed messages
+    (non-dict msg or non-dict data) by returning False so the caller will
+    pass the row through to the regular insertion path, where ClickHouse's
+    schema validation catches genuinely broken events.
+    """
+    if not isinstance(msg, dict):
+        return False
+    data = msg.get("data")
+    if not isinstance(data, dict):
+        return False
+    src_ns = _l7_endpoint_namespace(data, "src")
+    dst_ns = _l7_endpoint_namespace(data, "dst")
+    return src_ns.lower() in _L7_NOISE_NAMESPACES or dst_ns.lower() in _L7_NOISE_NAMESPACES
+
+
+def _filter_l7_noise(batch: List[Dict[str, Any]], protocol: str) -> List[Dict[str, Any]]:
+    """Drop self-monitoring localhost spans before insertion. Logs at debug
+    level when at least one event was filtered so operators can correlate
+    suppressed counts with Service Map cleanliness."""
+    if not batch:
+        return batch
+    kept = [m for m in batch if not _is_l7_self_monitoring(m)]
+    dropped = len(batch) - len(kept)
+    if dropped:
+        logger.debug(
+            "Filtered %d localhost-only %s span(s) (Flowfish self-monitoring noise)",
+            dropped,
+            protocol,
+        )
+    return kept
+
+
 def parse_timestamp(ts: Union[str, datetime, None]) -> datetime:
     """
     Parse timestamp from various formats to datetime object.
@@ -266,6 +398,19 @@ class ClickHouseWriter:
     
     def __init__(self):
         self.client = None
+        # Per-table flag for graceful trace column fallback.
+        # Each L7 table tracks independently whether trace columns are migrated.
+        # When INSERT fails with "Unknown column" the corresponding flag flips
+        # to False and subsequent INSERTs use legacy column lists for that table.
+        # Flags reset on process restart (re-discovers schema state).
+        self._trace_cols = {"http": True, "grpc": True, "dns": True}
+        # Phase 4 — separate flag for the PID columns (pid, ppid, container_id,
+        # virtual_trace_id). These rolled out via clickhouse_007_add_l7_pid.sql
+        # and may be missing on clusters that haven't yet applied the
+        # migration. DNS is intentionally left out of this map: PID
+        # correlation is HTTP/gRPC only. Mirrors `_trace_cols` semantics:
+        # initially True, flips to False on schema mismatch.
+        self._pid_cols = {"http": True, "grpc": True}
         self._connect()
     
     def _connect(self):
@@ -966,6 +1111,508 @@ class ClickHouseWriter:
             
         except ClickHouseError as e:
             logger.error(f"❌ Failed to insert change_events: {e}")
+            raise
+    
+    # ------------------------------------------------------------------
+    # L7 INSERT helpers: legacy and with-trace row builders.
+    # Trace columns are positional; tuples must match the column lists in the
+    # corresponding INSERT statements exactly. Order: legacy columns first,
+    # then trace columns (trace_id, span_id, parent_span_id, span_name,
+    # span_kind), then event_data_json (always last).
+    # ------------------------------------------------------------------
+    def _build_http_row_legacy(self, msg: Dict[str, Any]) -> tuple:
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        s = _l7_flat_endpoint(data, "src")
+        d = _l7_flat_endpoint(data, "dst")
+        req_headers = data.get("request_headers")
+        if req_headers is None and isinstance(data.get("request"), dict):
+            req_headers = (data.get("request") or {}).get("headers")
+        return (
+            parse_l7_timestamp(msg.get("timestamp")),
+            safe_string(msg.get("cluster_id", "")),
+            safe_string(msg.get("cluster_name", "")),
+            safe_string(msg.get("analysis_id", "")),
+            safe_string(s["namespace"]),
+            safe_string(s["workload"]),
+            safe_string(s["pod"]),
+            safe_string(s["ip"]),
+            safe_int(s["port"], 0),
+            safe_string(d["namespace"]),
+            safe_string(d["workload"]),
+            safe_string(d["pod"]),
+            safe_string(d["ip"]),
+            safe_int(d["port"], 0),
+            safe_string(data.get("dst_service") or d["service_name"] or ""),
+            safe_string(data.get("http_method") or data.get("method", "")),
+            safe_string(data.get("http_path") or data.get("path", "")),
+            safe_string(data.get("http_host") or data.get("host", "")),
+            safe_int(
+                data.get("http_status_code")
+                if data.get("http_status_code") is not None
+                else data.get("response_status"),
+                0,
+            ),
+            safe_string(data.get("http_version", "")),
+            safe_string(data.get("content_type", "")),
+            safe_int(data.get("request_size", 0)),
+            safe_int(data.get("response_size", 0)),
+            safe_float(data.get("latency_ms") or data.get("duration_ms"), 0.0),
+            _l7_labels_json(data.get("src_labels")),
+            _l7_labels_json(data.get("dst_labels")),
+            _l7_labels_json(req_headers),
+            json.dumps(data, default=str),
+        )
+    
+    def _build_http_row_with_trace(self, msg: Dict[str, Any]) -> tuple:
+        legacy = self._build_http_row_legacy(msg)
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        # Insert trace columns before the trailing event_data_json (last element)
+        trace_cols = (
+            safe_string(data.get("trace_id", "")),
+            safe_string(data.get("span_id", "")),
+            safe_string(data.get("parent_span_id", "")),
+            safe_string(data.get("span_name", "")),
+            safe_int(data.get("span_kind", 0), 0),
+        )
+        return legacy[:-1] + trace_cols + (legacy[-1],)
+    
+    _INSERT_HTTP_LEGACY = """
+    INSERT INTO l7_http_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port, dst_service,
+        http_method, http_path, http_host, http_status_code, http_version, content_type,
+        request_size, response_size, latency_ms,
+        src_labels, dst_labels, request_headers,
+        event_data_json
+    ) VALUES
+    """
+    
+    _INSERT_HTTP_WITH_TRACE = """
+    INSERT INTO l7_http_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port, dst_service,
+        http_method, http_path, http_host, http_status_code, http_version, content_type,
+        request_size, response_size, latency_ms,
+        src_labels, dst_labels, request_headers,
+        trace_id, span_id, parent_span_id, span_name, span_kind,
+        event_data_json
+    ) VALUES
+    """
+
+    # Phase 4 — full INSERT including PID-temporal correlation columns.
+    # Column order: legacy + trace + pid columns + event_data_json (always last).
+    _INSERT_HTTP_WITH_PID = """
+    INSERT INTO l7_http_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port, dst_service,
+        http_method, http_path, http_host, http_status_code, http_version, content_type,
+        request_size, response_size, latency_ms,
+        src_labels, dst_labels, request_headers,
+        trace_id, span_id, parent_span_id, span_name, span_kind,
+        pid, ppid, container_id, virtual_trace_id,
+        event_data_json
+    ) VALUES
+    """
+
+    def _build_http_row_with_pid(self, msg: Dict[str, Any]) -> tuple:
+        """Build the full row tuple including trace + PID columns.
+
+        Reads the same `data.{trace_id, span_id, ...}` plus the new
+        `data.{pid, ppid, container_id, virtual_trace_id}` fields. The
+        virtual_trace_id is populated by `virtual_trace_correlator.correlate()`
+        before this builder runs; events without one default to ''.
+        """
+        with_trace = self._build_http_row_with_trace(msg)
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        pid_cols = (
+            safe_int(data.get("pid", 0), 0),
+            safe_int(data.get("ppid", 0), 0),
+            safe_string(data.get("container_id", "")),
+            safe_string(data.get("virtual_trace_id", "")),
+        )
+        return with_trace[:-1] + pid_cols + (with_trace[-1],)
+
+    def insert_l7_http_flow(self, batch: List[Dict[str, Any]]) -> int:
+        """Bulk insert L7 HTTP flows into l7_http_flows.
+        
+        When trace columns are migrated and l7_tracing_enabled is true, includes
+        trace_id/span_id/parent_span_id/span_name/span_kind. Falls back gracefully
+        to legacy column list when ClickHouse reports unknown columns (handles
+        deploy-order races where writer is upgraded before migration runs).
+
+        Phase 4: when l7_pid_correlation_enabled is true AND trace columns are
+        migrated, also includes pid/ppid/container_id/virtual_trace_id and
+        runs the PID-temporal correlator over the batch first. Two-step
+        fallback chain: PID variant → trace variant → legacy variant.
+        """
+        if not batch:
+            return 0
+        batch = _filter_l7_noise(batch, "HTTP")
+        if not batch:
+            return 0
+        use_trace = settings.l7_tracing_enabled and self._trace_cols.get("http", True)
+        use_pid = (
+            use_trace
+            and settings.l7_pid_correlation_enabled
+            and self._pid_cols.get("http", True)
+        )
+        if use_pid:
+            virtual_trace_correlator.correlate(
+                batch,
+                window_ms=settings.l7_pid_correlation_window_ms,
+            )
+        if use_pid:
+            rows = [self._build_http_row_with_pid(m) for m in batch]
+            query = self._INSERT_HTTP_WITH_PID
+        elif use_trace:
+            rows = [self._build_http_row_with_trace(m) for m in batch]
+            query = self._INSERT_HTTP_WITH_TRACE
+        else:
+            rows = [self._build_http_row_legacy(m) for m in batch]
+            query = self._INSERT_HTTP_LEGACY
+        try:
+            self.client.execute(query, rows)
+            logger.info(f"✅ Inserted {len(rows)} l7_http_flows")
+            return len(rows)
+        except ClickHouseError as e:
+            err_str = str(e)
+            schema_miss = (
+                "Unknown column" in err_str
+                or "doesn't have column" in err_str
+                or "No such column" in err_str
+            )
+            if use_pid and schema_miss:
+                # PID columns not yet migrated — disable PID variant for HTTP
+                # table and retry with the trace variant.
+                logger.warning(
+                    f"l7_http_flows pid columns missing; falling back to trace INSERT: {e}"
+                )
+                self._pid_cols["http"] = False
+                rows_trace = [self._build_http_row_with_trace(m) for m in batch]
+                try:
+                    self.client.execute(self._INSERT_HTTP_WITH_TRACE, rows_trace)
+                    return len(rows_trace)
+                except ClickHouseError as e2:
+                    err_str2 = str(e2)
+                    if "Unknown column" in err_str2 or "doesn't have column" in err_str2 or "No such column" in err_str2:
+                        logger.warning(
+                            f"l7_http_flows trace columns also missing; falling back to legacy INSERT: {e2}"
+                        )
+                        self._trace_cols["http"] = False
+                        rows_legacy = [self._build_http_row_legacy(m) for m in batch]
+                        self.client.execute(self._INSERT_HTTP_LEGACY, rows_legacy)
+                        return len(rows_legacy)
+                    raise
+            if use_trace and schema_miss:
+                # Trace columns not yet migrated — disable for HTTP table and retry legacy
+                logger.warning(
+                    f"l7_http_flows trace columns missing; falling back to legacy INSERT: {e}"
+                )
+                self._trace_cols["http"] = False
+                rows_legacy = [self._build_http_row_legacy(m) for m in batch]
+                self.client.execute(self._INSERT_HTTP_LEGACY, rows_legacy)
+                return len(rows_legacy)
+            logger.error(f"❌ Failed to insert l7_http_flows: {e}")
+            raise
+    
+    def _build_grpc_row_legacy(self, msg: Dict[str, Any]) -> tuple:
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        s = _l7_flat_endpoint(data, "src")
+        d = _l7_flat_endpoint(data, "dst")
+        status_msg = data.get("grpc_status_message")
+        if status_msg is None and isinstance(data.get("response"), dict):
+            status_msg = (data.get("response") or {}).get("statusText") or (
+                data.get("response") or {}
+            ).get("message")
+        return (
+            parse_l7_timestamp(msg.get("timestamp")),
+            safe_string(msg.get("cluster_id", "")),
+            safe_string(msg.get("cluster_name", "")),
+            safe_string(msg.get("analysis_id", "")),
+            safe_string(s["namespace"]),
+            safe_string(s["workload"]),
+            safe_string(s["pod"]),
+            safe_string(s["ip"]),
+            safe_int(s["port"], 0),
+            safe_string(d["namespace"]),
+            safe_string(d["workload"]),
+            safe_string(d["pod"]),
+            safe_string(d["ip"]),
+            safe_int(d["port"], 0),
+            safe_string(data.get("dst_service") or d["service_name"] or ""),
+            safe_string(data.get("grpc_service", "")),
+            safe_string(data.get("grpc_method", "")),
+            safe_int(
+                data.get("grpc_status_code")
+                if data.get("grpc_status_code") is not None
+                else data.get("response_status"),
+                0,
+            ),
+            safe_string(status_msg or ""),
+            safe_int(data.get("request_size", 0)),
+            safe_int(data.get("response_size", 0)),
+            safe_float(data.get("latency_ms") or data.get("duration_ms"), 0.0),
+            _l7_labels_json(data.get("src_labels")),
+            _l7_labels_json(data.get("dst_labels")),
+            json.dumps(data, default=str),
+        )
+    
+    def _build_grpc_row_with_trace(self, msg: Dict[str, Any]) -> tuple:
+        legacy = self._build_grpc_row_legacy(msg)
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        trace_cols = (
+            safe_string(data.get("trace_id", "")),
+            safe_string(data.get("span_id", "")),
+            safe_string(data.get("parent_span_id", "")),
+            safe_string(data.get("span_name", "")),
+            safe_int(data.get("span_kind", 0), 0),
+        )
+        return legacy[:-1] + trace_cols + (legacy[-1],)
+    
+    _INSERT_GRPC_LEGACY = """
+    INSERT INTO l7_grpc_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port, dst_service,
+        grpc_service, grpc_method, grpc_status_code, grpc_status_message,
+        request_size, response_size, latency_ms,
+        src_labels, dst_labels,
+        event_data_json
+    ) VALUES
+    """
+    
+    _INSERT_GRPC_WITH_TRACE = """
+    INSERT INTO l7_grpc_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port, dst_service,
+        grpc_service, grpc_method, grpc_status_code, grpc_status_message,
+        request_size, response_size, latency_ms,
+        src_labels, dst_labels,
+        trace_id, span_id, parent_span_id, span_name, span_kind,
+        event_data_json
+    ) VALUES
+    """
+
+    # Phase 4 — full INSERT including PID-temporal correlation columns.
+    _INSERT_GRPC_WITH_PID = """
+    INSERT INTO l7_grpc_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port, dst_service,
+        grpc_service, grpc_method, grpc_status_code, grpc_status_message,
+        request_size, response_size, latency_ms,
+        src_labels, dst_labels,
+        trace_id, span_id, parent_span_id, span_name, span_kind,
+        pid, ppid, container_id, virtual_trace_id,
+        event_data_json
+    ) VALUES
+    """
+
+    def _build_grpc_row_with_pid(self, msg: Dict[str, Any]) -> tuple:
+        """Build the full gRPC row tuple including trace + PID columns."""
+        with_trace = self._build_grpc_row_with_trace(msg)
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        pid_cols = (
+            safe_int(data.get("pid", 0), 0),
+            safe_int(data.get("ppid", 0), 0),
+            safe_string(data.get("container_id", "")),
+            safe_string(data.get("virtual_trace_id", "")),
+        )
+        return with_trace[:-1] + pid_cols + (with_trace[-1],)
+
+    def insert_l7_grpc_flow(self, batch: List[Dict[str, Any]]) -> int:
+        """Bulk insert L7 gRPC flows into l7_grpc_flows (with trace + PID column fallback)."""
+        if not batch:
+            return 0
+        batch = _filter_l7_noise(batch, "gRPC")
+        if not batch:
+            return 0
+        use_trace = settings.l7_tracing_enabled and self._trace_cols.get("grpc", True)
+        use_pid = (
+            use_trace
+            and settings.l7_pid_correlation_enabled
+            and self._pid_cols.get("grpc", True)
+        )
+        if use_pid:
+            virtual_trace_correlator.correlate(
+                batch,
+                window_ms=settings.l7_pid_correlation_window_ms,
+            )
+        if use_pid:
+            rows = [self._build_grpc_row_with_pid(m) for m in batch]
+            query = self._INSERT_GRPC_WITH_PID
+        elif use_trace:
+            rows = [self._build_grpc_row_with_trace(m) for m in batch]
+            query = self._INSERT_GRPC_WITH_TRACE
+        else:
+            rows = [self._build_grpc_row_legacy(m) for m in batch]
+            query = self._INSERT_GRPC_LEGACY
+        try:
+            self.client.execute(query, rows)
+            logger.info(f"✅ Inserted {len(rows)} l7_grpc_flows")
+            return len(rows)
+        except ClickHouseError as e:
+            err_str = str(e)
+            schema_miss = (
+                "Unknown column" in err_str
+                or "doesn't have column" in err_str
+                or "No such column" in err_str
+            )
+            if use_pid and schema_miss:
+                logger.warning(
+                    f"l7_grpc_flows pid columns missing; falling back to trace INSERT: {e}"
+                )
+                self._pid_cols["grpc"] = False
+                rows_trace = [self._build_grpc_row_with_trace(m) for m in batch]
+                try:
+                    self.client.execute(self._INSERT_GRPC_WITH_TRACE, rows_trace)
+                    return len(rows_trace)
+                except ClickHouseError as e2:
+                    err_str2 = str(e2)
+                    if "Unknown column" in err_str2 or "doesn't have column" in err_str2 or "No such column" in err_str2:
+                        logger.warning(
+                            f"l7_grpc_flows trace columns also missing; falling back to legacy INSERT: {e2}"
+                        )
+                        self._trace_cols["grpc"] = False
+                        rows_legacy = [self._build_grpc_row_legacy(m) for m in batch]
+                        self.client.execute(self._INSERT_GRPC_LEGACY, rows_legacy)
+                        return len(rows_legacy)
+                    raise
+            if use_trace and schema_miss:
+                logger.warning(
+                    f"l7_grpc_flows trace columns missing; falling back to legacy INSERT: {e}"
+                )
+                self._trace_cols["grpc"] = False
+                rows_legacy = [self._build_grpc_row_legacy(m) for m in batch]
+                self.client.execute(self._INSERT_GRPC_LEGACY, rows_legacy)
+                return len(rows_legacy)
+            logger.error(f"❌ Failed to insert l7_grpc_flows: {e}")
+            raise
+    
+    def _build_dns_row_legacy(self, msg: Dict[str, Any]) -> tuple:
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        s = _l7_flat_endpoint(data, "src")
+        d = _l7_flat_endpoint(data, "dst")
+        resp_ips = data.get("response_ips") or data.get("answers") or []
+        if isinstance(resp_ips, str):
+            try:
+                resp_ips = json.loads(resp_ips)
+            except (json.JSONDecodeError, TypeError):
+                resp_ips = [resp_ips] if resp_ips else []
+        if isinstance(resp_ips, list):
+            resp_ips_str = json.dumps([str(x) for x in resp_ips], default=str)
+        else:
+            resp_ips_str = "[]"
+        return (
+            parse_l7_timestamp(msg.get("timestamp")),
+            safe_string(msg.get("cluster_id", "")),
+            safe_string(msg.get("cluster_name", "")),
+            safe_string(msg.get("analysis_id", "")),
+            safe_string(s["namespace"]),
+            safe_string(s["workload"]),
+            safe_string(s["pod"]),
+            safe_string(s["ip"]),
+            safe_int(s["port"], 0),
+            safe_string(d["namespace"]),
+            safe_string(d["workload"]),
+            safe_string(d["pod"]),
+            safe_string(d["ip"]),
+            safe_int(d["port"], 0),
+            safe_string(data.get("query_name", "")),
+            safe_string(data.get("query_type", "")),
+            safe_int(data.get("response_code"), 0),
+            resp_ips_str,
+            safe_float(data.get("latency_ms") or data.get("duration_ms"), 0.0),
+            _l7_labels_json(data.get("src_labels")),
+            _l7_labels_json(data.get("dst_labels")),
+            json.dumps(data, default=str),
+        )
+    
+    def _build_dns_row_with_trace(self, msg: Dict[str, Any]) -> tuple:
+        legacy = self._build_dns_row_legacy(msg)
+        data = msg.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        trace_cols = (
+            safe_string(data.get("trace_id", "")),
+            safe_string(data.get("span_id", "")),
+            safe_string(data.get("parent_span_id", "")),
+            safe_string(data.get("span_name", "")),
+            safe_int(data.get("span_kind", 0), 0),
+        )
+        return legacy[:-1] + trace_cols + (legacy[-1],)
+    
+    _INSERT_DNS_LEGACY = """
+    INSERT INTO l7_dns_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port,
+        query_name, query_type, response_code, response_ips,
+        latency_ms,
+        src_labels, dst_labels,
+        event_data_json
+    ) VALUES
+    """
+    
+    _INSERT_DNS_WITH_TRACE = """
+    INSERT INTO l7_dns_flows (
+        timestamp, cluster_id, cluster_name, analysis_id,
+        src_namespace, src_workload, src_pod, src_ip, src_port,
+        dst_namespace, dst_workload, dst_pod, dst_ip, dst_port,
+        query_name, query_type, response_code, response_ips,
+        latency_ms,
+        src_labels, dst_labels,
+        trace_id, span_id, parent_span_id, span_name, span_kind,
+        event_data_json
+    ) VALUES
+    """
+    
+    def insert_l7_dns_flow(self, batch: List[Dict[str, Any]]) -> int:
+        """Bulk insert L7 DNS flows into l7_dns_flows (with trace column fallback)."""
+        if not batch:
+            return 0
+        batch = _filter_l7_noise(batch, "DNS")
+        if not batch:
+            return 0
+        use_trace = settings.l7_tracing_enabled and self._trace_cols.get("dns", True)
+        rows = [
+            (self._build_dns_row_with_trace(m) if use_trace else self._build_dns_row_legacy(m))
+            for m in batch
+        ]
+        try:
+            query = self._INSERT_DNS_WITH_TRACE if use_trace else self._INSERT_DNS_LEGACY
+            self.client.execute(query, rows)
+            logger.info(f"✅ Inserted {len(rows)} l7_dns_flows")
+            return len(rows)
+        except ClickHouseError as e:
+            err_str = str(e)
+            if use_trace and ("Unknown column" in err_str or "doesn't have column" in err_str or "No such column" in err_str):
+                logger.warning(
+                    f"l7_dns_flows trace columns missing; falling back to legacy INSERT: {e}"
+                )
+                self._trace_cols["dns"] = False
+                rows_legacy = [self._build_dns_row_legacy(m) for m in batch]
+                self.client.execute(self._INSERT_DNS_LEGACY, rows_legacy)
+                return len(rows_legacy)
+            logger.error(f"❌ Failed to insert l7_dns_flows: {e}")
             raise
     
     def close(self):

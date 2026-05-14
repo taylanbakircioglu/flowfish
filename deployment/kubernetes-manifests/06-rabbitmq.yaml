@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: rabbitmq
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: flowfish
     component: rabbitmq
@@ -30,7 +30,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: rabbitmq-config
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: flowfish
     component: rabbitmq
@@ -59,7 +59,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: rabbitmq
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: flowfish
     component: rabbitmq
@@ -226,7 +226,7 @@ spec:
         component: rabbitmq
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: ""
+      storageClassName: {{STORAGE_CLASS}}
       resources:
         requests:
           storage: 10Gi
@@ -236,7 +236,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: rabbitmq-init
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: flowfish
     component: rabbitmq
@@ -255,6 +255,13 @@ spec:
       initContainers:
       - name: wait-for-rabbitmq
         image: busybox:latest
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
         command:
         - sh
         - -c
@@ -281,6 +288,13 @@ spec:
       containers:
       - name: init
         image: curlimages/curl:8.5.0
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
         command:
         - /bin/sh
         - -c
@@ -352,6 +366,57 @@ spec:
             -H "content-type:application/json" \
             -d '{"routing_key":"#"}'
           
+          # L7 Exchanges
+          echo "Creating L7 exchanges..."
+          for EXCHANGE in flowfish.l7.http_flows flowfish.l7.grpc_flows flowfish.l7.dns_flows flowfish.l7.dlx; do
+            curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+              http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/${EXCHANGE} \
+              -H "content-type:application/json" \
+              -d '{"type":"topic","durable":true}'
+          done
+
+          # L7 Queues (timeseries + graph for each protocol)
+          echo "Creating L7 queues..."
+          for QUEUE in flowfish.queue.l7_http_flows.timeseries flowfish.queue.l7_http_flows.graph \
+                       flowfish.queue.l7_grpc_flows.timeseries flowfish.queue.l7_grpc_flows.graph \
+                       flowfish.queue.l7_dns_flows.timeseries flowfish.queue.l7_dns_flows.graph; do
+            curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+              http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/${QUEUE} \
+              -H "content-type:application/json" \
+              -d '{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000,"x-dead-letter-exchange":"flowfish.l7.dlx"}}'
+          done
+
+          # L7 Dead Letter Queue (retains failed/rejected messages for inspection)
+          echo "Creating L7 DLQ..."
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/flowfish.queue.l7.dlq \
+            -H "content-type:application/json" \
+            -d '{"durable":true,"arguments":{"x-message-ttl":604800000,"x-max-length":100000}}'
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.dlx/q/flowfish.queue.l7.dlq \
+            -H "content-type:application/json" -d '{"routing_key":"#"}'
+
+          # L7 Bindings
+          echo "Creating L7 bindings..."
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.http_flows/q/flowfish.queue.l7_http_flows.timeseries \
+            -H "content-type:application/json" -d '{"routing_key":"#"}'
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.http_flows/q/flowfish.queue.l7_http_flows.graph \
+            -H "content-type:application/json" -d '{"routing_key":"#"}'
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.grpc_flows/q/flowfish.queue.l7_grpc_flows.timeseries \
+            -H "content-type:application/json" -d '{"routing_key":"#"}'
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.grpc_flows/q/flowfish.queue.l7_grpc_flows.graph \
+            -H "content-type:application/json" -d '{"routing_key":"#"}'
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.dns_flows/q/flowfish.queue.l7_dns_flows.timeseries \
+            -H "content-type:application/json" -d '{"routing_key":"#"}'
+          curl -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+            http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.dns_flows/q/flowfish.queue.l7_dns_flows.graph \
+            -H "content-type:application/json" -d '{"routing_key":"#"}'
+
           echo "RabbitMQ initialization complete!"
         env:
         - name: RABBITMQ_USERNAME

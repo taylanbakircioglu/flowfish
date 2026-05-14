@@ -14,11 +14,12 @@ Cache TTLs:
 - Labels: 2 minutes
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 import structlog
 
 from services.cluster_cache_service import cluster_cache_service
+from utils.jwt_utils import get_current_user
 
 logger = structlog.get_logger()
 
@@ -28,7 +29,8 @@ router = APIRouter()
 @router.get("/namespaces")
 async def get_namespaces(
     cluster_id: Optional[int] = Query(None, description="Filter by cluster ID"),
-    refresh: bool = Query(False, description="Force cache refresh")
+    refresh: bool = Query(False, description="Force cache refresh"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Get list of namespaces from cluster.
@@ -64,7 +66,8 @@ async def get_namespaces(
 async def get_deployments(
     cluster_id: Optional[int] = Query(None, description="Filter by cluster ID"),
     namespace: Optional[str] = Query(None, description="Filter by namespace"),
-    refresh: bool = Query(False, description="Force cache refresh")
+    refresh: bool = Query(False, description="Force cache refresh"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Get list of deployments from cluster.
@@ -103,7 +106,8 @@ async def get_labels(
     cluster_id: Optional[int] = Query(None, description="Filter by cluster ID"),
     resource_type: str = Query("pods", description="Resource type: pods or deployments"),
     namespace: Optional[str] = Query(None, description="Filter by namespace"),
-    refresh: bool = Query(False, description="Force cache refresh")
+    refresh: bool = Query(False, description="Force cache refresh"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Get unique labels from cluster resources.
@@ -143,7 +147,8 @@ async def get_pods(
     cluster_id: Optional[int] = Query(None, description="Filter by cluster ID"),
     namespace: Optional[str] = Query(None, description="Filter by namespace"),
     label_selector: Optional[str] = Query(None, description="Label selector (e.g., app=nginx)"),
-    refresh: bool = Query(False, description="Force cache refresh")
+    refresh: bool = Query(False, description="Force cache refresh"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Get list of pods from cluster.
@@ -181,7 +186,8 @@ async def get_pods(
 @router.get("/services")
 async def get_services(
     cluster_id: Optional[int] = Query(None, description="Filter by cluster ID"),
-    namespace: Optional[str] = Query(None, description="Filter by namespace")
+    namespace: Optional[str] = Query(None, description="Filter by namespace"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Get list of services from cluster.
@@ -213,7 +219,10 @@ async def get_services(
 
 
 @router.post("/cache/invalidate/{cluster_id}")
-async def invalidate_cluster_cache(cluster_id: int):
+async def invalidate_cluster_cache(
+    cluster_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Invalidate all cached data for a cluster.
     Use when cluster config changes or for manual refresh.

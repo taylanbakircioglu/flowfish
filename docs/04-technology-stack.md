@@ -10,7 +10,8 @@ Technologies selected for the Flowfish platform follow principles of high perfor
 
 | Layer | Technology | Version |
 |--------|-----------|----------|
-| **Data Collection** | Inspektor Gadget + eBPF | Latest |
+| **Data Collection (L4)** | Inspektor Gadget + eBPF | Latest |
+| **Data Collection (L7)** | Grafana Beyla + eBPF | v3.8+ |
 | **Backend** | Python + FastAPI | 3.11+ / 0.100+ |
 | **Frontend** | React + TypeScript | 18+ / 5+ |
 | **UI Framework** | Ant Design | 5+ |
@@ -61,6 +62,37 @@ Technologies selected for the Flowfish platform follow principles of high perfor
 - `trace_exec`: Process execution tracking
 - `trace_open`: File access monitoring
 - `trace_bind`: Port binding detection
+
+---
+
+## 🔬 L7 Data Collection: Grafana Beyla + eBPF
+
+### Selection Rationale
+
+**Why Grafana Beyla?**
+- ✅ **eBPF-Based**: Same kernel-level approach as Inspektor Gadget
+- ✅ **L7 Protocol Support**: HTTP, gRPC, DNS request/response capture
+- ✅ **Zero Application Change**: No sidecars, no code instrumentation
+- ✅ **DaemonSet Architecture**: Consistent with existing Inspektor Gadget deployment
+- ✅ **Multi-Arch**: AMD64 + ARM64 support (~50MB image)
+- ✅ **OpenTelemetry Native**: Exports OTLP traces and metrics
+- ✅ **Apache 2.0 License**: Fully open source
+
+**Alternatives and Why They Were Not Chosen:**
+
+| Alternative | Pros | Cons | Why Not Chosen |
+|------------|------|------|----------------|
+| **Kubeshark** | Rich L7 capture, UI | License changed to paid, limited multi-cluster | Commercial licensing |
+| **Cilium Hubble** | eBPF, L7 visibility | Requires Cilium CNI | Not CNI-agnostic |
+| **Pixie** | Rich L7 visibility | Cloud-centric, limited self-hosted | External dependency |
+| **Service Mesh** | mTLS, L7 metrics | Sidecar injection, high overhead | Requires application changes |
+
+**Beyla Architecture**:
+- Deployed as DaemonSet on each cluster node
+- Instruments Go, Python, Java, Node.js, .NET, Rust applications automatically
+- Captures HTTP method/path/status, gRPC service/method, DNS queries
+- Exports OpenTelemetry spans to in-cluster flowfish-l7-collector
+- flowfish-l7-collector bridges push model to Flowfish pull model via K8s API Service Proxy
 
 ---
 

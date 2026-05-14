@@ -1,0 +1,140 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: l7-ingestion-service
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: l7-ingestion-service
+    component: l7-ingestion
+spec:
+  selector:
+    app: l7-ingestion-service
+  ports:
+    - name: grpc
+      port: 5006
+      targetPort: 5006
+      protocol: TCP
+      appProtocol: grpc
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: l7-ingestion-service
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: l7-ingestion-service
+    component: l7-ingestion
+    tier: microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: l7-ingestion-service
+  template:
+    metadata:
+      labels:
+        app: l7-ingestion-service
+        component: l7-ingestion
+        tier: microservices
+    spec:
+      serviceAccountName: flowfish
+      containers:
+        - name: l7-ingestion-service
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-l7-ingestion-service:{{IMAGE_TAG}}
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 5006
+              protocol: TCP
+          env:
+            - name: GRPC_PORT
+              value: "5006"
+            - name: RABBITMQ_HOST
+              value: "rabbitmq"
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-user
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: rabbitmq-password
+            - name: RABBITMQ_VHOST
+              value: "/"
+            - name: REDIS_HOST
+              value: "redis"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: redis-password
+                  optional: true
+            - name: FLOWFISH_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flowfish-secrets
+                  key: FLOWFISH_ENCRYPTION_KEY
+            - name: SAMPLING_RATE
+              value: "1.0"
+            - name: MAX_EVENTS_PER_SECOND
+              value: "5000"
+            - name: COLLECTOR_POLL_INTERVAL
+              value: "2"
+            # L7_TRACING_ENABLED is intentionally NOT set on this deployment.
+            # The trace pipeline gating lives in timeseries-writer (column
+            # population) and graph-writer (relationship properties +
+            # SAME_WORKLOAD bridges); l7-ingestion-service itself is
+            # tracing-agnostic and forwards spans regardless. An earlier
+            # revision used the flag to auto-inject the synthetic "external"
+            # namespace into per-session allow-lists, but that turned out
+            # to over-include unrelated workloads (see grpc_server.py) and
+            # was removed.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import grpc
+                  try:
+                      ch = grpc.insecure_channel('localhost:5006')
+                      grpc.channel_ready_future(ch).result(timeout=3)
+                      ch.close()
+                  except Exception:
+                      import sys; sys.exit(1)
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import grpc
+                  try:
+                      ch = grpc.insecure_channel('localhost:5006')
+                      grpc.channel_ready_future(ch).result(timeout=3)
+                      ch.close()
+                  except Exception:
+                      import sys; sys.exit(1)
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+      securityContext:
+        runAsNonRoot: false

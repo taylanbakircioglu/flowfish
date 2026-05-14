@@ -3,12 +3,28 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: inspektor-gadget-config
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: inspektor-gadget
 data:
   config.yaml: |
-    events-buffer-length: 16384
+    # eBPF ring buffer size (per-CPU, per-node). Each tier carries 2x
+    # headroom over the strictly-required size so a multi-gadget burst
+    # (11 gadgets × N pods) doesn't overflow the IG worker's perf-event
+    # rings (the original 1x sizing flooded production at 190 pods/node
+    # → "lost samples / bad fd" → IG SIGKILL exit 137).
+    #
+    # Sizing by pods/node ratio:
+    #   <=15:    262144   |  16-40: 524288  |  41-80:  2097152 (2M)
+    #   81-150:  2097152  | 151-300: 4M     |  300+:   4M (kernel cap)
+    # Floor by total pods: 500+ → min 1M, 1000+ → min 2M, 2000+ → min 4M
+    #
+    # Install script auto-detects pods/node and overrides this default
+    # at deploy time. The 262144 baseline below is the safe minimum
+    # used if the install script cannot read the cluster (e.g. limited
+    # RBAC) — it covers small clusters and prevents the legacy 131K
+    # default from being applied.
+    events-buffer-length: 262144
     # Auto-detected by init container at pod startup. Supported platforms:
     #   K3s/RKE2:  /run/k3s/containerd/containerd.sock
     #   MicroK8s:  /var/snap/microk8s/common/run/containerd.sock
@@ -17,7 +33,7 @@ data:
     crio-socketpath: /run/crio/crio.sock
     docker-socketpath: /run/docker.sock
     podman-socketpath: /run/podman/podman.sock
-    gadget-namespace: "flowfish"
+    gadget-namespace: "{{OPENSHIFT_NAMESPACE}}"
     daemon-log-level: info
     operator:
       kubemanager:
@@ -28,8 +44,9 @@ data:
         disallow-pulling: false
         # Internal registry for air-gapped environments
         # Mirror gadget images from ghcr.io/inspektor-gadget/gadget/ to this registry
-        default-registry: "ghcr.io/inspektor-gadget/gadget"
-        insecure-registries: []
+        default-registry: "{{HARBOR_REGISTRY}}/flowfish/gadget"
+        insecure-registries:
+          - "{{HARBOR_REGISTRY}}"
         verify-image: false
       otel-metrics:
         otel-metrics-listen: false

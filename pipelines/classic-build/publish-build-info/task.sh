@@ -8,7 +8,7 @@
 # ==============================================================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📦 PUBLISHING BUILD INFO"
+echo "[INFO] PUBLISHING BUILD INFO"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 BUILD_INFO_DIR="${BUILD_ARTIFACTSTAGINGDIRECTORY}/build-info"
@@ -17,8 +17,8 @@ mkdir -p "$BUILD_INFO_DIR"
 BUILD_INFO_FILE="$BUILD_INFO_DIR/build-info.env"
 cmtHashShort=$(echo $BUILD_SOURCEVERSION | cut -c1-7)
 
-echo "📌 Current Commit: $cmtHashShort"
-echo "📌 Build ID: $BUILD_BUILDID"
+echo "[INFO] Current Commit: $cmtHashShort"
+echo "[INFO] Build ID: $BUILD_BUILDID"
 echo ""
 
 # Write build info header
@@ -49,10 +49,14 @@ record_build_status() {
     if [ "${!changed_var:-0}" -gt 0 ] 2>/dev/null; then
         echo "${tag_var}=$cmtHashShort" >> "$BUILD_INFO_FILE"
         echo "${built_var}=true" >> "$BUILD_INFO_FILE"
-        echo "✅ $service_name: $cmtHashShort (rebuilt)"
+        # Set as output variables for release pipeline consumption
+        echo "##vso[task.setvariable variable=${tag_var};isOutput=true]$cmtHashShort"
+        echo "##vso[task.setvariable variable=${built_var};isOutput=true]true"
+        echo "[OK] $service_name: $cmtHashShort (rebuilt)"
     else
         echo "${built_var}=false" >> "$BUILD_INFO_FILE"
-        echo "⏭️  $service_name: not rebuilt"
+        echo "##vso[task.setvariable variable=${built_var};isOutput=true]false"
+        echo "[SKIP] $service_name: not rebuilt"
     fi
 }
 
@@ -67,18 +71,20 @@ record_build_status "GRAPH_QUERY" "GRAPH_QUERY_CHANGED"
 record_build_status "TIMESERIES_WRITER" "TIMESERIES_WRITER_CHANGED"
 record_build_status "TIMESERIES_QUERY" "TIMESERIES_QUERY_CHANGED"
 record_build_status "INGESTION_SERVICE" "INGESTION_SERVICE_CHANGED"
+record_build_status "L7_INGESTION_SERVICE" "L7_INGESTION_SERVICE_CHANGED"
+record_build_status "L7_COLLECTOR" "L7_COLLECTOR_CHANGED"
 record_build_status "CHANGE_WORKER" "CHANGE_WORKER_CHANGED"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📄 Build Info File Contents:"
+echo "[FILE] Build Info File Contents:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 cat "$BUILD_INFO_FILE"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "✅ Build info published to: $BUILD_INFO_FILE"
+echo "[OK] Build info published to: $BUILD_INFO_FILE"
 echo ""
-echo "📌 To use in Release Pipeline:"
+echo "[INFO] To use in Release Pipeline:"
 echo "   1. Add artifact alias: Flowfish-CI"
 echo "   2. Set variable: BUILD_INFO_FILE = \$(System.ArtifactsDirectory)/Flowfish-CI/build-info/build-info.env"
 echo ""

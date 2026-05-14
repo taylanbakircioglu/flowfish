@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package l7_ingestion;
+
+service L7DataIngestion {
+  rpc StartL7Collection(StartL7CollectionRequest) returns (StartL7CollectionResponse);
+  rpc StopL7Collection(StopL7CollectionRequest) returns (StopL7CollectionResponse);
+  rpc GetL7CollectionStatus(GetL7CollectionStatusRequest) returns (L7CollectionStatus);
+  rpc ListL7CollectionStatus(ListL7StatusRequest) returns (ListL7StatusResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message StartL7CollectionRequest {
+  string analysis_id = 1;
+  string cluster_id = 2;
+  string cluster_name = 3;
+  string beyla_namespace = 4;
+  repeated string protocols = 5;
+  float sampling_rate = 6;
+  repeated string namespace_allow = 7;
+  repeated string namespace_deny = 8;
+  string cluster_api_url = 9;
+  string cluster_token = 10;
+  string cluster_ca_cert = 11;
+  bool skip_tls_verify = 12;
+  int32 max_events_per_second = 13;
+  string service_filter = 14;
+  repeated string http_methods = 15;
+  repeated string status_codes = 16;
+  string path_pattern = 17;
+  string exclude_paths = 18;
+}
+
+message StartL7CollectionResponse {
+  bool success = 1;
+  string message = 2;
+  string session_id = 3;
+}
+
+message StopL7CollectionRequest {
+  string analysis_id = 1;
+  string cluster_id = 2;
+}
+
+message StopL7CollectionResponse {
+  bool success = 1;
+  string message = 2;
+  int64 total_events = 3;
+}
+
+message GetL7CollectionStatusRequest {
+  string analysis_id = 1;
+  string cluster_id = 2;
+}
+
+message L7CollectionStatus {
+  string analysis_id = 1;
+  string cluster_id = 2;
+  string status = 3;
+  int64 events_published = 4;
+  int64 http_events = 5;
+  int64 grpc_events = 6;
+  int64 dns_events = 7;
+  string error_message = 8;
+}
+
+message ListL7StatusRequest {
+  string analysis_id = 1;
+}
+
+message ListL7StatusResponse {
+  repeated L7CollectionStatus statuses = 1;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string message = 2;
+}

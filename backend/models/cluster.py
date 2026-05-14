@@ -25,8 +25,15 @@ class Cluster(BaseModel):
     # Inspector Gadget configuration
     gadget_namespace = Column(String(255), nullable=False)  # Namespace where Inspector Gadget is deployed (from UI)
     gadget_endpoint = Column(Text, nullable=True)  # Deprecated - kept for backward compatibility
-    gadget_health_status = Column(String(50), default="unknown")  # 'healthy', 'degraded', 'unhealthy', 'unknown'
+    gadget_health_status = Column(String(50), default="not_installed")  # 'healthy', 'degraded', 'unhealthy', 'unknown', 'not_installed'
     gadget_version = Column(String(50), nullable=True)  # Detected IG version
+    
+    # Beyla L7 configuration
+    beyla_namespace = Column(String(255), nullable=True)
+    beyla_health_status = Column(String(50), default="not_installed")
+    beyla_version = Column(String(50), nullable=True)
+    l7_collector_endpoint = Column(Text, nullable=True)
+    beyla_last_check = Column(DateTime, nullable=True)
     
     is_in_cluster = Column(Boolean, default=False)  # Is Flowfish running in this cluster?
     is_active = Column(Boolean, default=True, index=True)

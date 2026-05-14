@@ -9,7 +9,7 @@ set -e
 # ==============================================================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🔧 BACKEND BUILD"
+echo "[BUILD] BACKEND BUILD"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd ${BUILD_SOURCESDIRECTORY}
@@ -19,20 +19,20 @@ environment=${DEPLOYMENT_ENV:-pilot}
 HARBOR_PROJECT="flowfish"
 
 echo ""
-echo "📦 Commit Hash: $cmtHashShort"
-echo "🌍 Environment: $environment"
-echo "📋 BACKEND_CHANGED: ${BACKEND_CHANGED:-0}"
+echo "[INFO] Commit Hash: $cmtHashShort"
+echo "Environment: $environment"
+echo "[INFO] BACKEND_CHANGED: ${BACKEND_CHANGED:-0}"
 
 # Backend değişikliği var mı kontrol et (varsayılan 0)
 if [ "${BACKEND_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🔨 Building Backend..."
+    echo "[BUILD] Building Backend..."
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
     # Harbor credentials check
     if [ -z "${HARBOR_REGISTRY}" ] || [ -z "${HARBOR_USER}" ] || [ -z "${HARBOR_PASSWORD}" ]; then
-        echo "❌ ERROR: Harbor credentials not set!"
+        echo "[ERROR] ERROR: Harbor credentials not set!"
         exit 1
     fi
     
@@ -48,14 +48,14 @@ if [ "${BACKEND_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
     podman push ${HARBOR_REGISTRY}/$HARBOR_PROJECT/flowfish-backend:$cmtHashShort
     podman push ${HARBOR_REGISTRY}/$HARBOR_PROJECT/flowfish-backend:latest
     
-    echo "✅ Backend build complete!"
+    echo "[OK] Backend build complete!"
     echo "##vso[task.setvariable variable=BACKEND_BUILT;isOutput=true]true"
     echo "##vso[task.setvariable variable=BACKEND_TAG;isOutput=true]$cmtHashShort"
 else
     echo ""
-    echo "⏭️  Skipping Backend build - No changes detected"
+    echo "[SKIP] Skipping Backend build - No changes detected"
     echo "##vso[task.setvariable variable=BACKEND_BUILT;isOutput=true]false"
 fi
 
 echo ""
-echo "🎉 Backend build task completed!"
+echo "[DONE] Backend build task completed!"

@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: backend-config
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: backend
 data:
@@ -30,14 +30,14 @@ data:
   DATA_RETENTION_DAYS: "30"
   
   # Inspektor Gadget settings
-  GADGET_NAMESPACE: "flowfish"
-  GADGET_IMAGE: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1"
+  GADGET_NAMESPACE: "{{OPENSHIFT_NAMESPACE}}"
+  GADGET_IMAGE: "{{HARBOR_REGISTRY}}/flowfish/inspektor-gadget:{{GADGET_VERSION}}"
   # IMPORTANT: Gadget image version MUST match the deployed Inspektor Gadget DaemonSet version
   # Using 'latest' causes CO-RE compatibility issues between gadget eBPF programs and the kernel modules
   # Current DaemonSet version: v0.50.1 (see 10-inspektor-gadget.yaml)
   GADGET_IMAGE_VERSION: "v0.50.1"  # ring buffer fix + socket cleanup
   # Empty GADGET_REGISTRY = use official ghcr.io/inspektor-gadget/gadget images
-  # Set to a custom registry prefix only if you have mirrored images with multi-arch support
+  # Set to "{{HARBOR_REGISTRY}}/flowfish" only if you have mirrored images with multi-arch support
   GADGET_REGISTRY: ""
   GADGET_IMAGE_PREFIX: ""
   
@@ -60,7 +60,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: frontend-config
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: frontend
 data:
@@ -84,7 +84,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: clickhouse-config
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: clickhouse
 data:
@@ -109,8 +109,8 @@ data:
         <max_connections>200</max_connections>
         <keep_alive_timeout>3</keep_alive_timeout>
         <max_concurrent_queries>50</max_concurrent_queries>
-        <uncompressed_cache_size>8589934592</uncompressed_cache_size>
-        <mark_cache_size>5368709120</mark_cache_size>
+        <uncompressed_cache_size>2147483648</uncompressed_cache_size>
+        <mark_cache_size>1073741824</mark_cache_size>
         
         <path>/var/lib/clickhouse/</path>
         <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
@@ -136,7 +136,7 @@ data:
     <clickhouse>
         <profiles>
             <default>
-                <max_memory_usage>10000000000</max_memory_usage>
+                <max_memory_usage>4294967296</max_memory_usage>
                 <use_uncompressed_cache>0</use_uncompressed_cache>
                 <load_balancing>random</load_balancing>
             </default>
@@ -179,7 +179,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-config
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: postgresql
 data:
@@ -224,7 +224,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: redis-config
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: redis
 data:

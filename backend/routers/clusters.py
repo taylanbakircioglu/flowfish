@@ -2,7 +2,7 @@
 Clusters router - Simplified for MVP
 """
 
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from typing import Optional, List
@@ -14,8 +14,9 @@ import asyncio
 from database.postgresql import database
 from services.cluster_cache_service import cluster_cache_service
 from services.cluster_connection_manager import cluster_connection_manager
-from utils.encryption import encrypt_data
+from utils.encryption import encrypt_data, decrypt_data
 from config import settings as app_settings
+from utils.jwt_utils import get_current_user
 
 logger = structlog.get_logger()
 
@@ -39,6 +40,7 @@ class ClusterCreate(BaseModel):
     gadget_namespace: str  # Namespace where gadget is deployed (REQUIRED from UI)
     gadget_endpoint: Optional[str] = None  # Deprecated - not used anymore
     skip_tls_verify: Optional[bool] = False
+    beyla_namespace: Optional[str] = None
 
 class ClusterUpdate(BaseModel):
     """
@@ -59,6 +61,7 @@ class ClusterUpdate(BaseModel):
     token: Optional[str] = None
     kubeconfig: Optional[str] = None
     ca_cert: Optional[str] = None
+    beyla_namespace: Optional[str] = None
 
 class ClusterResponse(BaseModel):
     id: int
@@ -73,6 +76,11 @@ class ClusterResponse(BaseModel):
     gadget_endpoint: Optional[str] = None  # Deprecated
     gadget_health_status: Optional[str] = None
     gadget_version: Optional[str] = None
+    beyla_namespace: Optional[str] = None
+    beyla_health_status: Optional[str] = None
+    beyla_version: Optional[str] = None
+    l7_collector_endpoint: Optional[str] = None
+    beyla_last_check: Optional[datetime] = None
     status: Optional[str] = None
     total_nodes: Optional[int] = None
     total_pods: Optional[int] = None
@@ -83,13 +91,19 @@ class ClusterResponse(BaseModel):
 
 
 @router.get("/clusters")
-async def get_clusters(is_active: Optional[bool] = None):
+async def get_clusters(
+    is_active: Optional[bool] = None,
+    current_user: dict = Depends(get_current_user),
+):
     """Get list of clusters"""
     try:
         query = """
         SELECT id, name, description, environment, provider, region,
                connection_type, api_server_url, gadget_namespace, gadget_endpoint,
-               gadget_health_status, gadget_version, status,
+               gadget_health_status, gadget_version,
+               beyla_namespace, beyla_health_status, beyla_version,
+               l7_collector_endpoint, beyla_last_check,
+               status,
                total_nodes, total_pods, total_namespaces,
                k8s_version, created_at, updated_at
         FROM clusters
@@ -110,7 +124,8 @@ async def get_clusters(is_active: Optional[bool] = None):
         return {
             "clusters": [dict(cluster) for cluster in clusters],
             "count": len(clusters),
-            "supported_gadget_version": app_settings.GADGET_SUPPORTED_VERSION
+            "supported_gadget_version": app_settings.GADGET_SUPPORTED_VERSION,
+            "supported_beyla_version": getattr(app_settings, 'BEYLA_SUPPORTED_VERSION', 'v3.9.5')
         }
         
     except Exception as e:
@@ -122,7 +137,10 @@ async def get_clusters(is_active: Optional[bool] = None):
 
 
 @router.post("/clusters", status_code=status.HTTP_201_CREATED)
-async def create_cluster(cluster_data: ClusterCreate):
+async def create_cluster(
+    cluster_data: ClusterCreate,
+    current_user: dict = Depends(get_current_user),
+):
     """Create new cluster and fetch its information"""
     try:
         # Check if cluster with same name exists
@@ -150,7 +168,7 @@ async def create_cluster(cluster_data: ClusterCreate):
                     gadget_namespace = :gadget_namespace,
                     skip_tls_verify = :skip_tls_verify,
                     status = 'active',
-                    gadget_health_status = 'unknown',
+                    gadget_health_status = 'not_installed',
                     updated_at = NOW()
                 WHERE id = :cluster_id
                 RETURNING id
@@ -189,13 +207,15 @@ async def create_cluster(cluster_data: ClusterCreate):
                 name, description, environment, provider, region,
                 connection_type, api_server_url, kubeconfig_encrypted,
                 token_encrypted, ca_cert_encrypted, gadget_namespace,
+                beyla_namespace,
                 skip_tls_verify, status, gadget_health_status, created_at
             )
             VALUES (
                 :name, :description, :environment, :provider, :region,
                 :connection_type, :api_server_url, :kubeconfig,
                 :token, :ca_cert, :gadget_namespace,
-                :skip_tls_verify, 'active', 'unknown', NOW()
+                :beyla_namespace,
+                :skip_tls_verify, 'active', 'not_installed', NOW()
             )
             RETURNING id
             """
@@ -217,6 +237,7 @@ async def create_cluster(cluster_data: ClusterCreate):
                 "token": encrypted_token,
                 "ca_cert": encrypted_ca_cert,
                 "gadget_namespace": cluster_data.gadget_namespace,  # Required from UI
+                "beyla_namespace": cluster_data.beyla_namespace,
                 "skip_tls_verify": cluster_data.skip_tls_verify or False
             }
             
@@ -234,7 +255,26 @@ async def create_cluster(cluster_data: ClusterCreate):
                 
                 cluster_info = await cluster_connection_manager.get_cluster_info(cid)
                 gadget_health = await cluster_connection_manager.check_gadget_health(cid)
-                
+
+                beyla_health = {"health_status": "not_installed", "version": ""}
+                try:
+                    row = await database.fetch_one(
+                        "SELECT beyla_namespace, gadget_namespace FROM clusters WHERE id = :id",
+                        {"id": cid},
+                    )
+                    stored_beyla_ns = (row["beyla_namespace"] if row else "") or ""
+                    beyla_ns = stored_beyla_ns or (row["gadget_namespace"] if row else "") or ""
+                    if beyla_ns:
+                        beyla_health = await cluster_connection_manager.check_beyla_health(cid, beyla_ns)
+                        if not stored_beyla_ns and beyla_health.get("health_status") in ("healthy", "degraded"):
+                            await database.execute(
+                                "UPDATE clusters SET beyla_namespace = :ns WHERE id = :id",
+                                {"ns": beyla_ns, "id": cid},
+                            )
+                            logger.info("Background: auto-discovered beyla_namespace", cluster_id=cid, namespace=beyla_ns)
+                except Exception as be:
+                    logger.debug("Background: Beyla health check failed: %s", be)
+
                 if not cluster_info.get("error"):
                     update_query = """
                     UPDATE clusters
@@ -244,6 +284,9 @@ async def create_cluster(cluster_data: ClusterCreate):
                         k8s_version = :k8s_version,
                         gadget_health_status = :gadget_health_status,
                         gadget_version = :gadget_version,
+                        beyla_health_status = :beyla_health_status,
+                        beyla_version = :beyla_version,
+                        beyla_last_check = NOW(),
                         updated_at = NOW()
                     WHERE id = :cluster_id
                     """
@@ -254,8 +297,10 @@ async def create_cluster(cluster_data: ClusterCreate):
                         "total_pods": cluster_info.get("total_pods", 0),
                         "total_namespaces": cluster_info.get("total_namespaces", 0),
                         "k8s_version": cluster_info.get("k8s_version"),
-                        "gadget_health_status": gadget_health.get("health_status", "unknown"),
-                        "gadget_version": gadget_health.get("version")
+                        "gadget_health_status": gadget_health.get("health_status", "not_installed"),
+                        "gadget_version": gadget_health.get("version"),
+                        "beyla_health_status": beyla_health.get("health_status", "not_installed"),
+                        "beyla_version": beyla_health.get("version", ""),
                     })
                     
                     logger.info("Background: Cluster info updated", cluster_id=cid)
@@ -331,31 +376,39 @@ async def create_cluster(cluster_data: ClusterCreate):
 # Otherwise FastAPI will try to match "gadget-install-script" as a cluster_id
 
 
-def generate_uninstall_script(cli_tool: str, provider_upper: str) -> str:
-    """Generate uninstall script for Flowfish components"""
+def generate_uninstall_script(cli_tool: str) -> str:
+    """Generate L4 (Gadget-only) uninstall script.
+
+    IMPORTANT: This script NEVER removes the shared flowfish-remote-reader
+    ServiceAccount, Secret, ClusterRole, or ClusterRoleBinding because they
+    are used by L7 agents, cluster sync, and health checks.  Only
+    Inspector-Gadget-specific resources are removed.
+    """
     return f'''#!/bin/bash
 #
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  Flowfish Uninstall Script for {provider_upper:<12}                                ║
-# ║                                                                           ║
-# ║  This script SAFELY removes ONLY:                                         ║
-# ║  - Inspector Gadget (DaemonSet, Service, ConfigMap, RBAC)                ║
-# ║  - Flowfish ServiceAccount and RBAC                                       ║
-# ║  - SCC (OpenShift only, if not used by other namespaces)                 ║
-# ║                                                                           ║
-# ║  ✅ SAFE: The NAMESPACE will NOT be deleted!                              ║
-# ║  ✅ SAFE: Other workloads in the namespace will NOT be affected!         ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
+# ============================================================================
+#  L4 Agent Cleanup - Inspector Gadget ONLY
+#
+#  This script SAFELY removes ONLY Inspector Gadget resources:
+#  - Inspector Gadget DaemonSet, Service, ConfigMap, ServiceAccount
+#  - Gadget RBAC (ClusterRole/Binding if unused by other namespaces)
+#  - Gadget SCC (OpenShift only, if unused)
+#
+#  PRESERVED (shared resources):
+#  - flowfish-remote-reader ServiceAccount (used by L7 + cluster sync)
+#  - flowfish-remote-reader ClusterRole/Binding
+#  - Namespace
+#  - Beyla (L7) and flowfish-l7-collector
+# ============================================================================
 #
 # Usage:
-#   chmod +x uninstall-flowfish.sh
-#   ./uninstall-flowfish.sh <namespace>
-#   ./uninstall-flowfish.sh              # Interactive mode
+#   chmod +x cleanup-l4-agent.sh
+#   ./cleanup-l4-agent.sh <namespace>
+#   ./cleanup-l4-agent.sh              # Interactive mode
 #
 
 CLI_TOOL="{cli_tool}"
 
-# Colors
 RED='\\033[0;31m'
 GREEN='\\033[0;32m'
 YELLOW='\\033[1;33m'
@@ -365,46 +418,42 @@ BOLD='\\033[1m'
 NC='\\033[0m'
 
 print_status() {{ echo -e "${{BLUE}}[INFO]${{NC}} $1"; }}
-print_success() {{ echo -e "${{GREEN}}[SUCCESS]${{NC}} $1"; }}
-print_warning() {{ echo -e "${{YELLOW}}[WARNING]${{NC}} $1"; }}
+print_success() {{ echo -e "${{GREEN}}[OK]${{NC}} $1"; }}
+print_warning() {{ echo -e "${{YELLOW}}[WARN]${{NC}} $1"; }}
 print_error() {{ echo -e "${{RED}}[ERROR]${{NC}} $1"; }}
-print_header() {{ echo -e "\\n${{CYAN}}${{BOLD}}═══ $1 ═══${{NC}}\\n"; }}
 
 echo ""
-echo "╔═══════════════════════════════════════════════════════════════════════════╗"
-echo "║         Flowfish Uninstall Script for {provider_upper:<12}                        ║"
-echo "║                                                                           ║"
-echo "║  ⚠️  This will remove Inspector Gadget and Flowfish ServiceAccount        ║"
-echo "╚═══════════════════════════════════════════════════════════════════════════╝"
+echo "============================================================"
+echo "  L4 Agent Cleanup - Inspector Gadget"
+echo "============================================================"
 echo ""
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Pre-flight Checks
-# ═══════════════════════════════════════════════════════════════════════════
-print_header "Pre-flight Checks"
-
+# Pre-flight
 if ! command -v $CLI_TOOL &> /dev/null; then
     print_error "$CLI_TOOL CLI is not installed or not in PATH"
     exit 1
 fi
 print_success "$CLI_TOOL CLI found"
 
-if ! $CLI_TOOL whoami &> /dev/null; then
-    print_error "Not logged in. Please run '$CLI_TOOL login' first."
-    exit 1
-fi
-CURRENT_USER=$($CLI_TOOL whoami)
-print_success "Logged in as: $CURRENT_USER"
-
-# Get namespace
-if [ -n "$1" ]; then
-    NAMESPACE="$1"
-    print_status "Using namespace from parameter: $NAMESPACE"
+if [ "$CLI_TOOL" = "oc" ]; then
+    if ! $CLI_TOOL whoami &> /dev/null; then
+        print_error "Not logged in. Run 'oc login' first."
+        exit 1
+    fi
+    print_success "Logged in as: $($CLI_TOOL whoami)"
 else
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    read -p "Enter namespace to uninstall Flowfish from: " NAMESPACE
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    if ! $CLI_TOOL cluster-info &> /dev/null 2>&1; then
+        print_error "Cannot connect to cluster. Check your kubeconfig."
+        exit 1
+    fi
+    print_success "Cluster connection OK"
+fi
+
+# Namespace
+if [ -n "${{1:-}}" ]; then
+    NAMESPACE="$1"
+else
+    read -p "Enter namespace: " NAMESPACE
 fi
 
 if [ -z "$NAMESPACE" ]; then
@@ -417,162 +466,1216 @@ if ! $CLI_TOOL get namespace "$NAMESPACE" &> /dev/null; then
     exit 1
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Safety Check - Verify this is a Flowfish namespace
-# ═══════════════════════════════════════════════════════════════════════════
-print_header "Safety Verification"
-
-# Check if Inspector Gadget or Flowfish resources exist in this namespace
-GADGET_EXISTS=$($CLI_TOOL get daemonset inspektor-gadget -n $NAMESPACE 2>/dev/null && echo "yes" || echo "no")
-SA_EXISTS=$($CLI_TOOL get sa flowfish-remote-reader -n $NAMESPACE 2>/dev/null && echo "yes" || echo "no")
-
-if [ "$GADGET_EXISTS" = "no" ] && [ "$SA_EXISTS" = "no" ]; then
-    print_error "No Flowfish or Inspector Gadget resources found in namespace '$NAMESPACE'"
-    print_warning "This namespace does not appear to have Flowfish installed."
-    print_warning "Aborting to prevent accidental deletion of unrelated resources."
+# Safety check
+if ! $CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" &>/dev/null; then
+    print_error "Inspector Gadget DaemonSet not found in namespace '$NAMESPACE'"
     exit 1
 fi
 
-print_success "Flowfish resources detected in namespace '$NAMESPACE'"
+# Detect L7 agents
+L7_ACTIVE="no"
+if $CLI_TOOL get daemonset beyla -n "$NAMESPACE" &>/dev/null 2>&1; then L7_ACTIVE=yes; fi
+if $CLI_TOOL get deployment flowfish-l7-collector -n "$NAMESPACE" &>/dev/null 2>&1; then L7_ACTIVE=yes; fi
 
-# Confirmation
 echo ""
-echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ ⚠️  WARNING: The following will be DELETED from namespace '$NAMESPACE':      │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-if [ "$GADGET_EXISTS" = "yes" ]; then
-    echo "│   - DaemonSet: inspektor-gadget                                             │"
-    echo "│   - Service: inspektor-gadget                                               │"
-    echo "│   - ConfigMap: inspektor-gadget-config                                      │"
-    echo "│   - ServiceAccount: inspektor-gadget                                        │"
+echo "The following L4 resources will be DELETED from namespace '$NAMESPACE':"
+echo "------------------------------------------------------------"
+echo "  - DaemonSet: inspektor-gadget"
+echo "  - Service: inspektor-gadget"
+echo "  - ConfigMap: inspektor-gadget-config"
+echo "  - ServiceAccount: inspektor-gadget"
+echo "  - ClusterRole/Binding: inspektor-gadget (if unused)"
+echo "  - Role/RoleBinding: flowfish-gadget-access (namespace-scoped)"
+echo "------------------------------------------------------------"
+echo "  PRESERVED: flowfish-remote-reader ServiceAccount (shared)"
+echo "  PRESERVED: flowfish-remote-reader ClusterRole/Binding (shared)"
+echo "  PRESERVED: Namespace"
+if [ "$L7_ACTIVE" = "yes" ]; then
+    echo "  PRESERVED: Beyla / L7 Collector (detected running)"
 fi
-if [ "$SA_EXISTS" = "yes" ]; then
-    echo "│   - ServiceAccount: flowfish-remote-reader                                  │"
-    echo "│   - Secret: flowfish-remote-reader-token                                    │"
-fi
-echo "│   - ClusterRole: inspektor-gadget (if no other bindings)                    │"
-echo "│   - ClusterRole: flowfish-remote-reader (if no other bindings)              │"
-echo "│   - ClusterRoleBinding: inspektor-gadget-$NAMESPACE                          │"
-echo "│   - ClusterRoleBinding: flowfish-remote-reader-$NAMESPACE                    │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-echo "│ ✅ SAFE: The namespace '$NAMESPACE' will NOT be deleted!                     │"
-echo "│ ✅ SAFE: Other workloads in this namespace will NOT be affected!            │"
-echo "└─────────────────────────────────────────────────────────────────────────────┘"
 echo ""
-read -p "Are you sure you want to proceed? (yes/no): " CONFIRM
+read -p "Proceed? (yes/no): " CONFIRM
 if [ "$CONFIRM" != "yes" ]; then
-    print_warning "Uninstall cancelled."
+    print_warning "Cancelled."
     exit 0
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Uninstall Process
-# ═══════════════════════════════════════════════════════════════════════════
-print_header "Removing Flowfish Components"
+echo ""
+print_status "Removing Inspector Gadget resources..."
+$CLI_TOOL delete daemonset inspektor-gadget -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete service inspektor-gadget -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete configmap inspektor-gadget-config -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete sa inspektor-gadget -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+print_success "Gadget resources removed"
 
-# Remove namespace-scoped resources first
-print_status "Removing Inspector Gadget DaemonSet..."
-$CLI_TOOL delete daemonset inspektor-gadget -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "DaemonSet removed"
+print_status "Removing gadget namespace-scoped RBAC..."
+$CLI_TOOL delete role flowfish-gadget-access -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete rolebinding flowfish-gadget-access -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+print_success "Gadget RBAC removed"
 
-print_status "Removing Inspector Gadget Service..."
-$CLI_TOOL delete service inspektor-gadget -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "Service removed"
-
-print_status "Removing Inspector Gadget ConfigMap..."
-$CLI_TOOL delete configmap inspektor-gadget-config -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "ConfigMap removed"
-
-print_status "Removing Inspector Gadget ServiceAccount..."
-$CLI_TOOL delete sa inspektor-gadget -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "Gadget ServiceAccount removed"
-
-print_status "Removing Flowfish ServiceAccount..."
-$CLI_TOOL delete sa flowfish-remote-reader -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "Flowfish ServiceAccount removed"
-
-print_status "Removing Flowfish Token Secret..."
-$CLI_TOOL delete secret flowfish-remote-reader-token -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "Token Secret removed"
-
-print_status "Removing Flowfish Gadget Access Role..."
-$CLI_TOOL delete role flowfish-gadget-access -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-$CLI_TOOL delete rolebinding flowfish-gadget-access -n $NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "Gadget Access Role removed"
-
-# Remove cluster-scoped resources
-print_header "Removing Cluster-scoped Resources"
-
-print_status "Removing ClusterRoleBinding for Gadget..."
+print_status "Cleaning up gadget cluster-scoped resources..."
 $CLI_TOOL delete clusterrolebinding inspektor-gadget-$NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "Gadget ClusterRoleBinding removed"
 
-print_status "Removing ClusterRoleBinding for Flowfish..."
-$CLI_TOOL delete clusterrolebinding flowfish-remote-reader-$NAMESPACE --ignore-not-found=true 2>/dev/null
-print_success "Flowfish ClusterRoleBinding removed"
-
-# Check if ClusterRoles are still in use by other namespaces
 GADGET_BINDINGS=$($CLI_TOOL get clusterrolebindings -o jsonpath='{{.items[?(@.roleRef.name=="inspektor-gadget")].metadata.name}}' 2>/dev/null)
 if [ -z "$GADGET_BINDINGS" ]; then
-    print_status "Removing ClusterRole inspektor-gadget (no longer in use)..."
     $CLI_TOOL delete clusterrole inspektor-gadget --ignore-not-found=true 2>/dev/null
-    print_success "Gadget ClusterRole removed"
+    print_success "Gadget ClusterRole removed (no longer in use)"
 else
-    print_warning "ClusterRole inspektor-gadget still in use by other namespaces, skipping..."
+    print_warning "Gadget ClusterRole still in use by other namespaces, skipping"
 fi
 
-FLOWFISH_BINDINGS=$($CLI_TOOL get clusterrolebindings -o jsonpath='{{.items[?(@.roleRef.name=="flowfish-remote-reader")].metadata.name}}' 2>/dev/null)
-if [ -z "$FLOWFISH_BINDINGS" ]; then
-    print_status "Removing ClusterRole flowfish-remote-reader (no longer in use)..."
-    $CLI_TOOL delete clusterrole flowfish-remote-reader --ignore-not-found=true 2>/dev/null
-    print_success "Flowfish ClusterRole removed"
-else
-    print_warning "ClusterRole flowfish-remote-reader still in use by other namespaces, skipping..."
-fi
+print_warning "flowfish-remote-reader SA/RBAC preserved (shared with L7 + cluster sync)"
 
-# Remove SCC (OpenShift only) - check if still in use
+# SCC cleanup (OpenShift only)
 if [ "$CLI_TOOL" = "oc" ]; then
-    # Check if SCC is used by other ServiceAccounts
-    SCC_USERS=$($CLI_TOOL get scc inspektor-gadget-scc -o jsonpath='{{.users}}' 2>/dev/null | grep -v "$NAMESPACE" || echo "")
-    if [ -z "$SCC_USERS" ]; then
-        print_status "Removing SCC inspektor-gadget-scc (no longer in use)..."
-        $CLI_TOOL adm policy remove-scc-from-user inspektor-gadget-scc -z inspektor-gadget -n $NAMESPACE 2>/dev/null || true
+    $CLI_TOOL adm policy remove-scc-from-user inspektor-gadget-scc -z inspektor-gadget -n "$NAMESPACE" 2>/dev/null || true
+    OTHER_USERS=$($CLI_TOOL get scc inspektor-gadget-scc -o jsonpath='{{.users[*]}}' 2>/dev/null || echo "")
+    SCC_STILL_USED="no"
+    for U in $OTHER_USERS; do
+        if echo "$U" | grep -qF ":$NAMESPACE:"; then continue; fi
+        SCC_STILL_USED="yes"
+        break
+    done
+    if [ "$SCC_STILL_USED" = "no" ]; then
+        print_status "Removing SCC inspektor-gadget-scc..."
         $CLI_TOOL delete scc inspektor-gadget-scc --ignore-not-found=true 2>/dev/null
-        print_success "SCC removed"
+        print_success "Gadget SCC removed"
     else
-        print_warning "SCC inspektor-gadget-scc still in use by other namespaces, skipping..."
+        print_warning "SCC inspektor-gadget-scc still in use by other namespaces, skipping"
     fi
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Completion
-# ═══════════════════════════════════════════════════════════════════════════
 echo ""
-echo "╔═══════════════════════════════════════════════════════════════════════════╗"
-echo "║                                                                           ║"
-echo "║   ✅ UNINSTALL COMPLETE                                                   ║"
-echo "║                                                                           ║"
-echo "║   Flowfish components have been removed from namespace '$NAMESPACE'       ║"
-echo "║                                                                           ║"
-echo "║   ✅ Namespace '$NAMESPACE' was preserved (NOT deleted)                    ║"
-echo "║   ✅ Other workloads in this namespace were NOT affected                  ║"
-echo "║                                                                           ║"
-echo "║   Note: The Trace CRD was NOT removed as it may be used by other         ║"
-echo "║   Inspector Gadget installations. To remove it manually:                  ║"
-echo "║   $CLI_TOOL delete crd traces.gadget.kinvolk.io                            ║"
-echo "║                                                                           ║"
-echo "╚═══════════════════════════════════════════════════════════════════════════╝"
+echo "============================================================"
+echo "  L4 AGENT CLEANUP COMPLETE"
+echo ""
+echo "  Namespace '$NAMESPACE' was preserved (NOT deleted)"
+echo "  Beyla (L7) and other workloads were NOT affected"
+echo "  flowfish-remote-reader SA was preserved (shared resource)"
+echo ""
+echo "  Note: Trace CRD was NOT removed. To remove manually:"
+echo "  $CLI_TOOL delete crd traces.gadget.kinvolk.io"
+echo ""
+if [ "$L7_ACTIVE" = "no" ]; then
+    echo "  To fully disconnect this cluster from Flowfish:"
+    echo "  $CLI_TOOL delete sa flowfish-remote-reader -n $NAMESPACE"
+    echo "  $CLI_TOOL delete clusterrolebinding flowfish-remote-reader-$NAMESPACE --ignore-not-found"
+    echo "  $CLI_TOOL delete clusterrole flowfish-remote-reader --ignore-not-found"
+    echo "  $CLI_TOOL delete namespace $NAMESPACE"
+fi
+echo "============================================================"
 echo ""
 '''
+
+
+def _generate_l7_uninstall_script(cli_tool: str) -> str:
+    """Generate L7 (Beyla + L7 Collector) uninstall script.
+
+    IMPORTANT: This script NEVER removes the shared flowfish-remote-reader
+    ServiceAccount, Secret, ClusterRole, or ClusterRoleBinding because they
+    are used by L4 agents, cluster sync, and health checks.  Only
+    Beyla/Collector-specific resources are removed.
+    """
+    return f'''#!/bin/bash
+#
+# ============================================================================
+#  L7 Agent Cleanup - Grafana Beyla + flowfish-l7-collector
+#
+#  This script SAFELY removes ONLY:
+#  - Beyla DaemonSet, ConfigMap, ServiceAccount, RBAC
+#  - flowfish-l7-collector Deployment, Service, ServiceAccount, RBAC
+#  - Beyla SCC (OpenShift only, if not used by other namespaces)
+#
+#  PRESERVED (shared resources):
+#  - flowfish-remote-reader ServiceAccount (used by L4 + cluster sync)
+#  - flowfish-remote-reader ClusterRole/Binding
+#  - Namespace
+#  - Inspector Gadget (L4) and other workloads
+# ============================================================================
+#
+# Usage:
+#   chmod +x cleanup-l7-agent.sh
+#   ./cleanup-l7-agent.sh <namespace>
+#   ./cleanup-l7-agent.sh              # Interactive mode
+#
+
+CLI_TOOL="{cli_tool}"
+if ! command -v $CLI_TOOL &> /dev/null; then
+    echo "[ERROR] $CLI_TOOL not found in PATH"
+    exit 1
+fi
+
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[1;33m'
+BLUE='\\033[0;34m'
+NC='\\033[0m'
+
+print_status() {{ echo -e "${{BLUE}}[INFO]${{NC}} $1"; }}
+print_success() {{ echo -e "${{GREEN}}[OK]${{NC}} $1"; }}
+print_warning() {{ echo -e "${{YELLOW}}[WARN]${{NC}} $1"; }}
+print_error() {{ echo -e "${{RED}}[ERROR]${{NC}} $1"; }}
+
+echo ""
+echo "============================================================"
+echo "  L7 Agent Cleanup - Grafana Beyla + L7 Collector"
+echo "============================================================"
+echo ""
+
+# Pre-flight
+print_status "Using CLI tool: $CLI_TOOL"
+
+if [ "$CLI_TOOL" = "oc" ]; then
+    if ! $CLI_TOOL whoami &> /dev/null; then
+        print_error "Not logged in. Run 'oc login' first."
+        exit 1
+    fi
+    print_success "Logged in as: $($CLI_TOOL whoami)"
+else
+    if ! $CLI_TOOL cluster-info &> /dev/null 2>&1; then
+        print_error "Cannot connect to cluster. Check your kubeconfig."
+        exit 1
+    fi
+    print_success "Cluster connection OK"
+fi
+
+# Namespace
+if [ -n "${{1:-}}" ]; then
+    NAMESPACE="$1"
+else
+    read -p "Enter namespace where Beyla is installed: " NAMESPACE
+fi
+
+if [ -z "$NAMESPACE" ]; then
+    print_error "Namespace cannot be empty!"
+    exit 1
+fi
+
+if ! $CLI_TOOL get namespace "$NAMESPACE" &> /dev/null; then
+    print_error "Namespace '$NAMESPACE' does not exist!"
+    exit 1
+fi
+
+# Safety check
+if $CLI_TOOL get daemonset beyla -n "$NAMESPACE" &>/dev/null; then BEYLA_EXISTS=yes; else BEYLA_EXISTS=no; fi
+if $CLI_TOOL get deployment flowfish-l7-collector -n "$NAMESPACE" &>/dev/null || $CLI_TOOL get deployment l7-collector -n "$NAMESPACE" &>/dev/null; then COLLECTOR_EXISTS=yes; else COLLECTOR_EXISTS=no; fi
+
+if [ "$BEYLA_EXISTS" = "no" ] && [ "$COLLECTOR_EXISTS" = "no" ]; then
+    print_error "No L7 agent (Beyla/Collector) found in namespace '$NAMESPACE'"
+    exit 1
+fi
+
+# Detect L4 agents
+L4_ACTIVE="no"
+if $CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" &>/dev/null 2>&1; then L4_ACTIVE=yes; fi
+
+echo ""
+echo "The following L7 resources will be DELETED from namespace '$NAMESPACE':"
+echo "------------------------------------------------------------"
+if [ "$BEYLA_EXISTS" = "yes" ]; then
+    BEYLA_IMG=$($CLI_TOOL get daemonset beyla -n "$NAMESPACE" -o jsonpath='{{.spec.template.spec.containers[?(@.name=="beyla")].image}}' 2>/dev/null || echo "unknown")
+    echo "  - DaemonSet: beyla ($BEYLA_IMG)"
+    echo "  - ConfigMap: beyla-config"
+    echo "  - ServiceAccount: beyla"
+    echo "  - ClusterRole/Binding: beyla (if unused)"
+fi
+if [ "$COLLECTOR_EXISTS" = "yes" ]; then
+    COLL_IMG=$($CLI_TOOL get deployment flowfish-l7-collector -n "$NAMESPACE" -o jsonpath='{{.spec.template.spec.containers[0].image}}' 2>/dev/null || \
+              $CLI_TOOL get deployment l7-collector -n "$NAMESPACE" -o jsonpath='{{.spec.template.spec.containers[0].image}}' 2>/dev/null || echo "unknown")
+    echo "  - Deployment: l7-collector / flowfish-l7-collector ($COLL_IMG)"
+    echo "  - Service: flowfish-l7-collector"
+    echo "  - ServiceAccount: l7-collector / flowfish-l7-collector"
+    echo "  - ClusterRole/Binding: flowfish-l7-collector-role (if unused)"
+fi
+echo "------------------------------------------------------------"
+echo "  PRESERVED: flowfish-remote-reader ServiceAccount (shared)"
+echo "  PRESERVED: flowfish-remote-reader ClusterRole/Binding (shared)"
+echo "  PRESERVED: Namespace"
+if [ "$L4_ACTIVE" = "yes" ]; then
+    echo "  PRESERVED: Inspector Gadget / L4 Agent (detected running)"
+fi
+echo ""
+read -p "Proceed? (yes/no): " CONFIRM
+if [ "$CONFIRM" != "yes" ]; then
+    print_warning "Cancelled."
+    exit 0
+fi
+
+echo ""
+print_status "Removing Beyla DaemonSet and resources..."
+$CLI_TOOL delete daemonset beyla -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete configmap beyla-config -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete serviceaccount beyla -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+print_success "Beyla resources removed"
+
+print_status "Removing L7 Collector..."
+$CLI_TOOL delete deployment flowfish-l7-collector -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete deployment l7-collector -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete service flowfish-l7-collector -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete serviceaccount flowfish-l7-collector -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete serviceaccount l7-collector -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete rolebinding flowfish-l7-proxy-binding -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete role flowfish-l7-proxy -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+print_success "L7 Collector removed"
+
+print_status "Cleaning up cluster-scoped resources..."
+$CLI_TOOL delete clusterrolebinding beyla --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete clusterrolebinding beyla-role-binding --ignore-not-found=true 2>/dev/null
+
+BEYLA_BINDINGS=$($CLI_TOOL get clusterrolebindings -o jsonpath='{{.items[?(@.roleRef.name=="beyla")].metadata.name}}' 2>/dev/null)
+BEYLA_BINDINGS_OLD=$($CLI_TOOL get clusterrolebindings -o jsonpath='{{.items[?(@.roleRef.name=="beyla-role")].metadata.name}}' 2>/dev/null)
+if [ -z "$BEYLA_BINDINGS" ] && [ -z "$BEYLA_BINDINGS_OLD" ]; then
+    $CLI_TOOL delete clusterrole beyla --ignore-not-found=true 2>/dev/null
+    $CLI_TOOL delete clusterrole beyla-role --ignore-not-found=true 2>/dev/null
+    print_success "Beyla ClusterRole removed (no longer in use)"
+else
+    print_warning "Beyla ClusterRole still in use by other namespaces, skipping"
+fi
+
+$CLI_TOOL delete clusterrolebinding flowfish-l7-collector-role-binding --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete clusterrolebinding l7-collector-role-binding --ignore-not-found=true 2>/dev/null
+$CLI_TOOL delete clusterrolebinding flowfish-l7-collector --ignore-not-found=true 2>/dev/null
+
+COLL_BINDINGS=$($CLI_TOOL get clusterrolebindings -o jsonpath='{{.items[?(@.roleRef.name=="flowfish-l7-collector-role")].metadata.name}}' 2>/dev/null)
+COLL_BINDINGS2=$($CLI_TOOL get clusterrolebindings -o jsonpath='{{.items[?(@.roleRef.name=="flowfish-l7-collector")].metadata.name}}' 2>/dev/null)
+if [ -z "$COLL_BINDINGS" ]; then
+    $CLI_TOOL delete clusterrole flowfish-l7-collector-role --ignore-not-found=true 2>/dev/null
+fi
+if [ -z "$COLL_BINDINGS2" ]; then
+    $CLI_TOOL delete clusterrole flowfish-l7-collector --ignore-not-found=true 2>/dev/null
+fi
+if [ -z "$COLL_BINDINGS" ] && [ -z "$COLL_BINDINGS2" ]; then
+    print_success "Collector ClusterRole removed (no longer in use)"
+else
+    print_warning "Collector ClusterRole still in use by other namespaces, skipping"
+fi
+
+# SCC cleanup (OpenShift only)
+if [ "$CLI_TOOL" = "oc" ]; then
+    $CLI_TOOL adm policy remove-scc-from-user beyla-scc -z beyla -n "$NAMESPACE" 2>/dev/null || true
+    OTHER_USERS=$($CLI_TOOL get scc beyla-scc -o jsonpath='{{.users[*]}}' 2>/dev/null || echo "")
+    SCC_STILL_USED="no"
+    for U in $OTHER_USERS; do
+        if echo "$U" | grep -qF ":$NAMESPACE:"; then continue; fi
+        SCC_STILL_USED="yes"
+        break
+    done
+    if [ "$SCC_STILL_USED" = "no" ]; then
+        print_status "Removing SCC beyla-scc..."
+        $CLI_TOOL delete scc beyla-scc --ignore-not-found=true 2>/dev/null
+        print_success "Beyla SCC removed"
+    else
+        print_warning "SCC beyla-scc still in use by other namespaces, skipping"
+    fi
+fi
+
+print_warning "flowfish-remote-reader SA/RBAC preserved (shared with L4 + cluster sync)"
+
+echo ""
+echo "============================================================"
+echo "  L7 AGENT CLEANUP COMPLETE"
+echo ""
+echo "  Namespace '$NAMESPACE' was preserved (NOT deleted)"
+echo "  Inspector Gadget (L4) and other workloads were NOT affected"
+echo "  flowfish-remote-reader SA was preserved (shared resource)"
+echo ""
+if [ "$L4_ACTIVE" = "no" ]; then
+    echo "  To fully disconnect this cluster from Flowfish:"
+    echo "  $CLI_TOOL delete sa flowfish-remote-reader -n $NAMESPACE"
+    echo "  $CLI_TOOL delete clusterrolebinding flowfish-remote-reader-$NAMESPACE --ignore-not-found"
+    echo "  $CLI_TOOL delete clusterrole flowfish-remote-reader --ignore-not-found"
+    echo "  $CLI_TOOL delete namespace $NAMESPACE"
+fi
+echo "============================================================"
+echo ""
+'''
+
+
+async def _get_beyla_excluded_namespaces() -> list:
+    """Read excluded namespaces from Beyla settings in database."""
+    try:
+        row = await database.fetch_one(
+            "SELECT value FROM system_settings WHERE key = 'beyla_settings'"
+        )
+        if row:
+            import json as _json
+            val = row["value"]
+            if isinstance(val, str):
+                val = _json.loads(val)
+            return val.get("default_excluded_namespaces", [])
+    except Exception:
+        pass
+    return []
+
+
+def _generate_beyla_install_script(
+    cli_tool: str,
+    beyla_version: str = "3.9.5",
+    image_registry: str = "",
+    collector_tag: str = "",
+    mem_limit: str = "6Gi",
+    cpu_limit: str = "2",
+    bpf_volume_type: str = "hostPath",
+    excluded_namespaces: list = None,
+) -> str:
+    """Generate Beyla + flowfish-l7-collector install script."""
+    beyla_version = beyla_version.lstrip("v")
+    image_registry = image_registry.strip().rstrip("/")
+    default_beyla = f"{image_registry}/beyla" if image_registry else "grafana/beyla"
+    default_collector = f"{image_registry}/flowfish-l7-collector" if image_registry else "flowfish/flowfish-l7-collector"
+    if not collector_tag:
+        collector_tag = app_settings.IMAGE_TAG
+
+    # Base excludes cover platform/operator namespaces that should never
+    # produce application-level L7 traffic. We deliberately also exclude
+    # Flowfish's own namespace ($NAMESPACE, resolved at install time by the
+    # generated bash script) and the Inspektor Gadget namespace so Beyla
+    # does not surface long-running gadget gRPC streams (kubectl-gadget →
+    # IG worker) as multi-minute "single requests" in Service Map metrics.
+    # Defense in depth: flowfish-l7-collector also drops events whose
+    # endpoint resolved to the synthetic `loopback` namespace, and
+    # timeseries-writer re-applies the same filter before insertion.
+    base_excludes = [
+        "openshift-*", "kube-*", "default", "ibm-*", "ibmblockstorage",
+        "external-secrets", "calico-*", "tigera-*",
+        "gadget",  # Inspektor Gadget DaemonSet namespace
+        "$NAMESPACE",  # Flowfish self-monitoring (resolved by install script)
+    ]
+    extra_excludes = excluded_namespaces or []
+    all_excludes = list(dict.fromkeys(base_excludes + extra_excludes))
+    exclude_yaml_lines = "\n".join(f'        - k8s_namespace: "{ns}"' for ns in all_excludes)
+    return f'''#!/bin/bash
+set -euo pipefail
+
+CLI_TOOL="{cli_tool}"
+DEFAULT_BEYLA_IMAGE="{default_beyla}"
+DEFAULT_BEYLA_VERSION="{beyla_version}"
+DEFAULT_COLLECTOR_IMAGE="{default_collector}"
+DEFAULT_COLLECTOR_VERSION="{collector_tag}"
+MEM_LIMIT="{mem_limit}"
+CPU_LIMIT="{cpu_limit}"
+BPF_VOLUME_TYPE="{bpf_volume_type}"
+
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[1;33m'
+BLUE='\\033[0;34m'
+CYAN='\\033[0;36m'
+BOLD='\\033[1m'
+NC='\\033[0m'
+
+print_status() {{ echo -e "${{BLUE}}[INFO]${{NC}} $1"; }}
+print_success() {{ echo -e "${{GREEN}}[OK]${{NC}} $1"; }}
+print_warning() {{ echo -e "${{YELLOW}}[WARN]${{NC}} $1"; }}
+print_error() {{ echo -e "${{RED}}[ERROR]${{NC}} $1"; }}
+
+echo ""
+echo "============================================================"
+echo "  Flowfish L7 Agent Install (Grafana Beyla)"
+echo "============================================================"
+echo ""
+
+# --- Pre-flight checks ---
+if ! command -v $CLI_TOOL &> /dev/null; then
+    print_error "$CLI_TOOL not found in PATH"
+    exit 1
+fi
+
+if [ "$CLI_TOOL" = "oc" ]; then
+    if ! $CLI_TOOL whoami &> /dev/null; then
+        print_error "Not logged in. Run 'oc login' first."
+        exit 1
+    fi
+    print_success "Logged in as: $($CLI_TOOL whoami)"
+else
+    if ! $CLI_TOOL cluster-info &> /dev/null 2>&1; then
+        print_error "Cannot connect to cluster. Check your kubeconfig."
+        exit 1
+    fi
+    print_success "Cluster connection OK"
+fi
+
+# --- Runtime OpenShift detection ---
+# An OpenShift cluster can be operated with either `oc` or `kubectl`.
+# When the cluster admin runs this script with `kubectl` against an
+# OpenShift cluster, we still need to create + bind a SecurityContext
+# Constraint (SCC); otherwise Beyla pods will be rejected by the
+# cluster's PodSecurity admission with errors like:
+#   "provider restricted-v2: .spec.securityContext.hostPID: Invalid
+#    value: true: Host PID is not allowed to be used"
+# We therefore detect OpenShift by probing the security.openshift.io
+# API group, which is unique to OpenShift. Vanilla Kubernetes will
+# return no resources for that group.
+if $CLI_TOOL api-resources --api-group=security.openshift.io 2>/dev/null \
+    | grep -q SecurityContextConstraints; then
+    IS_OPENSHIFT="true"
+    print_success "OpenShift cluster detected (security.openshift.io API present)"
+else
+    IS_OPENSHIFT="false"
+    print_status "Vanilla Kubernetes detected (no security.openshift.io API)"
+fi
+
+# --- Namespace ---
+if [ -n "${{1:-}}" ]; then
+    NAMESPACE="$1"
+else
+    read -p "Enter namespace for Beyla: " NAMESPACE
+fi
+
+if [ -z "$NAMESPACE" ]; then
+    print_error "Namespace cannot be empty!"
+    exit 1
+fi
+
+# --- Auto-detect registries from existing resources ---
+EXISTING_BEYLA_IMG=""
+EXISTING_COLLECTOR_IMG=""
+
+if $CLI_TOOL get daemonset beyla -n "$NAMESPACE" &>/dev/null 2>&1; then
+    EXISTING_BEYLA_IMG=$($CLI_TOOL get daemonset beyla -n "$NAMESPACE" \
+        -o jsonpath='{{.spec.template.spec.containers[?(@.name=="beyla")].image}}' 2>/dev/null || echo "")
+fi
+if $CLI_TOOL get deployment flowfish-l7-collector -n "$NAMESPACE" &>/dev/null 2>&1; then
+    EXISTING_COLLECTOR_IMG=$($CLI_TOOL get deployment flowfish-l7-collector -n "$NAMESPACE" \
+        -o jsonpath='{{.spec.template.spec.containers[0].image}}' 2>/dev/null || echo "")
+elif $CLI_TOOL get deployment l7-collector -n "$NAMESPACE" &>/dev/null 2>&1; then
+    EXISTING_COLLECTOR_IMG=$($CLI_TOOL get deployment l7-collector -n "$NAMESPACE" \
+        -o jsonpath='{{.spec.template.spec.containers[0].image}}' 2>/dev/null || echo "")
+fi
+
+# --- Resolve Beyla image ---
+if [ -n "$EXISTING_BEYLA_IMG" ]; then
+    BEYLA_REGISTRY=$(echo "$EXISTING_BEYLA_IMG" | sed 's|:[^:]*$||')
+    BEYLA_CUR_VER=$(echo "$EXISTING_BEYLA_IMG" | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' || echo "$DEFAULT_BEYLA_VERSION")
+    print_status "Existing Beyla image detected: $EXISTING_BEYLA_IMG"
+    echo -e "  ${{CYAN}}Beyla Registry:${{NC}} $BEYLA_REGISTRY"
+    echo -e "  Press Enter to keep current registry, or enter a new one."
+    read -p "  Beyla registry [$BEYLA_REGISTRY]: " INPUT_BEYLA_REG
+    BEYLA_REGISTRY="${{INPUT_BEYLA_REG:-$BEYLA_REGISTRY}}"
+    echo -e "  ${{CYAN}}Beyla Version:${{NC}} $BEYLA_CUR_VER (default upgrade: $DEFAULT_BEYLA_VERSION)"
+    read -p "  Beyla version [$DEFAULT_BEYLA_VERSION]: " INPUT_BEYLA_VER
+    BEYLA_VERSION="${{INPUT_BEYLA_VER:-$DEFAULT_BEYLA_VERSION}}"
+else
+    echo ""
+    echo -e "${{CYAN}}Beyla Image:${{NC}} Container image for Grafana Beyla"
+    echo -e "  Default: $DEFAULT_BEYLA_IMAGE"
+    echo -e "  Example: harbor.example.com/flowfish/beyla"
+    echo -e "  (tip: if you enter a registry prefix like 'harbor.example.com/project', /beyla is appended automatically)"
+    read -p "  Beyla image (press Enter for default): " INPUT_BEYLA_REG
+    BEYLA_REGISTRY="${{INPUT_BEYLA_REG:-$DEFAULT_BEYLA_IMAGE}}"
+    BEYLA_VERSION="$DEFAULT_BEYLA_VERSION"
+fi
+# Ensure Beyla image path ends with /beyla (user may enter just the registry prefix)
+case "$BEYLA_REGISTRY" in
+    */beyla) ;;
+    *) BEYLA_REGISTRY="${{BEYLA_REGISTRY%/}}/beyla" ;;
+esac
+BEYLA_IMAGE="${{BEYLA_REGISTRY}}:${{BEYLA_VERSION}}"
+
+# --- Resolve Collector image ---
+if [ -n "$EXISTING_COLLECTOR_IMG" ]; then
+    COLLECTOR_REGISTRY=$(echo "$EXISTING_COLLECTOR_IMG" | sed 's|:[^:]*$||')
+    COLLECTOR_CUR_VER=$(echo "$EXISTING_COLLECTOR_IMG" | sed 's|.*:||')
+    print_status "Existing Collector image detected: $EXISTING_COLLECTOR_IMG"
+    echo -e "  ${{CYAN}}Collector Registry:${{NC}} $COLLECTOR_REGISTRY"
+    echo -e "  Press Enter to keep current registry, or enter a new one."
+    read -p "  Collector registry [$COLLECTOR_REGISTRY]: " INPUT_COLL_REG
+    COLLECTOR_REGISTRY="${{INPUT_COLL_REG:-$COLLECTOR_REGISTRY}}"
+    read -p "  Collector version [$COLLECTOR_CUR_VER]: " INPUT_COLL_VER
+    COLLECTOR_VERSION="${{INPUT_COLL_VER:-$COLLECTOR_CUR_VER}}"
+else
+    echo ""
+    echo -e "${{CYAN}}Collector Image Registry:${{NC}} Container registry for flowfish-l7-collector"
+    echo -e "  Default: $DEFAULT_COLLECTOR_IMAGE"
+    echo -e "  Example: harbor.example.com/flowfish/flowfish-l7-collector"
+    read -p "  Collector registry (press Enter for default): " INPUT_COLL_REG
+    COLLECTOR_REGISTRY="${{INPUT_COLL_REG:-$DEFAULT_COLLECTOR_IMAGE}}"
+    echo -e "${{CYAN}}Collector Image Tag:${{NC}} Version tag for the collector image"
+    echo -e "  Default: $DEFAULT_COLLECTOR_VERSION"
+    read -p "  Collector tag (press Enter for default): " INPUT_COLL_VER
+    COLLECTOR_VERSION="${{INPUT_COLL_VER:-$DEFAULT_COLLECTOR_VERSION}}"
+fi
+# Ensure Collector image path includes the image name
+case "$COLLECTOR_REGISTRY" in
+    *l7-collector*|*flowfish-l7-collector*) ;;
+    *) COLLECTOR_REGISTRY="${{COLLECTOR_REGISTRY%/}}/flowfish-l7-collector" ;;
+esac
+COLLECTOR_IMAGE="${{COLLECTOR_REGISTRY}}:${{COLLECTOR_VERSION}}"
+
+echo ""
+print_status "Configuration:"
+print_status "  Namespace:       $NAMESPACE"
+print_status "  Beyla Image:     $BEYLA_IMAGE"
+print_status "  Collector Image: $COLLECTOR_IMAGE"
+print_status "  Memory Limit:    $MEM_LIMIT"
+print_status "  CPU Limit:       $CPU_LIMIT"
+print_status "  BPF Volume:      $BPF_VOLUME_TYPE"
+echo ""
+
+$CLI_TOOL create namespace "$NAMESPACE" --dry-run=client -o yaml | $CLI_TOOL apply -f -
+
+echo "[1/7] Creating Beyla RBAC..."
+cat <<YAML | $CLI_TOOL apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: beyla
+  namespace: $NAMESPACE
+  labels:
+    app: beyla
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: beyla
+  labels:
+    app: beyla
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["list","watch","get"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list","watch","get"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["list","watch","get"]
+- apiGroups: ["apps"]
+  resources: ["replicasets","deployments","statefulsets","daemonsets"]
+  verbs: ["list","watch","get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: beyla
+  labels:
+    app: beyla
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: beyla
+subjects:
+- kind: ServiceAccount
+  name: beyla
+  namespace: $NAMESPACE
+YAML
+
+# SCC for Beyla (OpenShift only) - required for privileged + hostPID access
+# We key off the *runtime* IS_OPENSHIFT detection above, not on whether
+# the operator chose `oc` vs `kubectl`: an OpenShift cluster needs an
+# SCC even when it is being driven by kubectl.
+if [ "$IS_OPENSHIFT" = "true" ]; then
+    echo "[2/7] Creating Security Context Constraint (SCC) for Beyla..."
+    cat <<SCC_EOF | $CLI_TOOL apply -f -
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: beyla-scc
+  labels:
+    app: beyla
+allowPrivilegedContainer: true
+allowHostPID: true
+allowHostNetwork: false
+allowHostDirVolumePlugin: true
+allowHostPorts: false
+allowHostIPC: false
+allowedCapabilities: []
+defaultAddCapabilities: []
+requiredDropCapabilities: []
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+volumes:
+  - configMap
+  - emptyDir
+  - hostPath
+  - projected
+  - secret
+  - downwardAPI
+users:
+  - system:serviceaccount:$NAMESPACE:beyla
+SCC_EOF
+    echo "[3/7] Binding SCC to Beyla ServiceAccount..."
+    # The SCC manifest above already lists the SA in its `users:` field,
+    # which is the cluster-wide source of truth for SCC binding and works
+    # regardless of which CLI applied the manifest. The `oc adm policy`
+    # call below is a redundant idempotent fallback that is only available
+    # when the operator drives the script with `oc`; when running with
+    # `kubectl` we silently skip it (the manifest binding is sufficient).
+    if [ "$CLI_TOOL" = "oc" ]; then
+        $CLI_TOOL adm policy add-scc-to-user beyla-scc -z beyla -n $NAMESPACE 2>/dev/null || true
+    fi
+    echo "  SCC created and bound to beyla ServiceAccount"
+else
+    echo "[2/7] Skipping SCC (not OpenShift)..."
+    echo "[3/7] Skipping SCC binding (not OpenShift)..."
+fi
+
+echo "[4/7] Creating Beyla ConfigMap..."
+cat <<YAML | $CLI_TOOL apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: beyla-config
+  namespace: $NAMESPACE
+data:
+  beyla-config.yml: |
+    log_level: info
+    ebpf:
+      # Passive mode: read W3C traceparent headers from observed requests without
+      # injecting headers. Enables distributed tracing correlation across services
+      # that propagate trace context themselves. No additional kernel privileges
+      # beyond existing CAP_BPF/hostPID required.
+      track_request_headers: true
+    attributes:
+      kubernetes:
+        enable: true
+    discovery:
+      instrument:
+        - k8s_namespace: "*"
+          containers_only: true
+      exclude_instrument:
+{exclude_yaml_lines}
+    otel_traces_export:
+      endpoint: http://flowfish-l7-collector.$NAMESPACE:4318
+      protocol: http/protobuf
+    otel_metrics_export:
+      endpoint: http://flowfish-l7-collector.$NAMESPACE:4318
+      protocol: http/protobuf
+      features: ["application", "application_service_graph"]
+YAML
+
+echo "[5/7] Creating flowfish-l7-collector RBAC..."
+cat <<YAML | $CLI_TOOL apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-l7-collector
+  namespace: $NAMESPACE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flowfish-l7-collector-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "services"]
+  verbs: ["get","list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flowfish-l7-collector-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flowfish-l7-collector-role
+subjects:
+- kind: ServiceAccount
+  name: flowfish-l7-collector
+  namespace: $NAMESPACE
+YAML
+
+# Grant services/proxy permission for remote Flowfish access to collector
+echo "  Configuring service proxy access for remote Flowfish platform..."
+REMOTE_SA=""
+for sa_candidate in flowfish-remote-reader flowfish-reader flowfish; do
+    if $CLI_TOOL get serviceaccount "$sa_candidate" -n "$NAMESPACE" &>/dev/null 2>&1; then
+        REMOTE_SA="$sa_candidate"
+        break
+    fi
+done
+if [ -z "$REMOTE_SA" ]; then
+    echo -e "  ${{YELLOW}}No Flowfish remote-reader ServiceAccount found in $NAMESPACE.${{NC}}"
+    echo -e "  If this is a remote cluster, enter the ServiceAccount name used by Flowfish to access this cluster."
+    echo -e "  (Check your cluster configuration in the Flowfish UI for the SA name.)"
+    read -p "  Remote reader ServiceAccount name (press Enter to skip): " INPUT_REMOTE_SA
+    REMOTE_SA="${{INPUT_REMOTE_SA:-}}"
+fi
+if [ -n "$REMOTE_SA" ]; then
+    cat <<PROXY_RBAC | $CLI_TOOL apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flowfish-l7-proxy
+  namespace: $NAMESPACE
+  labels:
+    app: flowfish-l7-collector
+rules:
+- apiGroups: [""]
+  resources: ["services/proxy"]
+  resourceNames: ["flowfish-l7-collector:8080"]
+  verbs: ["get","create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flowfish-l7-proxy-binding
+  namespace: $NAMESPACE
+  labels:
+    app: flowfish-l7-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flowfish-l7-proxy
+subjects:
+- kind: ServiceAccount
+  name: $REMOTE_SA
+  namespace: $NAMESPACE
+PROXY_RBAC
+    print_success "Service proxy RBAC granted to $REMOTE_SA"
+else
+    print_warning "Skipped service proxy RBAC — remote L7 collection may not work without it"
+fi
+
+echo "[6/7] Deploying flowfish-l7-collector (must be ready before Beyla starts)..."
+cat <<YAML | $CLI_TOOL apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flowfish-l7-collector
+  namespace: $NAMESPACE
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowfish-l7-collector
+  template:
+    metadata:
+      labels:
+        app: flowfish-l7-collector
+    spec:
+      serviceAccountName: flowfish-l7-collector
+      containers:
+      - name: collector
+        image: $COLLECTOR_IMAGE
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: API_PORT
+          value: "8080"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flowfish-l7-collector
+  namespace: $NAMESPACE
+spec:
+  selector:
+    app: flowfish-l7-collector
+  ports:
+  - name: otlp
+    port: 4318
+    targetPort: 8080
+  - name: api
+    port: 8080
+    targetPort: 8080
+YAML
+
+print_status "Waiting for flowfish-l7-collector to become ready..."
+COLLECTOR_READY=false
+for i in $(seq 1 60); do
+    READY=$($CLI_TOOL get deployment flowfish-l7-collector -n "$NAMESPACE" -o jsonpath='{{.status.readyReplicas}}' 2>/dev/null || echo "0")
+    if [ "${{READY:-0}}" -ge 1 ]; then
+        COLLECTOR_READY=true
+        break
+    fi
+    sleep 2
+done
+if [ "$COLLECTOR_READY" = "true" ]; then
+    print_success "Collector is ready — Beyla can safely send OTLP data"
+else
+    print_warning "Collector not ready after 120s. Beyla will retry automatically once it starts."
+fi
+
+echo "[7/7] Deploying Beyla DaemonSet..."
+
+# Build volume spec based on bpf_volume_type parameter
+if [ "$BPF_VOLUME_TYPE" = "hostPath" ]; then
+    BPF_VOLUME_SPEC="hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate"
+    echo "  Using hostPath for bpffs volume (/sys/fs/bpf)"
+else
+    BPF_VOLUME_SPEC="emptyDir:
+          sizeLimit: 512Mi"
+    echo "  Using emptyDir for bpffs volume (ephemeral, limit: 512Mi)"
+fi
+
+BEYLA_RUN_VOLUME_SPEC="emptyDir:
+          sizeLimit: 256Mi"
+
+cat <<YAML | $CLI_TOOL apply -f -
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: beyla
+  namespace: $NAMESPACE
+spec:
+  selector:
+    matchLabels:
+      app: beyla
+  template:
+    metadata:
+      labels:
+        app: beyla
+    spec:
+      serviceAccountName: beyla
+      hostPID: true
+      containers:
+      - name: beyla
+        image: $BEYLA_IMAGE
+        securityContext:
+          privileged: true
+        resources:
+          limits:
+            memory: $MEM_LIMIT
+            cpu: $CPU_LIMIT
+          requests:
+            memory: "1Gi"
+            cpu: "200m"
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: var-run-beyla
+          mountPath: /var/run/beyla
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+        env:
+        - name: BEYLA_CONFIG_PATH
+          value: /config/beyla-config.yml
+        - name: OTEL_EBPF_KUBE_CLUSTER_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: OTEL_EXPORTER_OTLP_TRACES_TIMEOUT
+          value: "30000"
+        - name: OTEL_EXPORTER_OTLP_METRICS_TIMEOUT
+          value: "30000"
+      volumes:
+      - name: config
+        configMap:
+          name: beyla-config
+      - name: var-run-beyla
+        $BEYLA_RUN_VOLUME_SPEC
+      - name: bpffs
+        $BPF_VOLUME_SPEC
+YAML
+
+echo ""
+echo "[OK] Beyla L7 Agent and Collector deployed to namespace: $NAMESPACE"
+echo ""
+echo "Verify with:"
+echo "  $CLI_TOOL get pods -n $NAMESPACE"
+echo "  $CLI_TOOL logs -n $NAMESPACE -l app=beyla --tail=20"
+'''
+
+
+@router.get("/clusters/l7-uninstall-script", response_class=PlainTextResponse)
+async def get_l7_uninstall_script(
+    provider: str = Query("openshift", description="Kubernetes provider: openshift, kubernetes"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate L7 agent (Beyla + Collector) uninstall script."""
+    cli_tool = "oc" if provider.lower() == "openshift" else "kubectl"
+    return _generate_l7_uninstall_script(cli_tool)
+
+
+@router.get("/clusters/gadget-fix-storage-script", response_class=PlainTextResponse)
+async def get_gadget_fix_storage_script(
+    provider: str = Query("openshift", description="Kubernetes provider: openshift, kubernetes"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate a script to migrate existing Gadget installations from PVC/ephemeral to emptyDir with sizeLimit."""
+    cli_tool = "oc" if provider.lower() == "openshift" else "kubectl"
+    return f'''#!/bin/bash
+#
+# ============================================================================
+#  Gadget Storage Fix Script
+#  Migrates Inspektor Gadget from PVC/ephemeral volumes to emptyDir + sizeLimit
+#  This prevents node disk exhaustion caused by unbounded emptyDir or PVC issues
+# ============================================================================
+#
+# Usage:
+#   chmod +x fix-gadget-storage.sh
+#   ./fix-gadget-storage.sh <namespace>
+#   ./fix-gadget-storage.sh          # Interactive mode
+#
+
+# Auto-detect CLI tool
+if command -v oc &> /dev/null; then
+    CLI_TOOL="oc"
+elif command -v kubectl &> /dev/null; then
+    CLI_TOOL="kubectl"
+else
+    echo "[ERROR] Neither oc nor kubectl found in PATH"
+    exit 1
+fi
+
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[1;33m'
+BLUE='\\033[0;34m'
+BOLD='\\033[1m'
+NC='\\033[0m'
+
+print_status() {{ echo -e "${{BLUE}}[INFO]${{NC}} $1"; }}
+print_success() {{ echo -e "${{GREEN}}[OK]${{NC}} $1"; }}
+print_warning() {{ echo -e "${{YELLOW}}[WARN]${{NC}} $1"; }}
+print_error() {{ echo -e "${{RED}}[ERROR]${{NC}} $1"; }}
+
+echo ""
+echo "============================================================================"
+echo "  Gadget Storage Fix - PVC to emptyDir Migration"
+echo "============================================================================"
+echo ""
+
+# Get namespace
+if [ -n "${{1:-}}" ]; then
+    NAMESPACE="$1"
+else
+    read -p "Enter namespace where Gadget is installed: " NAMESPACE
+fi
+
+if [ -z "$NAMESPACE" ]; then
+    print_error "Namespace cannot be empty!"
+    exit 1
+fi
+
+# Pre-flight checks
+print_status "Using CLI tool: $CLI_TOOL"
+
+if [ "$CLI_TOOL" = "oc" ]; then
+    if ! $CLI_TOOL whoami &> /dev/null; then
+        print_error "Not logged in. Run 'oc login' first."
+        exit 1
+    fi
+    print_success "Logged in as: $($CLI_TOOL whoami)"
+else
+    if ! $CLI_TOOL cluster-info &> /dev/null 2>&1; then
+        print_error "Cannot connect to cluster. Check your kubeconfig."
+        exit 1
+    fi
+    print_success "Cluster connection OK"
+fi
+
+if ! $CLI_TOOL get namespace "$NAMESPACE" &> /dev/null; then
+    print_error "Namespace '$NAMESPACE' does not exist!"
+    exit 1
+fi
+
+# Check if gadget exists
+if ! $CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" &>/dev/null; then
+    print_error "Inspektor Gadget DaemonSet not found in namespace '$NAMESPACE'"
+    exit 1
+fi
+print_success "Found Inspektor Gadget in namespace '$NAMESPACE'"
+
+# Show current state
+echo ""
+print_status "Current DaemonSet volumes:"
+$CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o jsonpath='{{range .spec.template.spec.volumes[*]}}  {{.name}}: {{if .emptyDir}}emptyDir{{if .emptyDir.sizeLimit}} (sizeLimit: {{.emptyDir.sizeLimit}}){{else}} (NO sizeLimit){{end}}{{else if .ephemeral}}ephemeral/PVC{{else if .hostPath}}hostPath{{else if .configMap}}configMap{{else}}other{{end}}{{"\n"}}{{end}}' 2>/dev/null
+echo ""
+
+# Check for PVC/ephemeral volumes
+HAS_PVC=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o json 2>/dev/null | grep -c '"ephemeral"' || echo "0")
+HAS_UNLIMITED_EMPTYDIR=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    ds = json.load(sys.stdin)
+    vols = ds.get('spec', {{}}).get('template', {{}}).get('spec', {{}}).get('volumes', [])
+    count = 0
+    for v in vols:
+        ed = v.get('emptyDir')
+        if ed is not None and not ed.get('sizeLimit'):
+            count += 1
+    print(count)
+except (json.JSONDecodeError, KeyError, TypeError):
+    print(0)
+" 2>/dev/null || echo "0")
+
+if [ "$HAS_PVC" = "0" ] && [ "$HAS_UNLIMITED_EMPTYDIR" = "0" ]; then
+    print_success "No PVC/ephemeral or unlimited emptyDir volumes found. Storage looks healthy."
+    echo ""
+    $CLI_TOOL get pods -n "$NAMESPACE" -l app=inspektor-gadget -o wide
+    exit 0
+fi
+
+if [ "$HAS_PVC" -gt 0 ]; then
+    print_warning "Found $HAS_PVC ephemeral/PVC volume(s) - will convert to emptyDir"
+fi
+if [ "$HAS_UNLIMITED_EMPTYDIR" -gt 0 ]; then
+    print_warning "Found $HAS_UNLIMITED_EMPTYDIR emptyDir volume(s) without sizeLimit - will add limits"
+fi
+
+echo ""
+read -p "Proceed with storage fix? (yes/no): " CONFIRM
+if [ "$CONFIRM" != "yes" ]; then
+    print_warning "Cancelled."
+    exit 0
+fi
+
+echo ""
+print_status "Step 1/3: Patching DaemonSet volumes..."
+
+# Get current image
+GADGET_IMAGE=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o jsonpath='{{.spec.template.spec.containers[?(@.name=="gadget")].image}}' 2>/dev/null)
+print_status "Current Gadget image: $GADGET_IMAGE"
+print_status "Extracting and modifying DaemonSet spec..."
+$CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o json | python3 -c "
+import json, sys
+
+ds = json.load(sys.stdin)
+
+# Clean metadata for apply
+for key in ['resourceVersion', 'uid', 'creationTimestamp', 'generation']:
+    ds['metadata'].pop(key, None)
+ds['metadata'].get('annotations', {{}}).pop('kubectl.kubernetes.io/last-applied-configuration', None)
+ds.pop('status', None)
+
+volumes = ds['spec']['template']['spec']['volumes']
+new_volumes = []
+for v in volumes:
+    name = v['name']
+    if name == 'oci':
+        new_volumes.append({{'name': 'oci', 'emptyDir': {{'sizeLimit': '5Gi'}}}})
+    elif name == 'wasm-cache':
+        new_volumes.append({{'name': 'wasm-cache', 'emptyDir': {{'sizeLimit': '2Gi'}}}})
+    elif name == 'config-generated':
+        new_volumes.append({{'name': 'config-generated', 'emptyDir': {{'sizeLimit': '128Mi'}}}})
+    elif 'emptyDir' in v and not v['emptyDir'].get('sizeLimit'):
+        v['emptyDir']['sizeLimit'] = '256Mi'
+        new_volumes.append(v)
+    else:
+        new_volumes.append(v)
+
+ds['spec']['template']['spec']['volumes'] = new_volumes
+
+# Remove node affinity that excludes infra nodes (no longer needed without PVC)
+affinity = ds['spec']['template']['spec'].get('affinity') or {{}}
+node_aff = affinity.get('nodeAffinity') or {{}}
+required = node_aff.get('requiredDuringSchedulingIgnoredDuringExecution') or {{}}
+terms = required.get('nodeSelectorTerms') or []
+for term in terms:
+    exprs = term.get('matchExpressions') or []
+    term['matchExpressions'] = [e for e in exprs if e.get('key') != 'node-role.kubernetes.io/infra']
+
+json.dump(ds, sys.stdout)
+" > /tmp/gadget-fixed.json
+
+if [ ! -s /tmp/gadget-fixed.json ]; then
+    print_error "Failed to generate fixed DaemonSet spec"
+    exit 1
+fi
+
+$CLI_TOOL apply -f /tmp/gadget-fixed.json
+rm -f /tmp/gadget-fixed.json
+print_success "DaemonSet patched with emptyDir + sizeLimit"
+
+echo ""
+print_status "Step 2/3: Cleaning up orphaned PVCs..."
+PVC_COUNT=0
+for pvc in $($CLI_TOOL get pvc -n "$NAMESPACE" -l app=inspektor-gadget -o name 2>/dev/null); do
+    print_status "Deleting $pvc..."
+    $CLI_TOOL delete "$pvc" -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null
+    PVC_COUNT=$((PVC_COUNT + 1))
+done
+if [ "$PVC_COUNT" -gt 0 ]; then
+    print_success "Deleted $PVC_COUNT orphaned PVC(s)"
+else
+    print_status "No orphaned PVCs found"
+fi
+
+echo ""
+print_status "Step 3/3: Restarting Gadget pods..."
+$CLI_TOOL delete pods -l app=inspektor-gadget -n "$NAMESPACE" --ignore-not-found=true 2>/dev/null || true
+sleep 5
+
+print_status "Waiting for rollout..."
+$CLI_TOOL rollout status daemonset/inspektor-gadget -n "$NAMESPACE" --timeout=5m || true
+
+echo ""
+print_status "Updated volumes:"
+$CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o jsonpath='{{range .spec.template.spec.volumes[*]}}  {{.name}}: {{if .emptyDir}}emptyDir{{if .emptyDir.sizeLimit}} (sizeLimit: {{.emptyDir.sizeLimit}}){{else}} (NO sizeLimit){{end}}{{else if .hostPath}}hostPath{{else if .configMap}}configMap{{else}}other{{end}}{{"\n"}}{{end}}' 2>/dev/null
+echo ""
+
+echo ""
+print_status "Pod status:"
+$CLI_TOOL get pods -n "$NAMESPACE" -l app=inspektor-gadget -o wide
+echo ""
+
+DESIRED=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o jsonpath='{{.status.desiredNumberScheduled}}' 2>/dev/null || echo "?")
+READY=$($CLI_TOOL get daemonset inspektor-gadget -n "$NAMESPACE" -o jsonpath='{{.status.numberReady}}' 2>/dev/null || echo "?")
+
+echo ""
+echo "============================================================================"
+echo "  Storage Fix Complete"
+echo "  Pods: $READY/$DESIRED ready"
+echo "  Volumes: oci=5Gi, wasm-cache=2Gi, config-generated=128Mi (sizeLimit)"
+echo "============================================================================"
+echo ""
+'''
+
+
+@router.get("/clusters/beyla-install-script", response_class=PlainTextResponse)
+async def get_beyla_install_script_general(
+    provider: str = Query("kubernetes", description="Kubernetes provider"),
+    beyla_version: str = Query("3.9.5", description="Beyla version"),
+    image_registry: str = Query("", description="Image registry prefix (e.g., harbor.example.com/flowfish). Empty = official registries"),
+    collector_tag: str = Query("", description="Collector image tag (e.g., 86451d5, v1.2.0). Empty = auto-detect from backend IMAGE_TAG"),
+    mem_limit: str = Query("6Gi", description="Memory limit for Beyla"),
+    cpu_limit: str = Query("2", description="CPU limit for Beyla"),
+    bpf_volume_type: str = Query("hostPath", description="Volume type for bpffs: hostPath (persistent, recommended) or emptyDir (ephemeral)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate general Beyla + flowfish-l7-collector install script."""
+    cli_tool = "oc" if provider.lower() == "openshift" else "kubectl"
+    excluded_ns = await _get_beyla_excluded_namespaces()
+    return _generate_beyla_install_script(
+        cli_tool=cli_tool,
+        beyla_version=beyla_version,
+        image_registry=image_registry,
+        collector_tag=collector_tag,
+        mem_limit=mem_limit,
+        cpu_limit=cpu_limit,
+        bpf_volume_type=bpf_volume_type,
+        excluded_namespaces=excluded_ns,
+    )
 
 
 @router.get("/clusters/gadget-install-script", response_class=PlainTextResponse)
 async def get_gadget_install_script(
     provider: str = Query("openshift", description="Kubernetes provider: openshift, kubernetes"),
     mode: str = Query("install", description="Script mode: install or uninstall"),
-    registry: str = Query("ghcr.io/inspektor-gadget/inspektor-gadget", description="Gadget image registry (e.g., harbor.example.com/flowfish/inspektor-gadget)"),
+    image_registry: str = Query("", description="Image registry prefix (e.g., harbor.example.com/flowfish). Empty = official registry"),
     version: str = Query("v0.50.1", description="Gadget version tag"),
-    storage_class: str = Query("", description="StorageClass name for persistent gadget data (e.g., standard, gp2, managed-premium). If empty, uses emptyDir (data lost on pod restart)")
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Generate setup or uninstall script for remote cluster integration.
@@ -582,30 +1685,24 @@ async def get_gadget_install_script(
     2. Creates a read-only ServiceAccount for Flowfish
     3. Generates authentication token (1 year validity)
     4. Outputs all connection details for Flowfish UI
-    5. (Optional) Creates PersistentVolumeClaims with specified StorageClass
     
     Uninstall mode:
     - Safely removes only Flowfish-related resources
     - Validates namespace before deletion
     
-    Registry examples:
-    - ghcr.io/inspektor-gadget/inspektor-gadget (default, official)
-    - harbor.example.com/flowfish/inspektor-gadget (internal Harbor)
-    
-    StorageClass examples:
-    - standard (GKE default)
-    - gp2, gp3 (AWS EKS)
-    - managed-premium (Azure AKS)
-    - thin, thick (vSphere)
-    - Leave empty to use emptyDir (ephemeral storage)
+    image_registry examples:
+    - (empty) -> ghcr.io/inspektor-gadget/inspektor-gadget (default)
+    - harbor.example.com/flowfish -> harbor.example.com/flowfish/inspektor-gadget
     """
+    image_registry = image_registry.strip().rstrip("/")
+    registry = f"{image_registry}/inspektor-gadget" if image_registry else "ghcr.io/inspektor-gadget/inspektor-gadget"
     try:
         is_openshift = provider.lower() == "openshift"
         cli_tool = "oc" if is_openshift else "kubectl"
         
         # Return uninstall script if requested
         if mode == "uninstall":
-            return generate_uninstall_script(cli_tool, provider.upper())
+            return generate_uninstall_script(cli_tool)
         
         # Embedded YAML contents - no file dependencies
         yaml_contents = {
@@ -696,7 +1793,8 @@ metadata:
     app: inspektor-gadget
 data:
   config.yaml: |
-    events-buffer-length: 16384
+    # Dynamically overridden by install script based on cluster pod/node count
+    events-buffer-length: 131072
     # Auto-detected by init container at pod startup
     containerd-socketpath: CONTAINERD_SOCKET_AUTO
     crio-socketpath: /run/crio/crio.sock
@@ -926,7 +2024,7 @@ spec:
             memory: 512Mi
           limits:
             cpu: "1"
-            memory: 12Gi
+            memory: 6Gi
         volumeMounts:
         - name: bin
           mountPath: /host/bin
@@ -995,15 +2093,18 @@ spec:
         hostPath:
           path: /sys/kernel/debug
       - name: oci
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 5Gi
       - name: config
         configMap:
           name: inspektor-gadget-config
           defaultMode: 0400
       - name: config-generated
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 128Mi
       - name: wasm-cache
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 2Gi
 ---
 # ClusterIP service (optional - kubectl gadget uses K8s API, not this service)
 apiVersion: v1
@@ -1028,9 +2129,6 @@ spec:
         provider_upper = provider.upper()
         
         # Generate comprehensive setup script
-        # Determine storage class parameter for script
-        storage_class_default = storage_class if storage_class else ""
-        
         script = f'''#!/bin/bash
 #
 # ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -1041,35 +2139,21 @@ spec:
 # ║  2. Creates a READ-ONLY ServiceAccount for Flowfish                       ║
 # ║  3. Generates authentication token                                        ║
 # ║  4. Outputs connection details for Flowfish UI                            ║
-# ║  5. (Optional) Configures persistent storage with StorageClass            ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 #
 # Usage:
 #   chmod +x setup-flowfish-remote.sh
-#   ./setup-flowfish-remote.sh <namespace> [registry] [version] [storage_class]
+#   ./setup-flowfish-remote.sh <namespace> [registry] [version]
 #   ./setup-flowfish-remote.sh                                    # Interactive mode
 #
 # Examples:
-#   # Using official registry with emptyDir (default - ephemeral storage):
 #   ./setup-flowfish-remote.sh flowfish
-#
-#   # Using internal Harbor registry with persistent storage:
-#   ./setup-flowfish-remote.sh flowfish harbor.example.com/flowfish/inspektor-gadget v0.50.1 standard
-#
-#   # Using only storage class (with default registry and version):
-#   ./setup-flowfish-remote.sh flowfish "" "" gp2
+#   ./setup-flowfish-remote.sh flowfish harbor.example.com/flowfish/inspektor-gadget v0.50.1
 #
 # Arguments:
 #   namespace     - Target namespace (required)
 #   registry      - Gadget image registry (default: {registry})
 #   version       - Gadget version tag (default: {version})
-#   storage_class - StorageClass for persistent data (optional, uses emptyDir if not specified)
-#
-# StorageClass Examples:
-#   - standard     (GKE default)
-#   - gp2, gp3     (AWS EKS)
-#   - managed-premium (Azure AKS)
-#   - thin, thick  (vSphere)
 #
 # Requirements:
 #   - {cli_tool} CLI installed and logged in
@@ -1088,13 +2172,11 @@ SA_NAME="flowfish-remote-reader"
 # Default values (can be overridden by arguments)
 DEFAULT_REGISTRY="{registry}"
 DEFAULT_VERSION="{version}"
-DEFAULT_STORAGE_CLASS="{storage_class_default}"
 
 # Parse arguments
 NAMESPACE="${{1:-}}"
 GADGET_REGISTRY="${{2:-$DEFAULT_REGISTRY}}"
 GADGET_VERSION="${{3:-$DEFAULT_VERSION}}"
-STORAGE_CLASS="${{4:-$DEFAULT_STORAGE_CLASS}}"
 
 # Colors
 RED='\\033[0;31m'
@@ -1115,7 +2197,7 @@ echo ""
 echo "╔═══════════════════════════════════════════════════════════════════════════╗"
 echo "║         Flowfish Remote Cluster Setup for {provider_upper:<12}                   ║"
 echo "║                                                                           ║"
-echo "║  🔒 Security: Creates READ-ONLY access (no write permissions)            ║"
+echo "║  Security: Creates READ-ONLY access (no write permissions)               ║"
 echo "╚═══════════════════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -1130,11 +2212,19 @@ if ! command -v $CLI_TOOL &> /dev/null; then
 fi
 print_success "$CLI_TOOL CLI found"
 
-if ! $CLI_TOOL whoami &> /dev/null; then
-    print_error "Not logged in. Please run '$CLI_TOOL login' first."
-    exit 1
+if [ "$CLI_TOOL" = "oc" ]; then
+    if ! $CLI_TOOL whoami &> /dev/null; then
+        print_error "Not logged in. Please run 'oc login' first."
+        exit 1
+    fi
+    CURRENT_USER=$($CLI_TOOL whoami)
+else
+    if ! $CLI_TOOL cluster-info &> /dev/null 2>&1; then
+        print_error "Not connected to cluster. Please configure kubeconfig first."
+        exit 1
+    fi
+    CURRENT_USER=$($CLI_TOOL config current-context 2>/dev/null || echo "unknown")
 fi
-CURRENT_USER=$($CLI_TOOL whoami)
 print_success "Logged in as: $CURRENT_USER"
 
 # Check for cluster-admin
@@ -1143,6 +2233,25 @@ if ! $CLI_TOOL auth can-i create clusterrole &> /dev/null; then
     exit 1
 fi
 print_success "Cluster-admin privileges confirmed"
+
+# Runtime OpenShift detection. The operator may run this script with
+# `kubectl` against an OpenShift cluster (e.g. when the Flowfish UI
+# only knows the cluster as "kubernetes"). In that case we still need
+# to create + bind a SecurityContextConstraint (SCC) for Inspector
+# Gadget; otherwise the DaemonSet's pods are rejected by OpenShift
+# admission with errors like:
+#   "provider restricted-v2: .spec.securityContext.hostNetwork:
+#    Invalid value: true: Host network is not allowed to be used"
+# We probe the security.openshift.io API group, which is unique to
+# OpenShift; vanilla Kubernetes returns no resources for that group.
+if $CLI_TOOL api-resources --api-group=security.openshift.io 2>/dev/null \
+    | grep -q SecurityContextConstraints; then
+    IS_OPENSHIFT="true"
+    print_success "OpenShift cluster detected (security.openshift.io API present)"
+else
+    IS_OPENSHIFT="false"
+    print_status "Vanilla Kubernetes detected (no security.openshift.io API)"
+fi
 
 # Interactive mode if arguments not provided
 if [ -z "$NAMESPACE" ]; then
@@ -1165,16 +2274,6 @@ if [ -z "$NAMESPACE" ]; then
     read -p "Enter version (press Enter for default): " INPUT_VERSION
     GADGET_VERSION="${{INPUT_VERSION:-$DEFAULT_VERSION}}"
     echo ""
-    echo -e "${{CYAN}}Storage Class:${{NC}} StorageClass for persistent gadget data (OCI images, WASM cache)"
-    echo -e "  This prevents gadget from filling up node's local disk (emptyDir)"
-    echo -e "  Leave empty to use emptyDir (ephemeral storage - data lost on pod restart)"
-    echo -e "  Examples: standard (GKE), gp2/gp3 (AWS), managed-premium (Azure)"
-    if [ -n "$DEFAULT_STORAGE_CLASS" ]; then
-        echo -e "  Default: $DEFAULT_STORAGE_CLASS"
-    fi
-    read -p "Enter storage class (press Enter for emptyDir): " INPUT_STORAGE_CLASS
-    STORAGE_CLASS="${{INPUT_STORAGE_CLASS:-$DEFAULT_STORAGE_CLASS}}"
-    echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi
 
@@ -1183,11 +2282,7 @@ print_status "Configuration:"
 print_status "  Namespace:     $NAMESPACE"
 print_status "  Registry:      $GADGET_REGISTRY"
 print_status "  Version:       $GADGET_VERSION"
-if [ -n "$STORAGE_CLASS" ]; then
-    print_status "  Storage Class: $STORAGE_CLASS (persistent storage)"
-else
-    print_status "  Storage Class: (none - using emptyDir)"
-fi
+print_status "  Storage:       emptyDir (with sizeLimit)"
 echo ""
 
 if [ -z "$NAMESPACE" ]; then
@@ -1203,72 +2298,6 @@ fi
 print_success "Namespace '$NAMESPACE' exists"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Storage Class Validation (if specified)
-# ═══════════════════════════════════════════════════════════════════════════
-USE_PERSISTENT_STORAGE=false
-if [ -n "$STORAGE_CLASS" ]; then
-    print_header "Storage Class Validation"
-    
-    # Check Kubernetes version (ephemeral volumes require 1.23+)
-    print_status "Checking Kubernetes version compatibility..."
-    K8S_VERSION=$($CLI_TOOL version -o json 2>/dev/null | grep -o '"gitVersion": "[^"]*"' | head -1 | cut -d'"' -f4)
-    if [ -z "$K8S_VERSION" ]; then
-        K8S_VERSION=$($CLI_TOOL version --short 2>/dev/null | grep -i server | awk '{{print $NF}}')
-    fi
-    
-    if [ -n "$K8S_VERSION" ]; then
-        print_status "Kubernetes version: $K8S_VERSION"
-        K8S_MAJOR=$(echo "$K8S_VERSION" | sed 's/v//' | cut -d. -f1)
-        K8S_MINOR=$(echo "$K8S_VERSION" | cut -d. -f2)
-        
-        if [ "$K8S_MAJOR" -lt 1 ] || ([ "$K8S_MAJOR" -eq 1 ] && [ "$K8S_MINOR" -lt 23 ]); then
-            print_error "Kubernetes version $K8S_VERSION does not support ephemeral volumes!"
-            print_error "Ephemeral volumes require Kubernetes 1.23 or newer."
-            print_warning "Falling back to emptyDir storage..."
-            STORAGE_CLASS=""
-        else
-            print_success "Kubernetes version is compatible (1.23+ required)"
-        fi
-    else
-        print_warning "Could not determine Kubernetes version. Proceeding with StorageClass..."
-    fi
-fi
-
-if [ -n "$STORAGE_CLASS" ]; then
-    print_status "Checking if StorageClass '$STORAGE_CLASS' exists..."
-    if ! $CLI_TOOL get storageclass "$STORAGE_CLASS" &> /dev/null; then
-        print_error "StorageClass '$STORAGE_CLASS' not found!"
-        echo ""
-        print_status "Available StorageClasses in cluster:"
-        $CLI_TOOL get storageclass -o custom-columns=NAME:.metadata.name,PROVISIONER:.provisioner,RECLAIMPOLICY:.reclaimPolicy,DEFAULT:.metadata.annotations."storageclass\.kubernetes\.io/is-default-class" 2>/dev/null || \
-            $CLI_TOOL get storageclass 2>/dev/null || echo "  (unable to list storage classes)"
-        echo ""
-        print_warning "Options:"
-        print_warning "  1. Use a valid StorageClass from the list above"
-        print_warning "  2. Re-run without storage class (uses emptyDir)"
-        exit 1
-    fi
-    print_success "StorageClass '$STORAGE_CLASS' exists"
-    
-    # Check if StorageClass supports dynamic provisioning
-    PROVISIONER=$($CLI_TOOL get storageclass "$STORAGE_CLASS" -o jsonpath='{{.provisioner}}' 2>/dev/null)
-    print_status "Provisioner: $PROVISIONER"
-    
-    # Check volume binding mode
-    BINDING_MODE=$($CLI_TOOL get storageclass "$STORAGE_CLASS" -o jsonpath='{{.volumeBindingMode}}' 2>/dev/null)
-    if [ "$BINDING_MODE" = "WaitForFirstConsumer" ]; then
-        print_success "Volume binding mode: WaitForFirstConsumer (recommended for DaemonSet)"
-    elif [ -n "$BINDING_MODE" ]; then
-        print_warning "Volume binding mode: $BINDING_MODE"
-        print_warning "Consider using WaitForFirstConsumer for better node affinity"
-    fi
-    
-    USE_PERSISTENT_STORAGE=true
-    print_success "Persistent storage will be configured with StorageClass: $STORAGE_CLASS"
-    echo ""
-fi
-
-# ═══════════════════════════════════════════════════════════════════════════
 # PART 1: Inspector Gadget Installation
 # ═══════════════════════════════════════════════════════════════════════════
 print_header "Part 1: Inspector Gadget Installation"
@@ -1281,9 +2310,17 @@ CRD_EOF
 print_success "Trace CRD applied"
 
 # Step 2: Create Security Context Constraint (OpenShift only)
-if [ "$CLI_TOOL" = "oc" ]; then
+# We key off the *runtime* IS_OPENSHIFT detection above, not on whether
+# the operator chose `oc` vs `kubectl`: an OpenShift cluster needs an
+# SCC even when it is being driven by kubectl.
+if [ "$IS_OPENSHIFT" = "true" ]; then
     print_status "2/6 - Creating Security Context Constraint (SCC)..."
-    cat <<'SCC_EOF' | $CLI_TOOL apply -f -
+    # NOTE: the `users:` field below binds the SCC to the
+    # inspektor-gadget ServiceAccount as part of the manifest itself.
+    # This is the only binding mechanism that works regardless of CLI
+    # (kubectl cannot run `oc adm policy add-scc-to-user`), so we
+    # include it here instead of relying on a follow-up `oc adm` call.
+    cat <<SCC_EOF | $CLI_TOOL apply -f -
 apiVersion: security.openshift.io/v1
 kind: SecurityContextConstraints
 metadata:
@@ -1321,11 +2358,11 @@ volumes:
   - configMap
   - downwardAPI
   - emptyDir
-  - ephemeral
   - hostPath
-  - persistentVolumeClaim
   - projected
   - secret
+users:
+  - system:serviceaccount:$NAMESPACE:inspektor-gadget
 SCC_EOF
     print_success "SCC created"
 else
@@ -1340,319 +2377,86 @@ RBAC_EOF
 print_success "Gadget RBAC applied"
 
 # Step 4: Bind SCC to ServiceAccount (OpenShift only)
-if [ "$CLI_TOOL" = "oc" ]; then
+# The SCC manifest above already binds via its `users:` field, which is
+# the cluster-wide source of truth and works whether the operator drove
+# the script with `oc` or `kubectl`. The `oc adm policy` call below is a
+# redundant idempotent fallback that is only available when running with
+# `oc`; with `kubectl` we silently skip it (manifest binding suffices).
+if [ "$IS_OPENSHIFT" = "true" ]; then
     print_status "4/6 - Binding SCC to ServiceAccount..."
-    $CLI_TOOL adm policy add-scc-to-user inspektor-gadget-scc -z inspektor-gadget -n $NAMESPACE 2>/dev/null || true
+    if [ "$CLI_TOOL" = "oc" ]; then
+        $CLI_TOOL adm policy add-scc-to-user inspektor-gadget-scc -z inspektor-gadget -n $NAMESPACE 2>/dev/null || true
+    fi
     print_success "SCC bound to ServiceAccount"
 else
     print_status "4/6 - Skipping SCC binding (not OpenShift)..."
 fi
 
-# Step 5: Create ConfigMap
+# Step 5: Create ConfigMap (with dynamic buffer sizing based on cluster size)
 print_status "5/6 - Creating ConfigMap..."
-cat <<'CONFIG_EOF' | sed "s/NAMESPACE_PLACEHOLDER/$NAMESPACE/g" | $CLI_TOOL apply -f -
+TOTAL_PODS=$($CLI_TOOL get pods -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
+TOTAL_PODS=${{TOTAL_PODS:-0}}
+TOTAL_NODES=$($CLI_TOOL get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+TOTAL_NODES=${{TOTAL_NODES:-1}}
+[ "$TOTAL_NODES" -eq 0 ] 2>/dev/null && TOTAL_NODES=1
+PODS_PER_NODE=$((TOTAL_PODS / TOTAL_NODES))
+
+# Sizing: each gadget pod runs per-node, buffer is per-CPU ring.
+# High pods/node → more eBPF events → need larger buffer.
+#
+# Production default policy: 2x headroom over the strictly-required tier.
+# Field finding from a 190-pods/node OpenShift cluster: with the legacy
+# 131K-2M tiering an 11-gadget burst flooded the IG ring buffers (logs
+# show "lost 295k samples" + "bad file descriptor"), corrupted IG worker
+# state, tripped the kubelet liveness probe, and SIGKILL'd the IG
+# container (exit 137). The doubled tiers below absorb that burst plus
+# normal sustained traffic on busy clusters.
+#
+# Trade-off vs. "even larger" (8M+): drop visibility latency goes up
+# (operator notices flooding only after ~30s instead of ~5s), and
+# Linux perf_event_open starts hitting kernel.perf_event_max_sample_rate
+# limits. 4M is the sweet spot — well below kernel ceilings and still
+# small enough that the IG drain loop never falls more than ~10s
+# behind real time.
+if [ "$PODS_PER_NODE" -gt 300 ] 2>/dev/null; then
+    EVENTS_BUFFER=4194304   # 4M (cap — kernel perf_event ceiling)
+elif [ "$PODS_PER_NODE" -gt 150 ] 2>/dev/null; then
+    EVENTS_BUFFER=4194304   # was 2097152 — 2x boost for burst tolerance
+elif [ "$PODS_PER_NODE" -gt 80 ] 2>/dev/null; then
+    EVENTS_BUFFER=2097152   # was 1048576
+elif [ "$PODS_PER_NODE" -gt 40 ] 2>/dev/null; then
+    EVENTS_BUFFER=1048576   # was 524288
+elif [ "$PODS_PER_NODE" -gt 15 ] 2>/dev/null; then
+    EVENTS_BUFFER=524288    # was 262144
+else
+    EVENTS_BUFFER=262144    # was 131072 — small clusters still get 2x
+fi
+
+# Floor based on total pod count (guards against few-node large clusters).
+# Doubled in lockstep with the per-node tiers above.
+if [ "$TOTAL_PODS" -gt 2000 ] 2>/dev/null && [ "$EVENTS_BUFFER" -lt 4194304 ] 2>/dev/null; then
+    EVENTS_BUFFER=4194304   # was 2097152
+elif [ "$TOTAL_PODS" -gt 1000 ] 2>/dev/null && [ "$EVENTS_BUFFER" -lt 2097152 ] 2>/dev/null; then
+    EVENTS_BUFFER=2097152   # was 1048576
+elif [ "$TOTAL_PODS" -gt 500 ] 2>/dev/null && [ "$EVENTS_BUFFER" -lt 1048576 ] 2>/dev/null; then
+    EVENTS_BUFFER=1048576   # was 524288
+fi
+print_status "Cluster: $TOTAL_PODS pods / $TOTAL_NODES nodes ($PODS_PER_NODE pods/node) -> buffer: $EVENTS_BUFFER"
+cat <<'CONFIG_EOF' | sed "s/NAMESPACE_PLACEHOLDER/$NAMESPACE/g" | sed "s/events-buffer-length:.*/events-buffer-length: $EVENTS_BUFFER/" | $CLI_TOOL apply -f -
 {yaml_contents["config"]}
 CONFIG_EOF
-print_success "ConfigMap created"
+print_success "ConfigMap created (buffer=$EVENTS_BUFFER for $TOTAL_PODS pods on $TOTAL_NODES nodes)"
 
 # Step 6: Deploy DaemonSet
 print_status "6/6 - Deploying DaemonSet..."
 GADGET_IMAGE="${{GADGET_REGISTRY}}:${{GADGET_VERSION}}"
 print_status "Using Gadget image: $GADGET_IMAGE"
 
-if [ "$USE_PERSISTENT_STORAGE" = true ]; then
-    print_status "Configuring with persistent storage (StorageClass: $STORAGE_CLASS)"
-    cat <<DAEMONSET_PVC_EOF | sed "s/NAMESPACE_PLACEHOLDER/$NAMESPACE/g" | sed "s|GADGET_IMAGE_PLACEHOLDER|$GADGET_IMAGE|g" | sed "s|STORAGE_CLASS_PLACEHOLDER|$STORAGE_CLASS|g" | $CLI_TOOL apply -f -
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: inspektor-gadget
-  namespace: NAMESPACE_PLACEHOLDER
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: inspektor-gadget
-  namespace: NAMESPACE_PLACEHOLDER
-  labels:
-    app: inspektor-gadget
-    k8s-app: inspektor-gadget
-spec:
-  selector:
-    matchLabels:
-      app: inspektor-gadget
-  updateStrategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 1
-  template:
-    metadata:
-      labels:
-        app: inspektor-gadget
-        k8s-app: gadget
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "2223"
-        prometheus.io/path: "/metrics"
-    spec:
-      hostPID: true
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
-      serviceAccountName: inspektor-gadget
-      nodeSelector:
-        kubernetes.io/os: linux
-      # Exclude master/control-plane/infra nodes (CSI storage typically not available)
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: node-role.kubernetes.io/control-plane
-                operator: DoesNotExist
-              - key: node-role.kubernetes.io/master
-                operator: DoesNotExist
-              - key: node-role.kubernetes.io/infra
-                operator: DoesNotExist
-      tolerations:
-      - effect: NoSchedule
-        operator: Exists
-      - effect: NoExecute
-        operator: Exists
-      initContainers:
-      - name: detect-runtime
-        image: busybox:1.36
-        command: ['sh', '-c']
-        args:
-        - |
-          if [ -S /host/run/k3s/containerd/containerd.sock ]; then
-            SOCKET="/run/k3s/containerd/containerd.sock"
-            echo "Detected K3s/RKE2 containerd socket"
-          elif [ -S /host/run/containerd/containerd.sock ]; then
-            SOCKET="/run/containerd/containerd.sock"
-            echo "Detected standard containerd socket"
-          elif [ -S /host/var/snap/microk8s/common/run/containerd.sock ]; then
-            SOCKET="/host/var/snap/microk8s/common/run/containerd.sock"
-            echo "Detected MicroK8s containerd socket"
-          else
-            SOCKET="/run/containerd/containerd.sock"
-            echo "WARNING: No containerd socket found at known paths, using default"
-          fi
-          echo "Using containerd socket: $SOCKET"
-          sed "s|CONTAINERD_SOCKET_AUTO|$SOCKET|g" /config-template/config.yaml > /config-generated/config.yaml
-        volumeMounts:
-        - name: run
-          mountPath: /host/run
-          readOnly: true
-        - name: var
-          mountPath: /host/var
-          readOnly: true
-        - name: config
-          mountPath: /config-template
-          readOnly: true
-        - name: config-generated
-          mountPath: /config-generated
-      containers:
-      - name: gadget
-        image: GADGET_IMAGE_PLACEHOLDER
-        imagePullPolicy: Always
-        terminationMessagePolicy: FallbackToLogsOnError
-        command:
-        - /bin/gadgettracermanager
-        - -serve
-        lifecycle:
-          preStop:
-            exec:
-              command:
-              - /cleanup
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        - name: GADGET_POD_UID
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.uid
-        - name: GADGET_IMAGE
-          value: "GADGET_IMAGE_PLACEHOLDER"
-        - name: HOST_ROOT
-          value: "/host"
-        - name: IG_EXPERIMENTAL
-          value: "false"
-        securityContext:
-          readOnlyRootFilesystem: true
-          appArmorProfile:
-            type: Unconfined
-          seLinuxOptions:
-            type: spc_t
-          capabilities:
-            drop:
-            - ALL
-            add:
-            - SYS_ADMIN
-            - SYSLOG
-            - SYS_PTRACE
-            - SYS_RESOURCE
-            - IPC_LOCK
-            - NET_RAW
-            - NET_ADMIN
-        startupProbe:
-          exec:
-            command:
-            - /bin/gadgettracermanager
-            - -liveness
-          failureThreshold: 12
-          periodSeconds: 5
-        readinessProbe:
-          exec:
-            command:
-            - /bin/gadgettracermanager
-            - -liveness
-          periodSeconds: 5
-          timeoutSeconds: 2
-        livenessProbe:
-          exec:
-            command:
-            - /bin/gadgettracermanager
-            - -liveness
-          periodSeconds: 5
-          timeoutSeconds: 2
-        resources:
-          requests:
-            cpu: 100m
-            memory: 512Mi
-          limits:
-            cpu: "1"
-            memory: 12Gi
-        volumeMounts:
-        - name: bin
-          mountPath: /host/bin
-          readOnly: true
-        - name: etc
-          mountPath: /host/etc
-        - name: opt
-          mountPath: /host/opt
-        - name: usr
-          mountPath: /host/usr
-          readOnly: true
-        - name: run
-          mountPath: /host/run
-          readOnly: true
-        - name: var
-          mountPath: /host/var
-          readOnly: true
-        - name: proc
-          mountPath: /host/proc
-          readOnly: true
-        - name: run
-          mountPath: /run
-        - name: debugfs
-          mountPath: /sys/kernel/debug
-        - name: cgroup
-          mountPath: /sys/fs/cgroup
-          readOnly: true
-        - name: bpffs
-          mountPath: /sys/fs/bpf
-        - name: oci
-          mountPath: /var/lib/ig
-        - name: config-generated
-          mountPath: /etc/ig
-          readOnly: true
-        - name: wasm-cache
-          mountPath: /var/run/ig/wasm-cache
-      volumes:
-      - name: bin
-        hostPath:
-          path: /bin
-      - name: etc
-        hostPath:
-          path: /etc
-      - name: opt
-        hostPath:
-          path: /opt
-      - name: usr
-        hostPath:
-          path: /usr
-      - name: proc
-        hostPath:
-          path: /proc
-      - name: run
-        hostPath:
-          path: /run
-      - name: var
-        hostPath:
-          path: /var
-      - name: cgroup
-        hostPath:
-          path: /sys/fs/cgroup
-      - name: bpffs
-        hostPath:
-          path: /sys/fs/bpf
-      - name: debugfs
-        hostPath:
-          path: /sys/kernel/debug
-      # Persistent storage for OCI images (gadget programs)
-      - name: oci
-        ephemeral:
-          volumeClaimTemplate:
-            metadata:
-              labels:
-                app: inspektor-gadget
-                volume-type: oci-storage
-            spec:
-              accessModes: ["ReadWriteOnce"]
-              storageClassName: "STORAGE_CLASS_PLACEHOLDER"
-              resources:
-                requests:
-                  storage: 10Gi
-      - name: config
-        configMap:
-          name: inspektor-gadget-config
-          defaultMode: 0400
-      - name: config-generated
-        emptyDir: {{}}
-      # Persistent storage for WASM cache
-      - name: wasm-cache
-        ephemeral:
-          volumeClaimTemplate:
-            metadata:
-              labels:
-                app: inspektor-gadget
-                volume-type: wasm-cache
-            spec:
-              accessModes: ["ReadWriteOnce"]
-              storageClassName: "STORAGE_CLASS_PLACEHOLDER"
-              resources:
-                requests:
-                  storage: 5Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: inspektor-gadget
-  namespace: NAMESPACE_PLACEHOLDER
-  labels:
-    app: inspektor-gadget
-spec:
-  type: ClusterIP
-  ports:
-  - name: grpc
-    port: 16060
-    targetPort: 16060
-    protocol: TCP
-  selector:
-    app: inspektor-gadget
-DAEMONSET_PVC_EOF
-    print_success "DaemonSet deployed with persistent storage"
-    print_status "Ephemeral PVCs will be created automatically per pod"
-else
-    print_status "Configuring with emptyDir (ephemeral storage)"
-    cat <<'DAEMONSET_EOF' | sed "s/NAMESPACE_PLACEHOLDER/$NAMESPACE/g" | sed "s|GADGET_IMAGE_PLACEHOLDER|$GADGET_IMAGE|g" | $CLI_TOOL apply -f -
+print_status "Configuring with emptyDir storage (with sizeLimit)"
+cat <<'DAEMONSET_EOF' | sed "s/NAMESPACE_PLACEHOLDER/$NAMESPACE/g" | sed "s|GADGET_IMAGE_PLACEHOLDER|$GADGET_IMAGE|g" | $CLI_TOOL apply -f -
 {yaml_contents["daemonset"]}
 DAEMONSET_EOF
-    print_success "DaemonSet deployed with emptyDir storage"
-fi
+print_success "DaemonSet deployed with emptyDir storage (sizeLimit enforced)"
 
 # Restart pods to pick up SCC
 print_status "Restarting Gadget pods to apply SCC..."
@@ -1698,7 +2502,7 @@ metadata:
 rules:
   # Core resources - READ ONLY
   - apiGroups: [""]
-    resources: ["pods", "nodes", "namespaces", "services", "events", "endpoints"]
+    resources: ["pods", "nodes", "namespaces", "services", "events", "endpoints", "configmaps", "secrets"]
     verbs: ["get", "list", "watch"]
   # Apps resources - READ ONLY
   - apiGroups: ["apps"]
@@ -2003,7 +2807,7 @@ echo ""
 echo ""
 echo "╔═══════════════════════════════════════════════════════════════════════════╗"
 echo "║                                                                           ║"
-echo "║   ✅ SETUP COMPLETE - Copy these values to Flowfish UI                    ║"
+echo "║   SETUP COMPLETE - Copy these values to Flowfish UI                       ║"
 echo "║                                                                           ║"
 echo "╚═══════════════════════════════════════════════════════════════════════════╝"
 echo ""
@@ -2040,23 +2844,17 @@ fi
 echo "└─────────────────────────────────────────────────────────────────────────────┘"
 echo ""
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ 🔒 SECURITY SUMMARY                                                         │"
+echo "│ SECURITY SUMMARY                                                              │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
-echo "│ ✅ ServiceAccount: $SA_NAME (READ-ONLY)"
-echo "│ ✅ Permissions: GET, LIST, WATCH only (no write access)"
-echo "│ ✅ Token Validity: 1 year"
-echo "│ ✅ Namespace: $NAMESPACE"
-if [ "$USE_PERSISTENT_STORAGE" = true ]; then
-    echo "│ ✅ Storage: Persistent (StorageClass: $STORAGE_CLASS)"
-    echo "│    - OCI volume: 10Gi per node"
-    echo "│    - WASM cache: 5Gi per node"
-else
-    echo "│ ⚠️  Storage: emptyDir (ephemeral - data lost on pod restart)"
-fi
+echo "│ ServiceAccount: $SA_NAME (READ-ONLY)"
+echo "│ Permissions: GET, LIST, WATCH only (no write access)"
+echo "│ Token Validity: 1 year"
+echo "│ Namespace: $NAMESPACE"
+echo "│ Storage: emptyDir (OCI: 5Gi, WASM: 2Gi, config: 128Mi sizeLimit per node)"
 echo "└─────────────────────────────────────────────────────────────────────────────┘"
 echo ""
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ 📝 MANUAL COMMANDS (if values above are empty)                              │"
+echo "│ MANUAL COMMANDS (if values above are empty)                                  │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
 echo "│                                                                             │"
 echo "│ Get Token:                                                                  │"
@@ -2079,7 +2877,7 @@ echo "│                                                                       
 echo "└─────────────────────────────────────────────────────────────────────────────┘"
 echo ""
 echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│ 🔍 VERIFICATION COMMANDS                                                    │"
+echo "│ VERIFICATION COMMANDS                                                        │"
 echo "├─────────────────────────────────────────────────────────────────────────────┤"
 echo "│ Check Gadget pods:    $CLI_TOOL get pods -l app=inspektor-gadget -n $NAMESPACE"
 echo "│ Check ServiceAccount: $CLI_TOOL get sa $SA_NAME -n $NAMESPACE"
@@ -2103,7 +2901,10 @@ echo ""
 
 
 @router.get("/clusters/{cluster_id}")
-async def get_cluster(cluster_id: int):
+async def get_cluster(
+    cluster_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     """Get cluster by ID"""
     try:
         query = """
@@ -2111,7 +2912,9 @@ async def get_cluster(cluster_id: int):
                connection_type, api_server_url, gadget_namespace, gadget_endpoint,
                gadget_health_status, gadget_version, status,
                total_nodes, total_pods, total_namespaces,
-               k8s_version, created_at, updated_at
+               k8s_version, created_at, updated_at,
+               beyla_namespace, beyla_health_status, beyla_version,
+               l7_collector_endpoint, beyla_last_check
         FROM clusters
         WHERE id = :cluster_id
         """
@@ -2137,7 +2940,11 @@ async def get_cluster(cluster_id: int):
 
 
 @router.patch("/clusters/{cluster_id}")
-async def update_cluster(cluster_id: int, cluster_data: ClusterUpdate):
+async def update_cluster(
+    cluster_id: int,
+    cluster_data: ClusterUpdate,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Update cluster configuration.
     
@@ -2201,7 +3008,11 @@ async def update_cluster(cluster_id: int, cluster_data: ClusterUpdate):
         if cluster_data.gadget_namespace is not None:
             updates.append("gadget_namespace = :gadget_namespace")
             params["gadget_namespace"] = cluster_data.gadget_namespace
-            
+
+        if cluster_data.beyla_namespace is not None:
+            updates.append("beyla_namespace = :beyla_namespace")
+            params["beyla_namespace"] = cluster_data.beyla_namespace
+
         if cluster_data.status is not None:
             updates.append("status = :status")
             params["status"] = cluster_data.status
@@ -2213,16 +3024,16 @@ async def update_cluster(cluster_id: int, cluster_data: ClusterUpdate):
         # Sensitive fields - only update if non-empty value provided
         # This prevents accidental clearing of credentials
         if cluster_data.token is not None and cluster_data.token.strip():
-            updates.append("token = :token")
-            params["token"] = cluster_data.token
+            updates.append("token_encrypted = :token")
+            params["token"] = encrypt_data(cluster_data.token)
             
         if cluster_data.kubeconfig is not None and cluster_data.kubeconfig.strip():
-            updates.append("kubeconfig = :kubeconfig")
-            params["kubeconfig"] = cluster_data.kubeconfig
+            updates.append("kubeconfig_encrypted = :kubeconfig")
+            params["kubeconfig"] = encrypt_data(cluster_data.kubeconfig)
             
         if cluster_data.ca_cert is not None and cluster_data.ca_cert.strip():
-            updates.append("ca_cert = :ca_cert")
-            params["ca_cert"] = cluster_data.ca_cert
+            updates.append("ca_cert_encrypted = :ca_cert")
+            params["ca_cert"] = encrypt_data(cluster_data.ca_cert)
         
         if not updates:
             raise HTTPException(
@@ -2241,11 +3052,23 @@ async def update_cluster(cluster_id: int, cluster_data: ClusterUpdate):
         
         await database.execute(query, params)
         
+        # Refresh cached connection if credentials or connection params changed
+        credential_fields = {"token", "kubeconfig", "ca_cert", "skip_tls_verify", "api_server_url"}
+        if credential_fields & set(params.keys()):
+            try:
+                await cluster_connection_manager.refresh_connection(cluster_id)
+                logger.info("Connection cache refreshed after credential update", cluster_id=cluster_id)
+            except Exception as refresh_err:
+                logger.warning("Connection refresh failed (will retry on next access)",
+                             cluster_id=cluster_id, error=str(refresh_err))
+
         # Return updated cluster (without sensitive fields)
         updated = await database.fetch_one(
             """SELECT id, name, description, environment, provider, region,
                       connection_type, api_server_url, gadget_namespace, gadget_endpoint,
-                      gadget_health_status, gadget_version, status, 
+                      gadget_health_status, gadget_version,
+                      beyla_namespace, beyla_health_status, beyla_version,
+                      status, 
                       total_nodes, total_pods, total_namespaces, k8s_version,
                       skip_tls_verify, created_at, updated_at
                FROM clusters WHERE id = :cluster_id""",
@@ -2270,7 +3093,10 @@ async def update_cluster(cluster_id: int, cluster_data: ClusterUpdate):
 
 
 @router.delete("/clusters/{cluster_id}")
-async def delete_cluster(cluster_id: int):
+async def delete_cluster(
+    cluster_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     """Delete cluster (soft delete)"""
     try:
         # Check if cluster exists
@@ -2290,6 +3116,13 @@ async def delete_cluster(cluster_id: int):
             "UPDATE clusters SET status = 'deleted', updated_at = NOW() WHERE id = :cluster_id",
             {"cluster_id": cluster_id}
         )
+
+        # Clean up cached connection so it's not left dangling
+        try:
+            await cluster_connection_manager.close_connection(cluster_id)
+        except Exception as conn_err:
+            logger.warning("Failed to close cached connection for deleted cluster",
+                         cluster_id=cluster_id, error=str(conn_err))
         
         logger.info("Cluster deleted", cluster_id=cluster_id, cluster_name=existing["name"])
         
@@ -2308,12 +3141,16 @@ async def delete_cluster(cluster_id: int):
 
 
 @router.post("/clusters/{cluster_id}/sync")
-async def sync_cluster(cluster_id: int):
+async def sync_cluster(
+    cluster_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     """Sync cluster information (workloads, nodes, etc.)"""
     try:
         cluster = await database.fetch_one(
             """SELECT id, name, connection_type, api_server_url, kubeconfig_encrypted,
-                      token_encrypted, ca_cert_encrypted, skip_tls_verify, gadget_namespace
+                      token_encrypted, ca_cert_encrypted, skip_tls_verify,
+                      gadget_namespace, beyla_namespace
                FROM clusters WHERE id = :cluster_id AND status = 'active'""",
             {"cluster_id": cluster_id}
         )
@@ -2342,6 +3179,28 @@ async def sync_cluster(cluster_id: int):
             logger.error("Gadget health check exception", error=str(health_err))
             gadget_health = {"health_status": "unknown", "error": str(health_err)}
         
+        # Beyla (L7) health check — try beyla_namespace, fall back to gadget_namespace
+        beyla_ns = cluster.get("beyla_namespace") or cluster.get("gadget_namespace") or ""
+        beyla_health = {"health_status": "not_installed"}
+        if beyla_ns:
+            try:
+                beyla_health = await cluster_connection_manager.check_beyla_health(cluster_id, beyla_ns)
+                logger.info("Beyla health check result",
+                           health_status=beyla_health.get("health_status"),
+                           daemonset_ready=beyla_health.get("daemonset_ready"),
+                           daemonset_total=beyla_health.get("daemonset_total"),
+                           collector_ready=beyla_health.get("collector_ready"))
+                # Auto-persist beyla_namespace if discovered via gadget_namespace fallback
+                if not cluster.get("beyla_namespace") and beyla_health.get("health_status") in ("healthy", "degraded"):
+                    await database.execute(
+                        "UPDATE clusters SET beyla_namespace = :ns WHERE id = :id",
+                        {"ns": beyla_ns, "id": cluster_id},
+                    )
+                    logger.info("Auto-discovered beyla_namespace", cluster_id=cluster_id, namespace=beyla_ns)
+            except Exception as beyla_err:
+                logger.error("Beyla health check exception", error=str(beyla_err))
+                beyla_health = {"health_status": "unknown", "error": str(beyla_err)}
+        
         # Update cluster with fetched info
         # Even if cluster_info has error, we still update gadget health
         cluster_info_error = cluster_info.get("error")
@@ -2356,6 +3215,9 @@ async def sync_cluster(cluster_id: int):
                    k8s_version = :k8s_version,
                    gadget_health_status = :gadget_health_status,
                    gadget_version = :gadget_version,
+                   beyla_health_status = :beyla_health_status,
+                   beyla_version = :beyla_version,
+                   beyla_last_check = NOW(),
                    updated_at = NOW()
                    WHERE id = :cluster_id""",
                 {
@@ -2364,8 +3226,10 @@ async def sync_cluster(cluster_id: int):
                     "total_pods": cluster_info.get("total_pods", 0),
                     "total_namespaces": cluster_info.get("total_namespaces", 0),
                     "k8s_version": cluster_info.get("k8s_version"),
-                    "gadget_health_status": gadget_health.get("health_status", "unknown"),
-                    "gadget_version": gadget_health.get("version")
+                    "gadget_health_status": gadget_health.get("health_status", "not_installed"),
+                    "gadget_version": gadget_health.get("version"),
+                    "beyla_health_status": beyla_health.get("health_status", "not_installed"),
+                    "beyla_version": beyla_health.get("version", ""),
                 }
             )
             
@@ -2392,14 +3256,23 @@ async def sync_cluster(cluster_id: int):
                     "pods": cluster_info.get("total_pods", 0),
                     "namespaces": cluster_info.get("total_namespaces", 0)
                 },
-                "gadget_health": gadget_health.get("health_status", "unknown"),
+                "gadget_health": gadget_health.get("health_status", "not_installed"),
                 "gadget_details": {
                     "version": gadget_health.get("version"),
                     "error": gadget_health.get("error"),
                     "pods_ready": gadget_health.get("pods_ready", 0),
                     "pods_total": gadget_health.get("pods_total", 0),
                     "details": gadget_health.get("details", {})
-                }
+                },
+                "beyla_health": beyla_health.get("health_status", "not_installed"),
+                "beyla_version": beyla_health.get("version", ""),
+                "beyla_details": {
+                    "daemonset_ready": beyla_health.get("daemonset_ready", 0),
+                    "daemonset_total": beyla_health.get("daemonset_total", 0),
+                    "collector_ready": beyla_health.get("collector_ready", False),
+                    "issues": beyla_health.get("issues", []),
+                    "error": beyla_health.get("error"),
+                },
             }
         else:
             # Partial sync - cluster info failed but gadget health may be available
@@ -2407,17 +3280,22 @@ async def sync_cluster(cluster_id: int):
                           cluster_id=cluster_id,
                           error=cluster_info_error)
             
-            # Still update gadget health even if cluster info failed
+            # Still update gadget + beyla health even if cluster info failed
             await database.execute(
                 """UPDATE clusters SET 
                    gadget_health_status = :gadget_health_status,
                    gadget_version = :gadget_version,
+                   beyla_health_status = :beyla_health_status,
+                   beyla_version = :beyla_version,
+                   beyla_last_check = NOW(),
                    updated_at = NOW()
                    WHERE id = :cluster_id""",
                 {
                     "cluster_id": cluster_id,
-                    "gadget_health_status": gadget_health.get("health_status", "unknown"),
-                    "gadget_version": gadget_health.get("version")
+                    "gadget_health_status": gadget_health.get("health_status", "not_installed"),
+                    "gadget_version": gadget_health.get("version"),
+                    "beyla_health_status": beyla_health.get("health_status", "not_installed"),
+                    "beyla_version": beyla_health.get("version", ""),
                 }
             )
             
@@ -2427,14 +3305,23 @@ async def sync_cluster(cluster_id: int):
                 "status": "partial",
                 "warning": f"Cluster info fetch failed: {cluster_info_error}",
                 "resources": None,
-                "gadget_health": gadget_health.get("health_status", "unknown"),
+                "gadget_health": gadget_health.get("health_status", "not_installed"),
                 "gadget_details": {
                     "version": gadget_health.get("version"),
                     "error": gadget_health.get("error"),
                     "pods_ready": gadget_health.get("pods_ready", 0),
                     "pods_total": gadget_health.get("pods_total", 0),
                     "details": gadget_health.get("details", {})
-                }
+                },
+                "beyla_health": beyla_health.get("health_status", "not_installed"),
+                "beyla_version": beyla_health.get("version", ""),
+                "beyla_details": {
+                    "daemonset_ready": beyla_health.get("daemonset_ready", 0),
+                    "daemonset_total": beyla_health.get("daemonset_total", 0),
+                    "collector_ready": beyla_health.get("collector_ready", False),
+                    "issues": beyla_health.get("issues", []),
+                    "error": beyla_health.get("error"),
+                },
             }
         
     except HTTPException:
@@ -2453,40 +3340,87 @@ class ConnectionTestRequest(BaseModel):
     api_server_url: Optional[str] = None
     token: Optional[str] = None
     ca_cert: Optional[str] = None
-    skip_tls_verify: Optional[bool] = False
-    gadget_namespace: str  # Namespace where gadget is deployed (REQUIRED from UI)
+    skip_tls_verify: Optional[bool] = None
+    gadget_namespace: Optional[str] = None
+    cluster_id: Optional[int] = None  # If provided, fall back to stored credentials
 
 
 @router.post("/clusters/test-connection")
-async def test_cluster_connection(test_data: ConnectionTestRequest):
+async def test_cluster_connection(
+    test_data: ConnectionTestRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """
-    Test cluster connection before creating.
+    Test cluster connection before creating or after editing.
     
     This endpoint allows users to verify their cluster credentials
     and Inspector Gadget endpoint before creating a cluster.
+    
+    When cluster_id is provided (edit mode), missing credentials are
+    loaded from the stored (encrypted) values in the database so the
+    user only needs to supply fields they are changing.
     
     Uses ClusterConnectionManager.test_connection() for unified logic.
     Returns detailed connection status and any errors.
     """
     try:
+        token = test_data.token
+        ca_cert = test_data.ca_cert
+        api_server_url = test_data.api_server_url
+        skip_tls = test_data.skip_tls_verify
+        gadget_ns = test_data.gadget_namespace
+        conn_type = test_data.connection_type
+        kubeconfig = None
+
+        # For edit mode: fill missing fields from stored cluster data
+        if test_data.cluster_id:
+            stored = await database.fetch_one(
+                """SELECT connection_type, api_server_url, token_encrypted,
+                          ca_cert_encrypted, kubeconfig_encrypted,
+                          skip_tls_verify, gadget_namespace
+                   FROM clusters WHERE id = :cid AND status != 'deleted'""",
+                {"cid": test_data.cluster_id},
+            )
+            if stored:
+                conn_type = conn_type or stored["connection_type"]
+                api_server_url = api_server_url or stored["api_server_url"]
+                if not token and stored["token_encrypted"]:
+                    token = decrypt_data(stored["token_encrypted"])
+                if not ca_cert and stored["ca_cert_encrypted"]:
+                    ca_cert = decrypt_data(stored["ca_cert_encrypted"])
+                if not kubeconfig and stored["kubeconfig_encrypted"]:
+                    kubeconfig = decrypt_data(stored["kubeconfig_encrypted"])
+                if skip_tls is None:
+                    skip_tls = stored["skip_tls_verify"] or False
+                gadget_ns = gadget_ns or stored["gadget_namespace"] or ""
+
+        skip_tls = skip_tls if skip_tls is not None else False
+        gadget_ns = gadget_ns or ""
+
         # Validate required fields based on connection type
-        normalized_type = test_data.connection_type.replace('_', '-').lower() if test_data.connection_type else ""
+        normalized_type = conn_type.replace('_', '-').lower() if conn_type else ""
         
         if normalized_type == "token":
-            if not test_data.api_server_url:
+            if not api_server_url:
                 raise ValueError("API Server URL is required for token authentication")
-            if not test_data.token:
+            if not token:
                 raise ValueError("Token is required for token authentication")
         
+        # For kubeconfig connections, use stored kubeconfig or the token field
+        # (Add Cluster modal reuses the token field for kubeconfig content)
+        effective_kubeconfig = None
+        if normalized_type == "kubeconfig":
+            effective_kubeconfig = kubeconfig or token
+
         # Use ClusterConnectionManager for unified connection testing
         test_result = await cluster_connection_manager.test_connection(
-            connection_type=test_data.connection_type,
-            api_server_url=test_data.api_server_url,
-            token=test_data.token,
-            ca_cert=test_data.ca_cert,
-            kubeconfig=test_data.token if normalized_type == "kubeconfig" else None,
-            skip_tls_verify=test_data.skip_tls_verify or False,
-            gadget_namespace=test_data.gadget_namespace
+            connection_type=conn_type,
+            api_server_url=api_server_url,
+            token=token,
+            ca_cert=ca_cert,
+            kubeconfig=effective_kubeconfig,
+            skip_tls_verify=skip_tls,
+            gadget_namespace=gadget_ns
         )
         
         # Add recommendations based on errors
@@ -2551,6 +3485,7 @@ async def get_gadget_upgrade_script(
     cluster_id: int,
     target_version: str = Query("v0.50.1", description="Target gadget version"),
     memory_limit: str = Query("6Gi", description="Memory limit for gadget containers"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Generate a cluster-specific upgrade script for Inspektor Gadget DaemonSet.
@@ -2742,30 +3677,67 @@ echo -e "  Recommended: $DEFAULT_MEM"
 read -p "Enter memory limit (press Enter for recommended): " INPUT_MEM
 MEMORY_LIMIT="${{INPUT_MEM:-$DEFAULT_MEM}}"
 
-# Events buffer
+# Events buffer - dynamically calculated from cluster pod count + node count
 MIN_BUFFER=8192
 CURRENT_BUFFER_VAL=""
 if $CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" &>/dev/null 2>&1; then
     CURRENT_BUFFER_VAL=$($CLI_TOOL get configmap inspektor-gadget-config -n "$NAMESPACE" \\
       -o jsonpath='{{.data.config\\.yaml}}' 2>/dev/null | grep "events-buffer-length" | grep -oE '[0-9]+' || echo "")
 fi
+
+TOTAL_PODS=$($CLI_TOOL get pods -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
+TOTAL_PODS=${{TOTAL_PODS:-0}}
+TOTAL_NODES=$($CLI_TOOL get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+TOTAL_NODES=${{TOTAL_NODES:-1}}
+[ "$TOTAL_NODES" -eq 0 ] 2>/dev/null && TOTAL_NODES=1
+PODS_PER_NODE=$((TOTAL_PODS / TOTAL_NODES))
+
+# Tier table doubled vs the original to keep 2x burst headroom on top of
+# the strictly-required ring size. See the install-script tier table for
+# the full rationale and the 4M cap reasoning. Both paths must stay in
+# lockstep — the upgrade UI reads CURRENT_BUFFER_VAL and only proposes a
+# bump when current < recommended, so a divergent table here would cause
+# spurious "below recommended" warnings or, worse, silent under-sizing.
+if [ "$PODS_PER_NODE" -gt 300 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=4194304
+elif [ "$PODS_PER_NODE" -gt 150 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=4194304   # was 2097152
+elif [ "$PODS_PER_NODE" -gt 80 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=2097152   # was 1048576
+elif [ "$PODS_PER_NODE" -gt 40 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=1048576   # was 524288
+elif [ "$PODS_PER_NODE" -gt 15 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=524288    # was 262144
+else
+    RECOMMENDED_BUFFER=262144    # was 131072
+fi
+
+# Floor based on total pod count — doubled in lockstep.
+if [ "$TOTAL_PODS" -gt 2000 ] 2>/dev/null && [ "$RECOMMENDED_BUFFER" -lt 4194304 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=4194304   # was 2097152
+elif [ "$TOTAL_PODS" -gt 1000 ] 2>/dev/null && [ "$RECOMMENDED_BUFFER" -lt 2097152 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=2097152   # was 1048576
+elif [ "$TOTAL_PODS" -gt 500 ] 2>/dev/null && [ "$RECOMMENDED_BUFFER" -lt 1048576 ] 2>/dev/null; then
+    RECOMMENDED_BUFFER=1048576   # was 524288
+fi
+
 echo ""
-echo -e "${{CYAN}}Events Buffer Length:${{NC}} eBPF ring buffer size"
+echo -e "${{CYAN}}Events Buffer Length:${{NC}} eBPF ring buffer size (per-CPU, per-node)"
+echo -e "  Cluster: $TOTAL_PODS pods / $TOTAL_NODES nodes ($PODS_PER_NODE pods/node)"
+echo -e "  Recommended for this cluster: $RECOMMENDED_BUFFER"
 if [ -n "$CURRENT_BUFFER_VAL" ]; then
-    echo -e "  Current: $CURRENT_BUFFER_VAL"
-    if [ "$CURRENT_BUFFER_VAL" -ge "$MIN_BUFFER" ] 2>/dev/null; then
+    echo -e "  Current value: $CURRENT_BUFFER_VAL"
+    if [ "$CURRENT_BUFFER_VAL" -ge "$RECOMMENDED_BUFFER" ] 2>/dev/null; then
         DEFAULT_BUFFER=$CURRENT_BUFFER_VAL
-        echo -e "  Keeping current value (reducing may cause event loss on busy clusters)"
     else
-        DEFAULT_BUFFER=$MIN_BUFFER
-        echo -e "  Recommended minimum: $MIN_BUFFER"
+        DEFAULT_BUFFER=$RECOMMENDED_BUFFER
+        print_warn "Current buffer ($CURRENT_BUFFER_VAL) is below recommended ($RECOMMENDED_BUFFER) for $TOTAL_PODS pods"
     fi
 else
-    DEFAULT_BUFFER=$MIN_BUFFER
-    echo -e "  Recommended: $DEFAULT_BUFFER"
+    DEFAULT_BUFFER=$RECOMMENDED_BUFFER
 fi
 echo -e "  Default: $DEFAULT_BUFFER"
-read -p "Enter buffer length (press Enter for default, 0 to skip): " INPUT_BUF
+read -p "Enter buffer length (press Enter for recommended, 0 to skip): " INPUT_BUF
 EVENTS_BUFFER_LENGTH="${{INPUT_BUF:-$DEFAULT_BUFFER}}"
 if [ "$EVENTS_BUFFER_LENGTH" -lt "$MIN_BUFFER" ] 2>/dev/null && [ "$EVENTS_BUFFER_LENGTH" != "0" ]; then
     print_warn "Buffer $EVENTS_BUFFER_LENGTH is below minimum ($MIN_BUFFER), may cause event loss"
@@ -2785,10 +3757,12 @@ echo "  Version:        $CURRENT_VERSION -> $TARGET_VERSION"
 echo "  Memory Limit:   $CURRENT_MEM -> $MEMORY_LIMIT"
 if [ "$EVENTS_BUFFER_LENGTH" = "0" ]; then
     echo "  Events Buffer:  (skipped)"
-elif [ -n "$CURRENT_BUFFER_VAL" ] && [ "$CURRENT_BUFFER_VAL" != "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
+elif [ -z "$CURRENT_BUFFER_VAL" ]; then
+    echo "  Events Buffer:  (new) $EVENTS_BUFFER_LENGTH"
+elif [ "$CURRENT_BUFFER_VAL" != "$EVENTS_BUFFER_LENGTH" ] 2>/dev/null; then
     echo "  Events Buffer:  $CURRENT_BUFFER_VAL -> $EVENTS_BUFFER_LENGTH"
 else
-    echo "  Events Buffer:  (no change)"
+    echo "  Events Buffer:  $EVENTS_BUFFER_LENGTH (no change)"
 fi
 echo ""
 echo "  Rollback command (save this):"
@@ -2925,4 +3899,97 @@ echo "======================================================================="
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate upgrade script: {str(e)}"
         )
+
+
+@router.get("/clusters/{cluster_id}/beyla-install-script", response_class=PlainTextResponse)
+async def get_beyla_install_script(
+    cluster_id: int,
+    beyla_version: str = Query("3.9.5", description="Beyla version"),
+    image_registry: str = Query("", description="Image registry prefix (e.g., harbor.example.com/flowfish). Empty = official registries"),
+    collector_tag: str = Query("", description="Collector image tag (e.g., 86451d5, v1.2.0). Empty = auto-detect from backend IMAGE_TAG"),
+    mem_limit: str = Query("6Gi", description="Memory limit"),
+    cpu_limit: str = Query("2", description="CPU limit"),
+    bpf_volume_type: str = Query("hostPath", description="Volume type for bpffs: hostPath (persistent, recommended) or emptyDir (ephemeral)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate cluster-specific Beyla install script."""
+    try:
+        cluster = await database.fetch_one(
+            "SELECT id, name, beyla_namespace, connection_type, provider FROM clusters WHERE id = :id AND status != 'deleted'",
+            {"id": cluster_id},
+        )
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        provider = (cluster.get("provider") or cluster.get("connection_type") or "").lower()
+        cli_tool = "oc" if provider == "openshift" else "kubectl"
+        excluded_ns = await _get_beyla_excluded_namespaces()
+        return _generate_beyla_install_script(
+            cli_tool=cli_tool,
+            beyla_version=beyla_version,
+            image_registry=image_registry,
+            collector_tag=collector_tag,
+            mem_limit=mem_limit,
+            cpu_limit=cpu_limit,
+            bpf_volume_type=bpf_volume_type,
+            excluded_namespaces=excluded_ns,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to generate Beyla install script", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/clusters/{cluster_id}/beyla-upgrade-script", response_class=PlainTextResponse)
+async def get_beyla_upgrade_script(
+    cluster_id: int,
+    target_version: str = Query("3.9.5", description="Target Beyla version"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate cluster-specific Beyla upgrade script."""
+    try:
+        cluster = await database.fetch_one(
+            "SELECT id, name, beyla_namespace, beyla_version, connection_type, provider FROM clusters WHERE id = :id AND status != 'deleted'",
+            {"id": cluster_id},
+        )
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        ns = cluster.get("beyla_namespace") or "flowfish"
+        current = cluster.get("beyla_version") or "unknown"
+        cname = cluster.get("name") or f"cluster-{cluster_id}"
+        provider = (cluster.get("provider") or cluster.get("connection_type") or "").lower()
+        cli_tool = "oc" if provider == "openshift" else "kubectl"
+        target_version = target_version.lstrip("v")
+
+        script = f'''#!/bin/bash
+set -euo pipefail
+# Beyla Upgrade Script - Cluster: {cname} (ID: {cluster_id})
+# Current: {current}  →  Target: {target_version}
+
+NAMESPACE="{ns}"
+CLI="{cli_tool}"
+
+CURRENT_IMG=$($CLI get daemonset/beyla -n "$NAMESPACE" -o jsonpath='{{.spec.template.spec.containers[0].image}}' 2>/dev/null || echo "")
+if [ -n "$CURRENT_IMG" ]; then
+    BEYLA_REPO=$(echo "$CURRENT_IMG" | sed 's|:[^:]*$||')
+else
+    BEYLA_REPO="grafana/beyla"
+fi
+
+NEW_IMAGE="${{BEYLA_REPO}}:{target_version}"
+echo "Upgrading Beyla DaemonSet image to $NEW_IMAGE ..."
+$CLI set image daemonset/beyla -n "$NAMESPACE" beyla="$NEW_IMAGE"
+$CLI rollout status daemonset/beyla -n "$NAMESPACE" --timeout=120s
+
+echo ""
+echo "[OK] Beyla upgraded to {target_version} in namespace $NAMESPACE"
+echo "   Sync the cluster in Flowfish UI to update version info."
+'''
+        return script
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to generate Beyla upgrade script", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 

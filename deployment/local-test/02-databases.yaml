@@ -193,7 +193,8 @@ spec:
             periodSeconds: 10
       volumes:
         - name: neo4j-data
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 2Gi
 ---
 # RabbitMQ
 apiVersion: v1

@@ -4,13 +4,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: inspektor-gadget
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: inspektor-gadget
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: inspektor-gadget
     k8s-app: inspektor-gadget
@@ -91,7 +91,7 @@ spec:
           mountPath: /config-generated
       containers:
       - name: gadget
-        image: ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1
+        image: {{HARBOR_REGISTRY}}/flowfish/inspektor-gadget:{{GADGET_VERSION}}
         imagePullPolicy: Always
         terminationMessagePolicy: FallbackToLogsOnError
         # NOTE: Only -serve flag, NO -service-host!
@@ -114,7 +114,7 @@ spec:
             fieldRef:
               fieldPath: metadata.uid
         - name: GADGET_IMAGE
-          value: "ghcr.io/inspektor-gadget/inspektor-gadget:v0.50.1"
+          value: "{{HARBOR_REGISTRY}}/flowfish/inspektor-gadget:{{GADGET_VERSION}}"
         - name: HOST_ROOT
           value: "/host"
         - name: IG_EXPERIMENTAL
@@ -233,15 +233,18 @@ spec:
         hostPath:
           path: /sys/kernel/debug
       - name: oci
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 5Gi
       - name: config
         configMap:
           name: inspektor-gadget-config
           defaultMode: 0400
       - name: config-generated
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 128Mi
       - name: wasm-cache
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 2Gi
 ---
 # NOTE: This ClusterIP service is optional for in-cluster deployments.
 # kubectl gadget connects via Kubernetes API, not this service.
@@ -250,7 +253,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: inspektor-gadget
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: inspektor-gadget
 spec:

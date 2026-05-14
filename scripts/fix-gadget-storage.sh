@@ -383,13 +383,15 @@ else
         hostPath:
           path: /sys/kernel/debug
       - name: oci
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 5Gi
       - name: config
         configMap:
           name: inspektor-gadget-config
           defaultMode: 0400
       - name: wasm-cache
-        emptyDir: {}"
+        emptyDir:
+          sizeLimit: 2Gi"
 fi
 
 # Apply the updated DaemonSet

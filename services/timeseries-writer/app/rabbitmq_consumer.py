@@ -78,6 +78,12 @@ class RabbitMQConsumer:
                     "x-dead-letter-exchange": "flowfish.dlx",
                     "x-dead-letter-routing-key": "change_events",
                 }
+            elif self.queue_name.startswith("flowfish.queue.l7_"):
+                queue_args = {
+                    "x-message-ttl": 86400000,
+                    "x-max-length": 1000000,
+                    "x-dead-letter-exchange": "flowfish.l7.dlx",
+                }
             else:
                 queue_args = {
                     "x-message-ttl": 86400000,  # 24 hours in ms
@@ -109,6 +115,21 @@ class RabbitMQConsumer:
                 )
                 logger.info(f"📢 Queue {self.queue_name} bound to exchange {change_events_exchange}")
             
+            l7_exchange_map = {
+                "flowfish.queue.l7_http_flows.timeseries": "flowfish.l7.http_flows",
+                "flowfish.queue.l7_grpc_flows.timeseries": "flowfish.l7.grpc_flows",
+                "flowfish.queue.l7_dns_flows.timeseries": "flowfish.l7.dns_flows",
+            }
+            l7_exchange_name = l7_exchange_map.get(self.queue_name)
+            if l7_exchange_name:
+                self.channel.exchange_declare(
+                    exchange=l7_exchange_name, exchange_type='topic', durable=True
+                )
+                self.channel.queue_bind(
+                    queue=self.queue_name, exchange=l7_exchange_name, routing_key="#"
+                )
+                logger.info(f"Queue {self.queue_name} bound to exchange {l7_exchange_name}")
+            
             logger.info(f"✅ Connected to RabbitMQ at {settings.rabbitmq_host}:{settings.rabbitmq_port}")
             
         except AMQPConnectionError as e:
@@ -134,55 +155,70 @@ class RabbitMQConsumer:
         logger.info(f"Consumer stopped for {self.queue_name}")
     
     def _consume(self):
-        """Main consume loop"""
-        try:
-            self._connect()
-            
-            # Start consuming
-            for method, properties, body in self.channel.consume(
-                queue=self.queue_name,
-                auto_ack=False
-            ):
+        """Main consume loop with iterative reconnect.
+
+        Previously the reconnect path called `self._consume()` recursively
+        from the outer except handler — every broker disconnect grew the
+        Python call stack by one frame, and a long-running pod that
+        flapped enough times would trip Python's default recursion limit
+        (1000) and crash with `RecursionError`. Iterating with a while
+        loop keeps the stack flat regardless of how many reconnects we
+        do over the pod's lifetime.
+        """
+        backoff = 5
+        while self.running:
+            try:
+                self._connect()
+                backoff = 5  # reset on successful connection
+
+                # Start consuming
+                for method, properties, body in self.channel.consume(
+                    queue=self.queue_name,
+                    auto_ack=False
+                ):
+                    if not self.running:
+                        break
+
+                    try:
+                        # Parse message
+                        message = json.loads(body)
+
+                        # Check if analysis has been deleted - skip orphan data
+                        analysis_id = message.get('analysis_id')
+                        if analysis_id and deleted_analysis_cache.is_deleted(str(analysis_id)):
+                            logger.debug(f"Skipping event for deleted analysis {analysis_id}")
+                            # ACK to remove from queue without processing
+                            self.channel.basic_ack(delivery_tag=method.delivery_tag)
+                            continue
+
+                        # Add to batch
+                        self.batch.append(message)
+                        self.batch_tags.append(method.delivery_tag)
+                        self.total_consumed += 1
+
+                        # Check if should flush
+                        if self._should_flush():
+                            self._flush_batch()
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Invalid JSON message: {e}")
+                        # NACK and discard
+                        self.channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                        # Requeue once; on redelivery, reject to DLQ to prevent poison-message loops
+                        requeue = not getattr(method, 'redelivered', False)
+                        self.channel.basic_nack(delivery_tag=method.delivery_tag, requeue=requeue)
+
+                # Generator returned cleanly (e.g. running flipped to False)
                 if not self.running:
                     break
-                
-                try:
-                    # Parse message
-                    message = json.loads(body)
-                    
-                    # Check if analysis has been deleted - skip orphan data
-                    analysis_id = message.get('analysis_id')
-                    if analysis_id and deleted_analysis_cache.is_deleted(str(analysis_id)):
-                        logger.debug(f"Skipping event for deleted analysis {analysis_id}")
-                        # ACK to remove from queue without processing
-                        self.channel.basic_ack(delivery_tag=method.delivery_tag)
-                        continue
-                    
-                    # Add to batch
-                    self.batch.append(message)
-                    self.batch_tags.append(method.delivery_tag)
-                    self.total_consumed += 1
-                    
-                    # Check if should flush
-                    if self._should_flush():
-                        self._flush_batch()
-                
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON message: {e}")
-                    # NACK and discard
-                    self.channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                
-                except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-                    # NACK with requeue
-                    self.channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-            
-        except Exception as e:
-            logger.error(f"Consumer error: {e}")
-            # Try to reconnect
-            time.sleep(5)
-            if self.running:
-                self._consume()
+            except Exception as e:
+                logger.error(f"Consumer error: {e} — reconnecting in {backoff}s")
+                # Cap backoff at 60s to avoid waiting forever after a long outage
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
     
     def _should_flush(self) -> bool:
         """Check if batch should be flushed"""
@@ -232,6 +268,12 @@ class RabbitMQConsumer:
                 rows_written = self.clickhouse.write_workload_metadata(self.batch)
             elif self.event_type == "change_event":
                 rows_written = self.clickhouse.write_change_events(self.batch)
+            elif self.event_type == "l7_http_flow":
+                rows_written = self.clickhouse.insert_l7_http_flow(self.batch)
+            elif self.event_type == "l7_grpc_flow":
+                rows_written = self.clickhouse.insert_l7_grpc_flow(self.batch)
+            elif self.event_type == "l7_dns_flow":
+                rows_written = self.clickhouse.insert_l7_dns_flow(self.batch)
             else:
                 logger.warning(f"Unknown event type: {self.event_type}")
                 rows_written = 0

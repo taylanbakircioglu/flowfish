@@ -16,6 +16,18 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+# Pika is verbose at INFO and dumps a full ERROR traceback every time the
+# broker drops an idle TCP connection — even though our publisher detects
+# the disconnect and reconnects automatically. WARNING keeps real errors
+# visible while suppressing the per-disconnect log storm. The same change
+# is applied to l7-ingestion-service for consistency.
+for _pika_logger in ("pika", "pika.adapters", "pika.connection",
+                     "pika.adapters.utils.io_services_utils",
+                     "pika.adapters.utils.connection_workflow",
+                     "pika.adapters.blocking_connection",
+                     "pika.adapters.base_connection"):
+    logging.getLogger(_pika_logger).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 

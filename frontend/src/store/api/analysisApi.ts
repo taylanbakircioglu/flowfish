@@ -167,6 +167,8 @@ export interface AnalysisCreateRequest {
   gadgets: GadgetConfig;
   time_config: TimeConfig;
   output: OutputConfig;
+  analysis_level?: string;
+  l7_config?: Record<string, any>;
   change_detection_enabled?: boolean;  // Enable/disable change tracking (default: true)
   change_detection_strategy?: ChangeDetectionStrategy;  // Detection strategy (default: 'baseline')
   change_detection_types?: ChangeType[];  // Change types to track (default: ['all'])

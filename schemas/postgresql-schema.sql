@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS clusters (
     gadget_auto_detect BOOLEAN DEFAULT TRUE,
     gadget_version VARCHAR(50),
     gadget_capabilities JSONB DEFAULT '[]',
-    gadget_health_status VARCHAR(50) DEFAULT 'unknown',
+    gadget_health_status VARCHAR(50) DEFAULT 'not_installed',
     gadget_last_check TIMESTAMP WITH TIME ZONE,
     status VARCHAR(50) DEFAULT 'active',
     validation_status JSONB,
@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS clusters (
     total_pods INTEGER DEFAULT 0,
     total_nodes INTEGER DEFAULT 0,
     k8s_version VARCHAR(50),
+    beyla_namespace VARCHAR(255),
+    beyla_health_status VARCHAR(50) DEFAULT 'not_installed',
+    beyla_version VARCHAR(50),
+    l7_collector_endpoint TEXT,
+    beyla_last_check TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     created_by INTEGER,
@@ -99,6 +104,8 @@ CREATE TABLE IF NOT EXISTS analyses (
     last_run_at TIMESTAMP WITH TIME ZONE,
     schedule_run_count INTEGER DEFAULT 0,
     max_scheduled_runs INTEGER,
+    analysis_level VARCHAR(20) DEFAULT 'l4',
+    l7_config JSONB,
     created_by INTEGER,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -474,6 +481,11 @@ INSERT INTO system_settings (key, value, description) VALUES
 ('analysis_limits',
  '{"continuous_auto_stop_enabled": true, "default_continuous_duration_minutes": 10, "max_allowed_duration_minutes": 1440, "warning_before_minutes": 2, "ingestion_rate_limit_per_second": 5000}',
  'Global analysis time and size limits')
+ON CONFLICT (key) DO NOTHING;
+INSERT INTO system_settings (key, value, description) VALUES
+('beyla_settings',
+ '{"default_protocols":["http","grpc"],"l7_sampling_rate":1.0,"l7_enabled":false,"beyla_version":"v3.9.5","max_events_per_second":5000,"default_beyla_mem_limit":"256Mi","default_collector_mem_limit":"256Mi","default_excluded_namespaces":["kube-system"]}',
+ 'L7 Beyla configuration defaults')
 ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================================

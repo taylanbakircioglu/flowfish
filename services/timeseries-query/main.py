@@ -172,6 +172,12 @@ async def get_all_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster)"),
     analysis_id: Optional[int] = Query(None, description="Analysis ID filter"),
     namespace: Optional[str] = Query(None, description="Namespace filter"),
+    # `search` was previously declared on the backend gateway and forwarded
+    # in `params["search"]`, but this endpoint did not accept it — FastAPI
+    # silently dropped the unknown query param and the UI's "Search" box
+    # therefore appeared functional but matched nothing. Accept it here so
+    # the contract matches what the gateway/repository actually sends.
+    search: Optional[str] = Query(None, description="Substring match across table-specific fields"),
     event_types: Optional[str] = Query(None, description="Comma-separated event types"),
     start_time: Optional[str] = Query(None, description="Start time (ISO format)"),
     end_time: Optional[str] = Query(None, description="End time (ISO format)"),
@@ -193,6 +199,7 @@ async def get_all_events(
             cluster_id=cluster_id,
             analysis_id=analysis_id,
             namespace=namespace,
+            search=search,
             event_types=types_list,
             start_time=start_time,
             end_time=end_time,
@@ -418,6 +425,478 @@ async def get_mount_events(
         return {"events": events, "total": total}
     except Exception as e:
         logger.error(f"Failed to get mount events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# L7 (Beyla) event endpoints
+# ============================================================================
+
+@app.get("/l7/events/http")
+async def get_l7_http_events(
+    cluster_id: Optional[str] = Query(None, description="Cluster ID (optional for multi-cluster)"),
+    analysis_id: Optional[str] = Query(None, description="Analysis ID filter"),
+    namespace: Optional[str] = Query(None, description="Match src or dst namespace"),
+    method: Optional[str] = Query(None, description="HTTP method"),
+    path: Optional[str] = Query(None, description="Exact http_path"),
+    status_code: Optional[int] = Query(None, description="HTTP status code"),
+    start_time: Optional[str] = Query(None, description="Start time (ISO)"),
+    end_time: Optional[str] = Query(None, description="End time (ISO)"),
+    limit: int = Query(100, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
+):
+    """Query l7_http_flows with filters."""
+    try:
+        events, total = await query_engine.query_l7_http_flows(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            namespace=namespace,
+            method=method,
+            path=path,
+            status_code=status_code,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+            offset=offset,
+        )
+        return {"events": events, "total": total, "has_more": (offset + len(events)) < total}
+    except Exception as e:
+        logger.error(f"Failed to get L7 HTTP events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/events/grpc")
+async def get_l7_grpc_events(
+    cluster_id: Optional[str] = Query(None, description="Cluster ID (optional for multi-cluster)"),
+    analysis_id: Optional[str] = Query(None, description="Analysis ID filter"),
+    namespace: Optional[str] = Query(None, description="Match src or dst namespace"),
+    grpc_service: Optional[str] = Query(None),
+    grpc_method: Optional[str] = Query(None),
+    grpc_status_code: Optional[int] = Query(None),
+    start_time: Optional[str] = Query(None, description="Start time (ISO)"),
+    end_time: Optional[str] = Query(None, description="End time (ISO)"),
+    limit: int = Query(100, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
+):
+    """Query l7_grpc_flows with filters."""
+    try:
+        events, total = await query_engine.query_l7_grpc_flows(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            namespace=namespace,
+            start_time=start_time,
+            end_time=end_time,
+            grpc_service=grpc_service,
+            grpc_method=grpc_method,
+            grpc_status_code=grpc_status_code,
+            limit=limit,
+            offset=offset,
+        )
+        return {"events": events, "total": total, "has_more": (offset + len(events)) < total}
+    except Exception as e:
+        logger.error(f"Failed to get L7 gRPC events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/events/dns")
+async def get_l7_dns_events(
+    cluster_id: Optional[str] = Query(None, description="Cluster ID (optional for multi-cluster)"),
+    analysis_id: Optional[str] = Query(None, description="Analysis ID filter"),
+    namespace: Optional[str] = Query(None, description="Match src or dst namespace"),
+    query_name: Optional[str] = Query(None, description="DNS query name (exact)"),
+    query_type: Optional[str] = Query(None),
+    response_code: Optional[int] = Query(None),
+    start_time: Optional[str] = Query(None, description="Start time (ISO)"),
+    end_time: Optional[str] = Query(None, description="End time (ISO)"),
+    limit: int = Query(100, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
+):
+    """Query l7_dns_flows with filters."""
+    try:
+        events, total = await query_engine.query_l7_dns_flows(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            namespace=namespace,
+            start_time=start_time,
+            end_time=end_time,
+            query_name=query_name,
+            query_type=query_type,
+            response_code=response_code,
+            limit=limit,
+            offset=offset,
+        )
+        return {"events": events, "total": total, "has_more": (offset + len(events)) < total}
+    except Exception as e:
+        logger.error(f"Failed to get L7 DNS events: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/events/stats")
+async def get_l7_events_stats(
+    cluster_id: Optional[str] = Query(None, description="Cluster ID (optional for multi-cluster)"),
+    analysis_id: Optional[str] = Query(None, description="Analysis ID filter"),
+    namespace: Optional[str] = Query(None, description="Match src or dst namespace"),
+    start_time: Optional[str] = Query(None, description="Start time (ISO)"),
+    end_time: Optional[str] = Query(None, description="End time (ISO)"),
+):
+    """Aggregate L7 stats across HTTP, gRPC, and DNS tables."""
+    try:
+        return await query_engine.query_l7_events_stats(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            namespace=namespace,
+            start_time=start_time,
+            end_time=end_time,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 event stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/events/histogram")
+async def get_l7_events_histogram(
+    cluster_id: Optional[str] = Query(None, description="Cluster ID (optional for multi-cluster)"),
+    analysis_id: Optional[str] = Query(None, description="Analysis ID filter"),
+    namespace: Optional[str] = Query(None, description="When set, rolls up from l7_http_flows (MV has no namespace)"),
+    start_time: Optional[str] = Query(None, description="Start time (ISO)"),
+    end_time: Optional[str] = Query(None, description="End time (ISO)"),
+    bucket_count: int = Query(60, ge=1, le=200),
+):
+    """HTTP request histogram (5-min grain; uses l7_http_flows_5min_mv when namespace unset)."""
+    try:
+        return await query_engine.query_l7_http_histogram(
+            cluster_id=cluster_id,
+            analysis_id=analysis_id,
+            namespace=namespace,
+            start_time=start_time,
+            end_time=end_time,
+            bucket_count=bucket_count,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get L7 histogram: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# L7 Distributed Tracing API (Faz 3.2)
+# Reads from l7_http_flows + l7_grpc_flows; DNS spans excluded.
+# Errors are propagated as HTTP 500 (not silently swallowed) so the UI can
+# distinguish empty traces from query failures.
+# ============================================================================
+@app.get("/l7/traces/{trace_id}")
+async def get_l7_trace(
+    trace_id: str,
+    analysis_id: Optional[str] = Query(
+        None,
+        description=(
+            "Optional analysis ID. When provided the lookup is scoped to that "
+            "analysis (matched as exact OR `<analysis_id>-*` prefix for "
+            "multi-cluster sub-analyses); when omitted, the trace is searched "
+            "across all analyses to support deep-link URLs that only carry a "
+            "trace_id."
+        ),
+    ),
+):
+    """Return all spans for a trace, ordered by timestamp ascending."""
+    try:
+        spans = query_engine.get_trace_spans(trace_id, analysis_id)
+        # Pass already-fetched spans to avoid a second ClickHouse round-trip
+        # (Bulgu 45.1). Summary is derived in-memory from the same row set.
+        summary = query_engine.get_trace_summary(trace_id, analysis_id, spans=spans)
+        return {"trace_id": trace_id, "spans": spans, "summary": summary}
+    except ValueError as ve:
+        # Invalid trace_id format
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Failed to fetch trace {trace_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/traces/{trace_id}/related")
+async def get_l7_related_traces(
+    trace_id: str,
+    analysis_id: Optional[str] = Query(
+        None,
+        description=(
+            "Optional analysis ID; when provided narrows the search to that "
+            "analysis (and `<id>-*` sub-analyses)."
+        ),
+    ),
+    rel_type: str = Query(
+        "both",
+        regex="^(same_edge|same_pod|both)$",
+        description=(
+            "Correlation type: same_edge = same (src_workload, dst_workload) "
+            "pair; same_pod = same dst_pod; both = both groups."
+        ),
+    ),
+    limit: int = Query(50, ge=1, le=200, description="Max results per group"),
+    time_window_minutes: int = Query(
+        60,
+        ge=5,
+        le=1440,
+        description="Look-back window from anchor's timestamp (5 min – 24 h)",
+    ),
+):
+    """Find traces related to a given anchor trace.
+
+    Returns two ranked groups (`same_edge`, `same_pod`) of recent traces
+    that share the anchor's workload edge or destination pod. Used by the
+    Trace Waterfall "Related Traces" tab (Phase 3C). The query unifies
+    real W3C `trace_id`s and Phase 4 PID-correlated `virtual_trace_id`s
+    via a coalesce, so PID-temporal virtual traces are surfaced too when
+    Phase 4 is enabled and the schema is migrated. 5-tuple correlation
+    (without PID) remains deferred — Phase 4 covers the most common
+    "service-not-instrumented" case at the producer process granularity.
+    """
+    try:
+        return query_engine.get_related_traces(
+            trace_id=trace_id,
+            analysis_id=analysis_id,
+            rel_type=rel_type,
+            limit=limit,
+            time_window_minutes=time_window_minutes,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Failed to fetch related traces for {trace_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# APM RED Metrics Endpoints (Phase 2)
+# ============================================================================
+# Read from the AggregatingMergeTree RED MVs (clickhouse_005_add_apm_red_mvs.sql).
+# All endpoints require an analysis_id (string — multi-cluster sub-IDs like
+# "44-15" are valid). cluster_id is an optional narrowing filter.
+
+@app.get("/apm/services")
+async def list_apm_services(
+    analysis_id: str = Query(..., description="Analysis ID (string; multi-cluster sub-IDs supported)"),
+    cluster_id: Optional[str] = Query(None, description="Narrow to a single cluster"),
+    namespace: Optional[str] = Query(None, description="Filter by destination namespace"),
+    sort_by: str = Query("rate", regex="^(rate|errors|p50|p95|p99|avg)$"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    # Plan v3 Akış B m.4 — global search shared with Trace Explorer.
+    # min_length=1 mirrors `/l7/traces` so empty strings are coerced to
+    # null (no-op), matches FastAPI/HTTP semantics, and prevents an
+    # accidental "?q=" from triggering an empty-string SQL filter.
+    q: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Free-form search across destination workload/namespace.",
+    ),
+):
+    """Workload-level RED tablosu for APM Services List page.
+
+    Combines HTTP and gRPC RED MVs into a single per-service row with
+    p50/p95/p99 percentiles (via quantileTDigestMerge), rate, and errors.
+    """
+    try:
+        return query_engine.get_apm_services(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            namespace=namespace,
+            sort_by=sort_by,
+            limit=limit,
+            offset=offset,
+            q=q,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list APM services: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/apm/services/{workload_key:path}/operations")
+async def list_apm_operations(
+    workload_key: str,
+    analysis_id: str = Query(...),
+    cluster_id: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    q: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Free-form search across HTTP path/method or gRPC service/method.",
+    ),
+):
+    """Per-operation RED tablosu (HTTP method+normalized path / gRPC service+method).
+
+    `workload_key` is `{dst_namespace}/{dst_workload}` (matches the value
+    returned by `/apm/services`).
+    """
+    try:
+        return query_engine.get_apm_operations(
+            analysis_id=analysis_id,
+            workload_key=workload_key,
+            cluster_id=cluster_id,
+            limit=limit,
+            offset=offset,
+            q=q,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list APM operations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/apm/services/{workload_key:path}/stats")
+async def get_apm_service_stats(
+    workload_key: str,
+    analysis_id: str = Query(...),
+    cluster_id: Optional[str] = Query(None),
+):
+    """Time-series RED metrics (5-minute buckets) for one service.
+
+    Drives the Service Detail RED chart. Combines HTTP and gRPC.
+    """
+    try:
+        return query_engine.get_apm_service_stats(
+            analysis_id=analysis_id,
+            workload_key=workload_key,
+            cluster_id=cluster_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get APM service stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Plan v3 Akış B m.2 — Trace Explorer "Operations" / "Dependencies" tabs
+# need a *cross-workload* aggregate. The endpoints below mirror the
+# per-workload variants but live at flat paths so FastAPI doesn't try to
+# match `operations` / `dependencies` as a workload_key.
+
+@app.get("/apm/operations")
+async def list_apm_operations_global(
+    analysis_id: str = Query(...),
+    cluster_id: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    q: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Free-form search across HTTP path/method, gRPC service/method, and dst workload/namespace.",
+    ),
+):
+    """Top operations across every workload in the analysis scope —
+    powers the Trace Explorer "Operations" tab.
+    """
+    try:
+        return query_engine.get_apm_operations_global(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            q=q,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list global APM operations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/apm/dependencies")
+async def list_apm_dependencies_global(
+    analysis_id: str = Query(...),
+    cluster_id: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    q: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Free-form search across either side of the edge (src or dst workload/namespace).",
+    ),
+):
+    """Top service-to-service edges across the analysis scope — powers
+    the Trace Explorer "Dependencies" tab.
+    """
+    try:
+        return query_engine.get_apm_dependencies_global(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            q=q,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list global APM dependencies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/apm/services/{workload_key:path}/dependencies")
+async def get_apm_service_dependencies(
+    workload_key: str,
+    analysis_id: str = Query(...),
+    cluster_id: Optional[str] = Query(None),
+    direction: str = Query("both", regex="^(upstream|downstream|both)$"),
+    q: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Free-form search across the peer workload/namespace.",
+    ),
+):
+    """Dependency neighbours (upstream/downstream services) for one service.
+
+    Drives the Service Detail Dependencies tab and the Mini Service Map.
+    """
+    try:
+        return query_engine.get_apm_service_dependencies(
+            analysis_id=analysis_id,
+            workload_key=workload_key,
+            cluster_id=cluster_id,
+            direction=direction,
+            q=q,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get APM service dependencies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/l7/traces")
+async def list_l7_traces(
+    analysis_id: str = Query(..., description="Analysis ID for scope filtering"),
+    cluster_id: Optional[str] = Query(
+        None, description="Narrow the trace list to a single cluster"
+    ),
+    workload: Optional[str] = Query(None, description="Filter by source or destination workload name"),
+    # Phase 1A optional filters (backward-compat, all default to None / False)
+    src_workload: Optional[str] = Query(None, description="Filter by source workload only"),
+    dst_workload: Optional[str] = Query(None, description="Filter by destination workload only"),
+    operation: Optional[str] = Query(None, description="HTTP path or gRPC method exact match"),
+    min_latency_ms: Optional[float] = Query(None, ge=0, description="Minimum span latency in ms"),
+    # Plan v3 Akış B m.3: trace-level upper bound on aggregated max latency.
+    max_latency_ms: Optional[float] = Query(
+        None, ge=0, description="Trace-level upper bound on max(latency_ms)"
+    ),
+    error_only: bool = Query(False, description="Only HTTP 4xx/5xx or gRPC non-zero status"),
+    start_time: Optional[str] = Query(None, description="ISO-8601 lower bound on span timestamp"),
+    end_time: Optional[str] = Query(None, description="ISO-8601 upper bound on span timestamp"),
+    # Plan v3 Akış B m.4: free-form search across operation/workloads/trace_id.
+    q: Optional[str] = Query(None, min_length=1, max_length=255, description="Free-form search"),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """List recent traces (HTTP + gRPC) for an analysis, optionally filtered."""
+    try:
+        return query_engine.get_recent_traces(
+            analysis_id=analysis_id,
+            cluster_id=cluster_id,
+            workload=workload,
+            src_workload=src_workload,
+            dst_workload=dst_workload,
+            operation=operation,
+            min_latency_ms=min_latency_ms,
+            max_latency_ms=max_latency_ms,
+            error_only=error_only,
+            start_time=start_time,
+            end_time=end_time,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list traces: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -197,6 +197,11 @@ export interface EventStats {
 // Query parameters
 export interface EventsQueryParams {
   cluster_id?: number;  // Optional for multi-cluster (use analysis_id)
+  // Multi-cluster narrowing — comma-separated cluster IDs, used when the
+  // operator wants a strict subset of an analysis's clusters. The backend
+  // (`/events/security`, `/events/oom`) accepts this in addition to
+  // `cluster_id` and validates it through `resolve_cluster_ids` for RBAC.
+  cluster_ids?: string;
   analysis_id?: number;
   event_type?: EventType;
   event_types?: string; // comma-separated list for multiple types
@@ -271,13 +276,13 @@ export const eventsApi = createApi({
     }),
     
     // Get event statistics
-    getEventStats: builder.query<EventStats, { cluster_id?: number; analysis_id?: number }>({
+    getEventStats: builder.query<EventStats, { cluster_id?: number; cluster_ids?: string; analysis_id?: number }>({
       query: (params) => ({
         url: '/events/stats',
         params,
       }),
       providesTags: (result, error, params) => [
-        { type: 'EventStats', id: `${params.cluster_id}-${params.analysis_id || 'all'}` }
+        { type: 'EventStats', id: `${params.cluster_id ?? params.cluster_ids ?? 'all'}-${params.analysis_id || 'all'}` }
       ],
     }),
     

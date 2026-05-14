@@ -51,6 +51,10 @@ spec:
               value: redis123
             - name: REDIS_URL
               value: "redis://:redis123@redis:6379/0"
+            - name: L7_ENABLED
+              value: "true"
+            - name: L7_TRACING_ENABLED
+              value: "true"  # Local test: trace pipeline acik
           readinessProbe:
             exec:
               command:

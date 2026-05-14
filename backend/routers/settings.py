@@ -4,8 +4,9 @@ Enterprise feature for global configuration management
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
+import re as _re
 import structlog
 import json
 import secrets
@@ -241,7 +242,10 @@ class PodCIDRRange(BaseModel):
 class NetworkConfig(BaseModel):
     """Network configuration for SDN gateway detection and CIDR classification"""
     sdn_pod_cidrs: List[PodCIDRRange] = Field(default_factory=lambda: [
-        PodCIDRRange(cidr="10.128.0.0/14", label="OpenShift", enabled=True, is_default=True),
+        PodCIDRRange(cidr="10.128.0.0/14", label="OpenShift (default pod CIDR)", enabled=True, is_default=True),
+        PodCIDRRange(cidr="10.208.0.0/16", label="OpenShift (additional pod range)", enabled=True, is_default=True),
+        PodCIDRRange(cidr="10.194.0.0/16", label="OpenShift (additional pod range)", enabled=True, is_default=True),
+        PodCIDRRange(cidr="10.196.0.0/16", label="OpenShift (additional service range)", enabled=True, is_default=True),
         PodCIDRRange(cidr="10.244.0.0/16", label="Flannel / kubeadm", enabled=True, is_default=True),
         PodCIDRRange(cidr="10.42.0.0/16", label="K3s / RKE2", enabled=True, is_default=True),
         PodCIDRRange(cidr="192.168.0.0/16", label="Kind / Minikube", enabled=False, is_default=True),
@@ -377,6 +381,221 @@ async def get_network_config_defaults():
         logger.warning("Failed to read network config from DB in /defaults", error=str(e))
     
     return Response(status_code=204)
+
+
+# ============================================
+# Beyla / L7 settings
+# ============================================
+
+class BeylaSettings(BaseModel):
+    default_protocols: List[str] = ["http", "grpc"]
+    l7_sampling_rate: float = 1.0
+    l7_enabled: bool = False
+    beyla_version: str = "v3.9.5"
+    max_events_per_second: int = 5000
+    default_beyla_mem_limit: str = "256Mi"
+    default_collector_mem_limit: str = "256Mi"
+    default_excluded_namespaces: List[str] = Field(default_factory=lambda: ["kube-system", "ibmblockstorage", "external-secrets"])
+
+
+class BeylaSettingsResponse(BeylaSettings):
+    updated_at: Optional[str] = None
+    updated_by: Optional[int] = None
+
+
+@router.get("/beyla", response_model=BeylaSettingsResponse)
+async def get_beyla_settings(current_user: dict = Depends(get_current_user)):
+    """Get global Beyla / L7 defaults from system_settings."""
+    try:
+        query = """
+            SELECT value, updated_at, updated_by
+            FROM system_settings
+            WHERE key = 'beyla_settings'
+        """
+        row = await database.fetch_one(query)
+        if row:
+            value = row["value"]
+            if isinstance(value, str):
+                value = json.loads(value)
+            return BeylaSettingsResponse(
+                **value,
+                updated_at=str(row["updated_at"]) if row["updated_at"] else None,
+                updated_by=row["updated_by"],
+            )
+        return BeylaSettingsResponse()
+    except Exception as e:
+        logger.error("Failed to get Beyla settings", error=str(e))
+        return BeylaSettingsResponse()
+
+
+@router.put("/beyla", response_model=BeylaSettingsResponse)
+async def update_beyla_settings(
+    beyla: BeylaSettings,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update Beyla / L7 defaults (admin only)."""
+    check_admin_role(current_user)
+    try:
+        query = """
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES (
+                'beyla_settings',
+                CAST(:value AS jsonb),
+                'Global Beyla and L7 collector defaults',
+                NOW(),
+                :user_id
+            )
+            ON CONFLICT (key) DO UPDATE SET
+                value = CAST(:value AS jsonb),
+                updated_at = NOW(),
+                updated_by = :user_id
+            RETURNING updated_at
+        """
+        payload = beyla.dict() if hasattr(beyla, "dict") else beyla.model_dump()
+        result = await database.fetch_one(
+            query,
+            {"value": json.dumps(payload), "user_id": current_user.get("user_id")},
+        )
+        logger.info(
+            "Beyla settings updated",
+            user_id=current_user.get("user_id"),
+        )
+        return BeylaSettingsResponse(
+            **payload,
+            updated_at=str(result["updated_at"]) if result else None,
+            updated_by=current_user.get("user_id"),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update Beyla settings", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update Beyla settings: {str(e)}",
+        )
+
+
+# ============================================
+# DNS Search Domain Configuration
+# ============================================
+
+class DnsSearchDomain(BaseModel):
+    domain: str = Field(..., min_length=1, max_length=253)
+    label: str = Field(..., min_length=1, max_length=100)
+    enabled: bool = Field(True)
+    is_default: bool = Field(False)
+
+    @validator('domain')
+    def normalize_domain(cls, v):
+        v = v.strip().lower().lstrip('.')
+        if not v or '.' not in v:
+            raise ValueError('Domain must contain at least one dot')
+        if '..' in v:
+            raise ValueError('Domain cannot contain consecutive dots')
+        if not _re.match(r'^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$', v):
+            raise ValueError('Domain must contain only lowercase letters, digits, dots and hyphens')
+        return v
+
+
+class DnsConfig(BaseModel):
+    search_domains: List[DnsSearchDomain] = Field(default_factory=lambda: [
+        DnsSearchDomain(domain="svc.cluster.local", label="Kubernetes SVC", enabled=True, is_default=True),
+        DnsSearchDomain(domain="cluster.local", label="Kubernetes Cluster", enabled=True, is_default=True),
+    ])
+
+
+class DnsConfigResponse(DnsConfig):
+    updated_at: Optional[str] = None
+    updated_by: Optional[int] = None
+
+
+@router.get("/dns-config", response_model=DnsConfigResponse)
+async def get_dns_config(current_user: dict = Depends(get_current_user)):
+    """Get current DNS search domain configuration for graph normalization."""
+    try:
+        query = """
+            SELECT value, updated_at, updated_by
+            FROM system_settings
+            WHERE key = 'dns_config'
+        """
+        row = await database.fetch_one(query)
+        if row:
+            value = row['value']
+            if isinstance(value, str):
+                value = json.loads(value)
+            return DnsConfigResponse(
+                **value,
+                updated_at=str(row['updated_at']) if row['updated_at'] else None,
+                updated_by=row['updated_by']
+            )
+        return DnsConfigResponse()
+    except Exception as e:
+        logger.error("Failed to get DNS config", error=str(e))
+        return DnsConfigResponse()
+
+
+@router.put("/dns-config", response_model=DnsConfigResponse)
+async def update_dns_config(
+    config: DnsConfig,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update DNS search domain configuration (admin only)."""
+    check_admin_role(current_user)
+
+    defaults = DnsConfig()
+    default_domains = {d.domain for d in defaults.search_domains}
+    submitted_defaults = {d.domain for d in config.search_domains if d.is_default}
+    if default_domains != submitted_defaults:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System default domains cannot be added, removed, or renamed"
+        )
+    for d in config.search_domains:
+        if d.is_default:
+            d.enabled = True
+
+    try:
+        query = """
+            INSERT INTO system_settings (key, value, description, updated_at, updated_by)
+            VALUES (
+                'dns_config',
+                CAST(:value AS jsonb),
+                'DNS search domain configuration for normalization',
+                NOW(),
+                :user_id
+            )
+            ON CONFLICT (key) DO UPDATE SET
+                value = CAST(:value AS jsonb),
+                updated_at = NOW(),
+                updated_by = :user_id
+            RETURNING updated_at
+        """
+        result = await database.fetch_one(query, {
+            "value": json.dumps(config.dict()),
+            "user_id": current_user.get('user_id')
+        })
+        logger.info("DNS config updated",
+                     user_id=current_user.get('user_id'),
+                     domain_count=len(config.search_domains))
+        return DnsConfigResponse(
+            **config.dict(),
+            updated_at=str(result['updated_at']) if result else None,
+            updated_by=current_user.get('user_id')
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update DNS config", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update DNS config: {str(e)}"
+        )
+
+
+@router.get("/dns-config/defaults", response_model=DnsConfig)
+async def get_dns_config_defaults():
+    """Return factory-default DNS search domain configuration."""
+    return DnsConfig()
 
 
 # ============================================

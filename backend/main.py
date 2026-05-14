@@ -28,6 +28,7 @@ from database.neo4j import neo4j_driver, test_neo4j_connection
 
 # Routers - Enable auth and clusters for MVP
 from routers import auth, clusters, analyses, workloads, event_types, namespaces, communications, websocket, events
+from routers import l7_communications, l7_events, apm
 from routers import changes, export_router, dev_console, simulation, blast_radius, api_keys
 from routers import settings as settings_router  # Renamed to avoid conflict with config.settings
 from routers import scheduled_reports, report_history, users, roles
@@ -81,6 +82,18 @@ structlog.configure(
     wrapper_class=structlog.stdlib.BoundLogger,
     cache_logger_on_first_use=True,
 )
+
+# Pika is verbose at INFO and dumps a full ERROR traceback every time the
+# broker drops an idle TCP connection — even though `change_event_publisher`
+# detects the loss and reconnects on the next call. WARNING keeps real
+# errors visible while suppressing the per-disconnect noise.
+import logging as _logging  # noqa: E402  (kept local to scope this tweak)
+for _pika_logger in ("pika", "pika.adapters", "pika.connection",
+                     "pika.adapters.utils.io_services_utils",
+                     "pika.adapters.utils.connection_workflow",
+                     "pika.adapters.blocking_connection",
+                     "pika.adapters.base_connection"):
+    _logging.getLogger(_pika_logger).setLevel(_logging.WARNING)
 
 logger = structlog.get_logger()
 
@@ -200,6 +213,8 @@ openapi_tags = [
     {"name": "Analyses", "description": "Traffic analysis creation, lifecycle, and run management"},
     {"name": "Workloads", "description": "Kubernetes workload inventory and metadata"},
     {"name": "Communications", "description": "Service-to-service communication graph, dependency map, and topology"},
+    {"name": "L7 Communications", "description": "L7 (Beyla) workload communications, dependency graph, and HTTP/gRPC/DNS-oriented stats"},
+    {"name": "L7 Events", "description": "L7 HTTP, gRPC, and DNS events and histograms from ClickHouse"},
     {"name": "Integration", "description": "CI/CD pipeline integration endpoints for dependency discovery, impact analysis, and cross-project dependency mapping"},
     {"name": "Impact Analysis", "description": "Blast radius assessment, impact simulation, and pre-deployment risk evaluation"},
     {"name": "Events", "description": "eBPF event statistics, queries, and timeline"},
@@ -291,6 +306,13 @@ app.include_router(namespaces.router, prefix=api_prefix, tags=["Cluster Resource
 
 # Communications and Dependency Graph
 app.include_router(communications.router, prefix=f"{api_prefix}/communications", tags=["Communications"])
+
+app.include_router(l7_communications.router, prefix=f"{api_prefix}/l7", tags=["L7 Communications"])
+app.include_router(l7_events.router, prefix=f"{api_prefix}/l7/events", tags=["L7 Events"])
+# APM RED metrics (Phase 2). Proxies to timeseries-query's /apm/* endpoints
+# which read from the AggregatingMergeTree RED materialized views
+# (clickhouse_005_add_apm_red_mvs.sql).
+app.include_router(apm.router, prefix=f"{api_prefix}/apm", tags=["APM"])
 
 # Events - eBPF event statistics and queries (Layered Architecture)
 app.include_router(events.router, prefix=f"{api_prefix}/events", tags=["Events"])
@@ -386,13 +408,15 @@ async def api_info():
             "authentication": ["jwt", "oauth", "kubernetes_sa"],
             "data_sources": ["ebpf", "kubernetes", "prometheus", "service_mesh"],
             "databases": ["postgresql", "clickhouse", "neo4j", "redis"],
-            "features": ["real_time_mapping", "anomaly_detection", "change_simulation", "policy_simulation"]
+            "features": ["real_time_mapping", "anomaly_detection", "change_simulation", "policy_simulation", "l7_service_map"]
         },
         "endpoints": {
             "auth": f"{api_prefix}/auth",
             "clusters": f"{api_prefix}/clusters", 
             "analyses": f"{api_prefix}/analyses",
             "dependencies": f"{api_prefix}/dependencies",
+            "l7_communications": f"{api_prefix}/l7",
+            "l7_events": f"{api_prefix}/l7/events",
             "health": "/health"
         }
     }

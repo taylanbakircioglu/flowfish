@@ -54,9 +54,12 @@ graph TB
     end
     
     subgraph "Data Collection Layer"
-        IG[Inspektor Gadget DaemonSet]
+        IG[Inspektor Gadget DaemonSet - L4]
+        BEYLA[Grafana Beyla DaemonSet - L7]
+        L7_COLLECTOR[flowfish-l7-collector]
         COLLECTOR[Data Collector]
         ENRICHER[Data Enricher]
+        L7_INGESTION[L7 Ingestion Service]
     end
     
     subgraph "Data Layer"
@@ -81,6 +84,9 @@ graph TB
     ANALYSIS --> SCHEDULER
     ANALYSIS --> LLM
     ANALYSIS --> IG
+    ANALYSIS --> L7_INGESTION
+    BEYLA --> L7_COLLECTOR
+    L7_INGESTION --> L7_COLLECTOR
     
     GRAPH_SVC --> NEO4J
     GRAPH_SVC --> REDIS
@@ -810,10 +816,34 @@ backend/
 │   ├── GET /csv
 │   ├── GET /graph-json
 │   └── POST /schedule
-└── import/
-    ├── POST /csv
-    ├── POST /graph-json
-    └── GET /jobs/{id}
+├── import/
+│   ├── POST /csv
+│   ├── POST /graph-json
+│   └── GET /jobs/{id}
+├── l7/
+│   ├── communications/
+│   │   ├── GET /                    (L7 communication list)
+│   │   ├── GET /stats               (L7 statistics)
+│   │   └── GET /error-stats         (L7 error breakdown)
+│   ├── dependencies/
+│   │   ├── GET /graph               (L7 dependency graph)
+│   │   ├── GET /summary             (L7 per-workload summary)
+│   │   └── GET /tree-summary        (L7 tree-based dependencies)
+│   └── events/
+│       ├── GET /http                 (HTTP flow events)
+│       ├── GET /grpc                 (gRPC flow events)
+│       ├── GET /dns                  (DNS flow events)
+│       ├── GET /stats                (Cross-protocol stats)
+│       └── GET /histogram            (HTTP 5-min histogram)
+├── dependencies/
+│   └── GET /unified-summary          (L4+L7 merged dependencies)
+├── settings/
+│   ├── GET /beyla                    (Beyla L7 configuration)
+│   └── PUT /beyla                    (Update Beyla configuration)
+└── clusters/
+    ├── GET /beyla-install-script      (General Beyla install script)
+    ├── GET /{id}/beyla-install-script  (Cluster-specific install)
+    └── GET /{id}/beyla-upgrade-script  (Beyla upgrade script)
 ```
 
 ### Frontend (React)
@@ -982,11 +1012,17 @@ The HTTP API is organized under `/api/v1/` (see the endpoint tree under **Backen
 
 | Area | Path (relative to `/api/v1`) |
 |------|------------------------------|
-| Summary | `GET /communications/dependencies/summary` |
+| Summary (L4) | `GET /communications/dependencies/summary` |
 | Streaming | `GET /communications/dependencies/stream` |
 | Batch | `POST /communications/dependencies/batch` |
 | Diff | `GET /communications/dependencies/diff` |
 | Impact | `GET /communications/dependencies/impact` |
+| Summary (L7) | `GET /l7/dependencies/summary` |
+| Tree summary (L7) | `GET /l7/dependencies/tree-summary` |
+
+Both the L4 and L7 summary endpoints accept the same identification surface (annotation key/value, label key/value, owner_name, pod_name) so the Integration Hub feeds a single form into either endpoint. The L7 path aliases `owner_name → workload_name` server-side. Filter values accept fnmatch globs (`*`, `?`, `[seq]`). When the L7 summary filter is active, matched workloads are returned with `is_matched=true` alongside their immediate neighbours (`is_matched=false`) so callers retain dependency context. v2.6.0+
+
+When the operator picks an analysis with `analysis_level=both`, the Integration Hub fans the configured query out to **both** L4 and L7 endpoints in parallel (`Promise.allSettled`) and renders Network/Application tabs in the preview step plus an L4/L7 toggle in the snippet step. The L7 endpoints accept a single `analysis_id` per call, so multi-analysis selections target the first analysis on the L7 side and the full set on the L4 side.
 
 These complement the core REST surface (graph, map, upstream/downstream) for programmatic analysis and integration scenarios.
 

@@ -46,6 +46,9 @@ service ClusterManagerService {
     
     // Inspector Gadget health check
     rpc CheckGadgetHealth(CheckGadgetHealthRequest) returns (GadgetHealthResponse);
+
+    // Grafana Beyla L7 agent health check
+    rpc CheckBeylaHealth(CheckBeylaHealthRequest) returns (BeylaHealthResponse);
 }
 
 // Common messages
@@ -124,6 +127,7 @@ message PodInfo {
     string ip = 7;
     string created_at = 8;
     map<string, string> annotations = 9;
+    string image = 10;
 }
 
 message ListPodsResponse {
@@ -330,4 +334,20 @@ message GadgetHealthResponse {
     bool ebpf_capable = 6;
     int32 total_restarts = 7;
     repeated string issues = 8;
+}
+
+// Beyla Health Check
+message CheckBeylaHealthRequest {
+    string cluster_id = 1;
+    string beyla_namespace = 2;
+}
+
+message BeylaHealthResponse {
+    string health_status = 1;  // "healthy", "degraded", "unhealthy", "not_installed", "unknown"
+    string version = 2;
+    string error = 3;
+    int32 daemonset_ready = 4;
+    int32 daemonset_total = 5;
+    bool collector_ready = 6;
+    repeated string issues = 7;
 }

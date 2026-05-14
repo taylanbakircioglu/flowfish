@@ -15,6 +15,10 @@ import { eventsApi } from './api/eventsApi';
 import { changesApi } from './api/changesApi';
 import { devConsoleApi } from './api/devConsoleApi';
 import { simulationApi } from './api/simulationApi';
+import { l7CommunicationApi } from './api/l7CommunicationApi';
+import { l7EventsApi } from './api/l7EventsApi';
+import { apmApi } from './api/apmApi';
+import { settingsApi } from './api/settingsApi';
 
 export const store = configureStore({
   reducer: {
@@ -30,6 +34,10 @@ export const store = configureStore({
     [changesApi.reducerPath]: changesApi.reducer,
     [devConsoleApi.reducerPath]: devConsoleApi.reducer,
     [simulationApi.reducerPath]: simulationApi.reducer,
+    [l7CommunicationApi.reducerPath]: l7CommunicationApi.reducer,
+    [l7EventsApi.reducerPath]: l7EventsApi.reducer,
+    [apmApi.reducerPath]: apmApi.reducer,
+    [settingsApi.reducerPath]: settingsApi.reducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
@@ -46,7 +54,11 @@ export const store = configureStore({
     .concat(eventsApi.middleware)
     .concat(changesApi.middleware)
     .concat(devConsoleApi.middleware)
-    .concat(simulationApi.middleware),
+    .concat(simulationApi.middleware)
+    .concat(l7CommunicationApi.middleware)
+    .concat(l7EventsApi.middleware)
+    .concat(apmApi.middleware)
+    .concat(settingsApi.middleware),
 });
 
 export type RootState = ReturnType<typeof store.getState>;

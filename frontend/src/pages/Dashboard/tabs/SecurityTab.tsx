@@ -55,6 +55,12 @@ const { useToken } = theme;
 interface SecurityTabProps {
   clusterId?: number;
   analysisId?: number;
+  // Plan v3 Akış E (B1.5 fix): the security/OOM queries are multi-cluster
+  // aware — `securityClusterId` is `undefined` for multi-cluster analyses
+  // so the backend aggregates across the whole analysis. `clusterId` is
+  // kept for legacy/single-cluster code paths and drill-down navigation.
+  securityClusterId?: number;
+  isMultiClusterAnalysis?: boolean;
 }
 
 // Animated counter hook for smooth number transitions
@@ -165,21 +171,37 @@ const SecurityScoreGauge: React.FC<{ score: number | null; status: string; loadi
   );
 };
 
-const SecurityTab: React.FC<SecurityTabProps> = ({ clusterId, analysisId }) => {
+const SecurityTab: React.FC<SecurityTabProps> = ({
+  clusterId,
+  analysisId,
+  securityClusterId,
+  isMultiClusterAnalysis,
+}) => {
   const { token } = useToken();
   const { isDark } = useTheme();
   const navigate = useNavigate();
   const textMuted = isDark ? 'rgba(255,255,255,0.35)' : '#a0aec0';
-  
+
+  // Plan v3 Akış E (m.9, B1.5 fix): for multi-cluster analyses we send
+  // `cluster_id=undefined` so the backend aggregates across every cluster
+  // (the analysis_id LIKE pattern picks them all up). The `securityClusterId`
+  // prop is the `undefined`-tolerant value provided by the parent dashboard;
+  // we treat the legacy single-prop call (no securityClusterId) as
+  // backwards-compatible and fall back to `clusterId`.
+  const effectiveClusterId =
+    securityClusterId !== undefined ? securityClusterId : clusterId;
+  const querySkip =
+    !analysisId || (!isMultiClusterAnalysis && !effectiveClusterId);
+
   // API Queries - use shared constants for consistent limits across all pages
   const { data: securityData, isLoading: securityLoading } = useGetSecurityEventsQuery(
-    { cluster_id: clusterId!, analysis_id: analysisId, limit: SECURITY_EVENTS_LIMIT },
-    { skip: !clusterId || !analysisId }
+    { cluster_id: effectiveClusterId, analysis_id: analysisId, limit: SECURITY_EVENTS_LIMIT },
+    { skip: querySkip }
   );
 
   const { data: oomData, isLoading: oomLoading } = useGetOomEventsQuery(
-    { cluster_id: clusterId!, analysis_id: analysisId, limit: OOM_EVENTS_LIMIT },
-    { skip: !clusterId || !analysisId }
+    { cluster_id: effectiveClusterId, analysis_id: analysisId, limit: OOM_EVENTS_LIMIT },
+    { skip: querySkip }
   );
 
   // Process security events to extract capabilities
@@ -256,25 +278,27 @@ const SecurityTab: React.FC<SecurityTabProps> = ({ clusterId, analysisId }) => {
 
   // Security Score calculation using shared utility function
   const securityScoreData = useMemo(() => {
-    // If no analysis or cluster selected, return null
-    if (!analysisId || !clusterId) {
+    // Selection gate — for multi-cluster, we only need an analysisId; for
+    // single-cluster we still need a concrete cluster context.
+    if (!analysisId) {
       return { score: null, status: 'no_selection' as const };
     }
-    
-    // If loading, return loading state
+    if (!isMultiClusterAnalysis && !effectiveClusterId) {
+      return { score: null, status: 'no_selection' as const };
+    }
+
     if (securityLoading || oomLoading) {
       return { score: null, status: 'loading' as const };
     }
-    
-    // Use shared calculation function - single source of truth
+
     return calculateSecurityScore({
       totalCapabilityChecks: securityData?.total || 0,
       totalOomEvents: oomData?.total || 0,
       violations: processedViolations,
       capabilities: capabilities,
     });
-  }, [analysisId, clusterId, securityLoading, oomLoading, securityData?.total, oomData?.total, 
-      processedViolations, capabilities]);
+  }, [analysisId, effectiveClusterId, isMultiClusterAnalysis, securityLoading, oomLoading,
+      securityData?.total, oomData?.total, processedViolations, capabilities]);
 
   const securityScore = securityScoreData.score;
   const securityStatus = securityScoreData.status;
@@ -290,7 +314,13 @@ const SecurityTab: React.FC<SecurityTabProps> = ({ clusterId, analysisId }) => {
     highRiskCapabilities: capabilities.filter(c => c.risk === 'high').length,
   }), [securityData, processedViolations, oomData, capabilities]);
 
-  if (!clusterId) {
+  // Multi-cluster analyses are valid even without a single concrete cluster —
+  // the empty-state only fires if we have neither analysis nor a cluster
+  // context (single-cluster path).
+  if (!analysisId) {
+    return <Empty description="Select an analysis to view security data" />;
+  }
+  if (!isMultiClusterAnalysis && !effectiveClusterId) {
     return <Empty description="Select a cluster to view security data" />;
   }
 

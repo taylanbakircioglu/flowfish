@@ -44,7 +44,9 @@ import {
   ThunderboltOutlined,
   HddOutlined,
   DashboardOutlined,
-  CalendarOutlined
+  CalendarOutlined,
+  ApiOutlined,
+  AppstoreOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
@@ -626,6 +628,35 @@ const AnalysisList: React.FC = () => {
       onFilter: (value: string | number | boolean, record: Analysis) => record.status === value,
     },
     {
+      title: 'Level',
+      dataIndex: 'analysis_level',
+      key: 'analysis_level',
+      width: 80,
+      align: 'center' as const,
+      render: (level: string) => {
+        const levelMap: Record<string, { label: string; color: string; icon: React.ReactNode; desc: string }> = {
+          l4: { label: 'L4', color: 'blue', icon: <HddOutlined />, desc: 'Network Level (L4) — eBPF flow analysis' },
+          l7: { label: 'L7', color: 'volcano', icon: <ApiOutlined />, desc: 'Application Level (L7) — HTTP/gRPC/DNS' },
+          both: { label: 'L4+L7', color: 'purple', icon: <AppstoreOutlined />, desc: 'Network + Application level analysis' },
+        };
+        const info = levelMap[(level || 'l4').toLowerCase()] || levelMap.l4;
+        return (
+          <Tooltip title={info.desc}>
+            <Tag color={info.color} style={{ fontSize: 11, margin: 0 }}>
+              {info.icon} {info.label}
+            </Tag>
+          </Tooltip>
+        );
+      },
+      filters: [
+        { text: 'L4 (Network)', value: 'l4' },
+        { text: 'L7 (Application)', value: 'l7' },
+        { text: 'Both', value: 'both' },
+      ],
+      onFilter: (value: string | number | boolean, record: Analysis) =>
+        (record.analysis_level || 'l4') === value,
+    },
+    {
       title: 'Scope',
       dataIndex: 'scope_type',
       key: 'scope_type',
@@ -633,19 +664,30 @@ const AnalysisList: React.FC = () => {
       render: (scopeType: string) => <Tag style={{ fontSize: 11 }}>{scopeType}</Tag>,
     },
     {
-      title: 'Events',
+      title: 'Types',
       key: 'gadgets',
-      width: 80,
+      width: 90,
       align: 'center' as const,
       render: (record: Analysis) => {
+        const level = record.analysis_level || 'l4';
         const gadgets = (record.gadget_config?.enabled_gadgets as string[]) || [];
-        if (gadgets.length === 0) {
+        const l7Protocols = (record.l7_config as any)?.protocols as string[] || [];
+        const hasL4 = level === 'l4' || level === 'both';
+        const hasL7 = level === 'l7' || level === 'both';
+
+        const parts: string[] = [];
+        if (hasL4 && gadgets.length > 0) parts.push(...gadgets.map(g => g.replace(/_/g, ' ')));
+        if (hasL7 && l7Protocols.length > 0) parts.push(...l7Protocols.map(p => `L7:${p.toUpperCase()}`));
+
+        const totalCount = (hasL4 ? gadgets.length : 0) + (hasL7 ? Math.max(l7Protocols.length, hasL7 ? 3 : 0) : 0);
+
+        if (totalCount === 0) {
           return <Typography.Text type="secondary">-</Typography.Text>;
         }
         return (
-          <Tooltip title={gadgets.map(g => g.replace(/_/g, ' ')).join(', ')}>
+          <Tooltip title={parts.length > 0 ? parts.join(', ') : `${totalCount} event types`}>
             <Tag color="blue" style={{ fontSize: 11, margin: 0 }}>
-              {gadgets.length} types
+              {totalCount} types
             </Tag>
           </Tooltip>
         );
@@ -1186,6 +1228,53 @@ const AnalysisList: React.FC = () => {
                 )}
               </Space>
             </Card>
+
+            {/* L7 / Beyla Configuration - show only for l7 or both */}
+            {(selectedAnalysis.analysis_level === 'l7' || selectedAnalysis.analysis_level === 'both') && (
+              <Card size="small" title={<><ApiOutlined style={{ color: '#722ed1' }} /> L7 Configuration (Beyla)</>}>
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="Level">
+                    <Tag color={selectedAnalysis.analysis_level === 'both' ? 'geekblue' : 'purple'}>
+                      {selectedAnalysis.analysis_level === 'both' ? 'L4 + L7' : 'L7 Only'}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Protocols">
+                    <Space wrap>
+                      {((selectedAnalysis.l7_config?.protocols as string[]) || ['http', 'grpc']).map((p: string) => (
+                        <Tag key={p} color="orange">{p.toUpperCase()}</Tag>
+                      ))}
+                    </Space>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Sampling Rate">
+                    <Text>{Math.round(((selectedAnalysis.l7_config?.sampling_rate as number) ?? 1) * 100)}%</Text>
+                  </Descriptions.Item>
+                  {selectedAnalysis.l7_config?.service_filter && (
+                    <Descriptions.Item label="Service Filter">
+                      <Text code style={{ fontSize: 11 }}>{selectedAnalysis.l7_config.service_filter as string}</Text>
+                    </Descriptions.Item>
+                  )}
+                  {selectedAnalysis.l7_config?.path_pattern && (
+                    <Descriptions.Item label="Path Pattern">
+                      <Text code style={{ fontSize: 11 }}>{selectedAnalysis.l7_config.path_pattern as string}</Text>
+                    </Descriptions.Item>
+                  )}
+                  {selectedAnalysis.l7_config?.exclude_paths && (
+                    <Descriptions.Item label="Excluded Paths">
+                      <Text type="secondary" style={{ fontSize: 11 }}>{selectedAnalysis.l7_config.exclude_paths as string}</Text>
+                    </Descriptions.Item>
+                  )}
+                  {selectedAnalysis.l7_config?.http_methods && (selectedAnalysis.l7_config.http_methods as string[]).length > 0 && (
+                    <Descriptions.Item label="HTTP Methods">
+                      <Space wrap>
+                        {(selectedAnalysis.l7_config.http_methods as string[]).map((m: string) => (
+                          <Tag key={m} color="blue">{m}</Tag>
+                        ))}
+                      </Space>
+                    </Descriptions.Item>
+                  )}
+                </Descriptions>
+              </Card>
+            )}
             
             {/* Time & Data Configuration */}
             <Card size="small" title={<><ClockCircleOutlined /> Time & Data Configuration</>}>

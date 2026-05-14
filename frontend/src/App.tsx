@@ -13,6 +13,10 @@ import AnalysisList from './pages/AnalysisList';
 import ChangeDetection from './pages/ChangeDetection';
 import ApplicationInventory from './pages/ApplicationInventory';
 import Map from './pages/Map';
+import ServiceMap from './pages/ServiceMap';
+import TraceExplorer from './pages/TraceExplorer';
+import APMServicesList from './pages/APMServicesList';
+import APMServiceDetail from './pages/APMServiceDetail';
 import ImpactSimulation from './pages/ImpactSimulation';
 import NetworkExplorer from './pages/NetworkExplorer';
 import ActivityMonitor from './pages/ActivityMonitor';
@@ -66,8 +70,16 @@ const App: React.FC = () => {
         
         {/* Discovery routes */}
         <Route path="discovery/map" element={<Map />} />
+        <Route path="discovery/service-map" element={<ServiceMap />} />
+        <Route path="discovery/trace-explorer" element={<TraceExplorer />} />
         <Route path="discovery/network-explorer" element={<NetworkExplorer />} />
         <Route path="discovery/inventory" element={<ApplicationInventory />} />
+
+        {/* APM routes (Phase 2). Trace Explorer remains under Discovery for
+            backward-compat — the `/apm/services` -> `/apm/services/:key`
+            -> Trace Explorer flow goes through the existing route. */}
+        <Route path="apm/services" element={<APMServicesList />} />
+        <Route path="apm/services/:workloadKey" element={<APMServiceDetail />} />
         
         {/* Impact Analysis routes */}
         <Route path="impact/change-detection" element={<ChangeDetection />} />

@@ -141,7 +141,9 @@ metadata:
     app: inspektor-gadget
 data:
   config.yaml: |
-    events-buffer-length: 8192
+    # eBPF ring buffer size (per-CPU, per-node). For local-test default is fine.
+    # Production clusters: install script auto-sizes based on pods/node ratio.
+    events-buffer-length: 131072
     # Auto-detected by init container at pod startup. Supported platforms:
     #   K3s/RKE2:  /run/k3s/containerd/containerd.sock
     #   MicroK8s:  /var/snap/microk8s/common/run/containerd.sock
@@ -369,15 +371,18 @@ spec:
         hostPath:
           path: /sys/kernel/debug
       - name: oci
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 5Gi
       - name: config
         configMap:
           name: inspektor-gadget-config
           defaultMode: 0400
       - name: config-generated
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 128Mi
       - name: wasm-cache
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 2Gi
 ---
 apiVersion: v1
 kind: Service

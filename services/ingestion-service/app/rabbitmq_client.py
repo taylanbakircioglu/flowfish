@@ -54,13 +54,18 @@ class RabbitMQPublisher:
                 settings.rabbitmq_password
             )
             
+            # heartbeat=60s matches the consumer (timeseries-writer) and
+            # surfaces broker-driven disconnects an order of magnitude
+            # sooner than the previous 600s. Long idle windows between
+            # gRPC requests used to let the TCP socket die silently and
+            # then dump a full pika ERROR traceback on the next publish.
             parameters = pika.ConnectionParameters(
                 host=settings.rabbitmq_host,
                 port=settings.rabbitmq_port,
                 virtual_host=settings.rabbitmq_vhost,
                 credentials=credentials,
-                heartbeat=600,
-                blocked_connection_timeout=300,
+                heartbeat=60,
+                blocked_connection_timeout=120,
             )
             
             self.connection = pika.BlockingConnection(parameters)

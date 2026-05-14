@@ -16,7 +16,7 @@ from typing import List, Optional
 import structlog
 
 from .base import (
-    ClusterConnection, ConnectionConfig, ClusterInfo, GadgetHealth,
+    ClusterConnection, ConnectionConfig, ClusterInfo, GadgetHealth, BeylaHealth,
     Namespace, Deployment, Pod, Service, StatefulSet, ConfigMap, Secret
 )
 from grpc_clients.cluster_manager_client import cluster_manager_client
@@ -84,7 +84,7 @@ class RemoteTokenConnection(ClusterConnection):
         gadget_namespace = self.config.gadget_namespace
         if not gadget_namespace:
             return GadgetHealth(
-                health_status="unknown",
+                health_status="not_installed",
                 error="gadget_namespace not configured for this cluster"
             )
         
@@ -119,7 +119,39 @@ class RemoteTokenConnection(ClusterConnection):
                 pods_ready=0,
                 pods_total=0
             )
-    
+
+    async def check_beyla_health(self, beyla_namespace: str = "") -> BeylaHealth:
+        """Check Beyla + L7 Collector health via gateway"""
+        self.mark_used()
+        if not beyla_namespace:
+            return BeylaHealth(health_status="not_installed", error="beyla_namespace not configured")
+
+        try:
+            result = await self._grpc_client.check_beyla_health(
+                cluster_id=str(self.config.cluster_id),
+                beyla_namespace=beyla_namespace,
+            )
+
+            return BeylaHealth(
+                health_status=result.get("health_status", "unknown"),
+                version=result.get("version", ""),
+                daemonset_ready=result.get("daemonset_ready", 0),
+                daemonset_total=result.get("daemonset_total", 0),
+                collector_ready=result.get("collector_ready", False),
+                issues=result.get("issues", []),
+                error=result.get("error") or "",
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to check beyla health via gateway",
+                cluster_id=self.config.cluster_id,
+                error=str(e),
+            )
+            return BeylaHealth(
+                health_status="unknown",
+                error=f"Gateway error: {str(e)}",
+            )
+
     async def get_namespaces(self) -> List[Namespace]:
         """Get namespaces via gateway"""
         self.mark_used()
@@ -195,6 +227,7 @@ class RemoteTokenConnection(ClusterConnection):
                     node_name=pod.get("node_name"),
                     labels=pod.get("labels", {}),
                     ip=pod.get("ip"),
+                    image=pod.get("image", ""),
                     created_at=pod.get("created_at")
                 ))
             

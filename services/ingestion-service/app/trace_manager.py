@@ -525,7 +525,28 @@ class TraceManager:
                        original_modules=list(request.gadget_modules),
                        normalized_modules=gadget_modules_normalized)
             
-            for gadget_module in gadget_modules_normalized:
+            # IMPORTANT: Stagger the gadget launches.
+            #
+            # Field observation on production OpenShift clusters: launching
+            # all ~11 gadgets in a 2-second burst floods the IG DaemonSet's
+            # perf-event ring buffers — IG worker logs the classic pattern
+            #   "getting lost samples: bad file descriptor {N}"
+            #   "reading event: lost 295205 samples"
+            # right before its liveness probe fails and kubelet SIGKILLs it
+            # (exit 137). Whichever gadget is starting up at that moment
+            # (commonly trace_sni / trace_tcpretrans / trace_capabilities)
+            # exits with returncode -6 (SIGABRT) because its gRPC dial to IG
+            # was severed mid-handshake. The remaining gadgets — which
+            # finished registering before IG choked — keep running fine.
+            # Spacing launches by `gadget_startup_stagger_seconds` lets the
+            # IG worker register each eBPF program and drain the per-program
+            # ring buffer before the next one lands, eliminating the flood.
+            stagger_delay = max(0.0, settings.gadget_startup_stagger_seconds)
+
+            for idx, gadget_module in enumerate(gadget_modules_normalized):
+                if idx > 0 and stagger_delay > 0:
+                    await asyncio.sleep(stagger_delay)
+
                 trace_config = TraceConfig(
                     analysis_id=str(request.analysis_id),
                     cluster_id=str(request.cluster_id),
@@ -549,33 +570,58 @@ class TraceManager:
                 )
                 session.collection_tasks.append(task)
             
-            # Check for gadget startup errors after all traces started
-            # Wait once (not per-gadget) to detect failures
+            # Check for gadget startup errors after all traces started.
+            # We wait once across all gadgets (not per-gadget) so a slow
+            # cold-start gadget does not gate the rest, and we wait long
+            # enough (default 8s, env GADGET_STARTUP_WAIT_SECONDS) to clear
+            # the OCI image pull + gRPC dial race on freshly installed IG
+            # DaemonSets.
             if hasattr(client, 'check_startup_errors'):
-                await client.check_startup_errors(wait_seconds=2.0)
-            
+                await client.check_startup_errors(
+                    wait_seconds=settings.gadget_startup_wait_seconds,
+                )
+
+            # Auto-retry transient cold-start failures.
+            # Field observation: on a freshly (re)started cluster the IG DS
+            # gRPC dial pool + OCI artifact store warm up gradually. Some
+            # gadgets (typically trace_tcpretrans / trace_capabilities /
+            # trace_sni) lose the race against our 8s wait window even when
+            # everything is healthy — the operator's traditional fix has
+            # been to "stop and re-start the analysis" because by then the
+            # DS is warm and they succeed instantly. We do that automatically
+            # here so the operator never sees the transient warning. We
+            # recreate the gadget subprocess AND its collection task as a
+            # pair, because the task holds a handle to the now-dead process
+            # and must be replaced together with it.
+            await self._retry_failed_gadgets(session, client, session_id)
+
             if hasattr(client, 'get_all_gadget_errors'):
                 gadget_errors = client.get_all_gadget_errors()
                 if gadget_errors:
                     session.gadget_errors = gadget_errors
-                    logger.warning("Some gadgets failed to start",
+                    logger.warning("Some gadgets failed to start (after retries)",
                                   session_id=session_id,
                                   failed_gadgets=[e['gadget'] for e in gadget_errors])
             
-            # Set status based on whether all gadgets started successfully
-            if session.gadget_errors and len(session.gadget_errors) == len(request.gadget_modules):
-                # All gadgets failed
+            # Set status based on whether all gadgets started successfully.
+            # Compare against the normalized gadget list (auto-added gadgets
+            # like top_tcp / trace_tcpretrans count too) and against the
+            # number of traces that ended up alive after retries — this is
+            # what `len(session.gadget_errors) == total` should mean.
+            total_gadgets = len(gadget_modules_normalized)
+            failed_count = len(session.gadget_errors) if session.gadget_errors else 0
+            working_count = total_gadgets - failed_count
+            if session.gadget_errors and working_count <= 0:
                 session.status = "failed"
                 logger.error("All gadgets failed to start",
                             session_id=session_id,
                             errors=session.gadget_errors)
             elif session.gadget_errors:
-                # Some gadgets failed
                 session.status = "running_with_errors"
                 logger.warning("Collection started with some gadget failures",
                               session_id=session_id,
-                              working_gadgets=len(request.gadget_modules) - len(session.gadget_errors),
-                              failed_gadgets=len(session.gadget_errors))
+                              working_gadgets=working_count,
+                              failed_gadgets=failed_count)
             else:
                 session.status = "running"
             
@@ -673,6 +719,186 @@ class TraceManager:
             "gadget_errors": session.gadget_errors if session.gadget_errors else []
         }
     
+    async def _retry_failed_gadgets(
+        self,
+        session: 'TraceSession',
+        client: AbstractGadgetClient,
+        session_id: str,
+    ) -> None:
+        """Restart any gadgets that failed during the initial startup window.
+
+        On freshly (re)started clusters the IG DaemonSet warm-up race causes
+        a small subset of gadgets to exit before our 8s startup wait
+        completes, while a *second* invocation right after succeeds because
+        the OCI artifact and gRPC dial are now cached. This helper performs
+        that second invocation transparently so the operator never has to
+        click "stop and re-start the analysis" themselves.
+
+        For each failed trace we:
+          1. Cancel the now-orphan `_collect_events` task that was paired
+             with the dead subprocess (it would otherwise sit forever in a
+             readline loop on a closed pipe).
+          2. Drop the dead trace from `client.active_traces` so it does not
+             keep showing up in `get_all_gadget_errors()`.
+          3. Recreate the gadget subprocess via `client.start_trace()` with
+             the same TraceConfig that was originally used.
+          4. Spin up a fresh `_collect_events` task that owns the new
+             process handle.
+
+        After retrying, we wait again with a shorter window because the warm
+        path is fast (sub-second) — the long wait only mattered for the
+        first cold attempt.
+
+        Bounded by `settings.gadget_startup_retry_attempts`; defaults to 1
+        which is enough in practice — second-attempt warm path wins almost
+        always. A genuinely broken gadget (missing image, RBAC denied) will
+        keep failing on every retry, so we cap iterations and let the
+        existing error path surface the error to the UI.
+        """
+        max_attempts = max(0, int(getattr(settings, 'gadget_startup_retry_attempts', 0)))
+        if max_attempts == 0:
+            return
+        if not hasattr(client, 'get_all_gadget_errors'):
+            return
+
+        # Progressive backoff: attempt N waits base * multiplier^(N-1).
+        # Multiplier <= 1.0 collapses to constant backoff (legacy).
+        backoff_mult = max(1.0, float(getattr(settings, 'gadget_retry_backoff_multiplier', 1.0)))
+        base_pre_wait = max(0.0, float(settings.gadget_retry_pre_wait_seconds))
+
+        for attempt in range(1, max_attempts + 1):
+            failed = client.get_all_gadget_errors()
+            if not failed:
+                return
+
+            logger.warning(
+                "Retrying transient gadget startup failures",
+                session_id=session_id,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                failed_gadgets=[e.get('gadget') for e in failed],
+            )
+
+            # IG container restart recovery wait.
+            # When the IG DaemonSet's perf-event ring overflows during a
+            # 11-gadget burst, the kubelet SIGKILLs the IG container; the
+            # restarted pod takes ~10s to come back, attach eBPF programs,
+            # and re-open its gRPC server. If we retry inside that window
+            # we just hit the cold path again. The wait scales by attempt
+            # number using gadget_retry_backoff_multiplier (default 1.5x)
+            # so back-to-back retries don't all collide with the same
+            # hot moment in the IG restart cycle. Cancellable: parent
+            # stop_session propagates CancelledError through asyncio.sleep.
+            pre_wait = base_pre_wait * (backoff_mult ** (attempt - 1))
+            if pre_wait > 0:
+                logger.info(
+                    "Waiting for IG DaemonSet to settle before retry",
+                    session_id=session_id,
+                    attempt=attempt,
+                    seconds=round(pre_wait, 1),
+                )
+                await asyncio.sleep(pre_wait)
+
+            # Snapshot before mutating client.active_traces
+            failed_snapshot = list(failed)
+            any_retried = False  # tracks whether we already started one
+            for err in failed_snapshot:
+                old_trace_id = err.get('trace_id')
+                gadget_name = err.get('gadget', 'unknown')
+                if not old_trace_id:
+                    continue
+
+                # Pull config off the dead trace before we delete it.
+                old_info = client.active_traces.get(old_trace_id) if hasattr(client, 'active_traces') else None
+                old_config = old_info.get('config') if old_info else None
+                if not old_config:
+                    logger.warning(
+                        "Skipping retry — original config missing",
+                        gadget=gadget_name,
+                        old_trace_id=old_trace_id,
+                    )
+                    continue
+
+                # Cancel the orphan collection task BEFORE we lose the
+                # trace_id->task index mapping (parallel lists in
+                # session.trace_ids / session.collection_tasks).
+                try:
+                    idx = session.trace_ids.index(old_trace_id)
+                except ValueError:
+                    idx = None
+                if idx is not None:
+                    old_task = session.collection_tasks[idx]
+                    if old_task and not old_task.done():
+                        old_task.cancel()
+                        try:
+                            # `_collect_events` catches CancelledError
+                            # internally so this normally completes fast
+                            # with `None`; the timeout is a safety net.
+                            await asyncio.wait_for(old_task, timeout=2.0)
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Old collection task did not cancel within 2s; "
+                                "continuing retry anyway",
+                                old_trace_id=old_trace_id,
+                            )
+                        except asyncio.CancelledError:
+                            # Parent (start_collection_session) is being
+                            # cancelled — propagate so the session shuts
+                            # down cleanly instead of finishing the retry.
+                            raise
+                        except Exception as e:
+                            # Any other error during teardown is logged but
+                            # not fatal: the task is being torn down anyway.
+                            logger.debug(
+                                "Old collection task raised during cancel",
+                                old_trace_id=old_trace_id,
+                                error=str(e),
+                            )
+                    session.trace_ids.pop(idx)
+                    session.collection_tasks.pop(idx)
+
+                # Forget the dead trace so the next start_trace gets a fresh ID
+                # and so it does not reappear in get_all_gadget_errors().
+                if hasattr(client, 'active_traces'):
+                    client.active_traces.pop(old_trace_id, None)
+
+                # Recreate the gadget + its collection task.
+                # Stagger between retried gadgets too: the IG worker has
+                # just restarted and its per-program perf maps are still
+                # being attached; back-to-back dials would re-trigger the
+                # same flood that caused the original failure.
+                stagger_delay = max(0.0, settings.gadget_startup_stagger_seconds)
+                if stagger_delay > 0 and any_retried:
+                    await asyncio.sleep(stagger_delay)
+
+                try:
+                    new_trace_id = await client.start_trace(old_config)
+                except Exception as e:
+                    logger.error(
+                        "Gadget retry failed to start",
+                        gadget=gadget_name,
+                        error=str(e),
+                    )
+                    continue
+
+                any_retried = True
+                session.trace_ids.append(new_trace_id)
+                new_task = asyncio.create_task(self._collect_events(session, new_trace_id))
+                session.collection_tasks.append(new_task)
+                logger.info(
+                    "Gadget retry started",
+                    session_id=session_id,
+                    gadget=gadget_name,
+                    old_trace_id=old_trace_id,
+                    new_trace_id=new_trace_id,
+                )
+
+            # Re-check after the retry batch. Warm path is sub-second so
+            # half the cold wait (with a 2s floor for safety) is plenty.
+            if hasattr(client, 'check_startup_errors'):
+                warm_wait = max(2.0, settings.gadget_startup_wait_seconds / 2.0)
+                await client.check_startup_errors(wait_seconds=warm_wait)
+
     async def _collect_events(self, session: TraceSession, trace_id: str):
         """Collect events from trace and publish to RabbitMQ"""
         try:
@@ -738,10 +964,23 @@ class TraceManager:
                        session_id=session.session_id,
                        trace_id=trace_id)
         except Exception as e:
+            # Log the gadget name and full traceback so we can diagnose
+            # exotic exceptions like "unhashable type: 'dict'" that
+            # bubble out of stream_events / _publish_event without an
+            # obvious source. Without exc_info=True we previously only
+            # saw `error=unhashable type: 'dict'` with no clue which
+            # event field, gadget, or filter path raised it.
+            client = session.client
+            gadget_name = "unknown"
+            if hasattr(client, 'active_traces') and trace_id in client.active_traces:
+                gadget_name = client.active_traces[trace_id].get('gadget_name', 'unknown')
             logger.error("Event collection failed",
                         session_id=session.session_id,
                         trace_id=trace_id,
-                        error=str(e))
+                        gadget=gadget_name,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True)
             session.status = "failed"
     
     async def _publish_event(self, session: TraceSession, event):

@@ -67,12 +67,13 @@ class AnalysisOrchestratorClient:
             self.stub = None
             logger.info("Analysis Orchestrator connection closed")
     
-    async def start_analysis(self, analysis_id: int) -> Dict[str, Any]:
+    async def start_analysis(self, analysis_id: int, analysis_level: str = "l4") -> Dict[str, Any]:
         """
         Start analysis via Analysis Orchestrator
         
         Args:
             analysis_id: Analysis ID to start
+            analysis_level: 'l4', 'l7', or 'both'
         
         Returns:
             Dict with start response
@@ -83,10 +84,12 @@ class AnalysisOrchestratorClient:
             
             logger.info("Requesting analysis start",
                        analysis_id=analysis_id,
+                       analysis_level=analysis_level,
                        service="analysis-orchestrator")
             
             request = analysis_orchestrator_pb2.StartAnalysisRequest(
-                analysis_id=analysis_id
+                analysis_id=analysis_id,
+                analysis_level=analysis_level
             )
             
             # Timeout of 120 seconds - gadget startup can take 60+ seconds for 11 modules

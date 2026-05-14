@@ -98,6 +98,7 @@ import {
   type SimulationHistoryEntry,
 } from '../store/api/simulationApi';
 import { Analysis } from '../types';
+import { useL4Analyses, useL4AnalysisGuard } from '../utils/analysisFilters';
 import NetworkPolicyBuilder from '../components/NetworkPolicyBuilder';
 import ImpactFlowDiagram from '../components/ImpactFlowDiagram';
 import { colors } from '../styles/colors';
@@ -1482,9 +1483,12 @@ const ImpactSimulation: React.FC = () => {
   
   const { data: analyses = [], isLoading: isAnalysesLoading } = useGetAnalysesQuery({});
   
-  const availableAnalyses = Array.isArray(analyses) 
-    ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
-    : [];
+  const availableAnalyses = useL4Analyses(
+    Array.isArray(analyses)
+      ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
+      : [],
+  );
+  useL4AnalysisGuard(selectedAnalysisId, setSelectedAnalysisId, availableAnalyses);
 
   // Initialize from URL parameters (when navigating from Change Detection)
   useEffect(() => {

@@ -2,13 +2,106 @@
 
 import json
 import logging
-from typing import Dict, Any, List, Optional
+import re
+from collections import defaultdict
+from fnmatch import fnmatch
+from typing import Dict, Any, List, Optional, Tuple
 from neo4j import GraphDatabase, Driver, Session, Result
 from neo4j.exceptions import Neo4jError, ServiceUnavailable
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level annotation noise filter helpers (audit v3 — extracted from nested
+# scope so the same filter list is shared between the L4 dependency_summary path
+# and the new L7 dependency_summary annotation filter. Pure functions, stateless.
+# Audit B-22 / E-10).
+_NOISE_ANNOTATION_PREFIXES: Tuple[str, ...] = (
+    'kubectl.kubernetes.io/',
+    'kubernetes.io/',
+    'openshift.io/',
+    'openshift.openshift.io/',
+    'k8s.v1.cni.cncf.io/',
+    'k8s.ovn.org/',
+    'seccomp.security.alpha.kubernetes.io/',
+)
+
+
+def _filter_summary_annotations(ann: Optional[dict]) -> dict:
+    """Drop infrastructure/noise annotations and oversize values (>=500 chars).
+
+    Mirrors the previous nested helper inside the L4 dependency_summary
+    aggregator so L4 and L7 summary responses agree on what counts as
+    operator-visible annotation metadata.
+    """
+    if not ann or not isinstance(ann, dict):
+        return ann or {}
+    return {
+        k: v for k, v in ann.items()
+        if not any(k.startswith(p) for p in _NOISE_ANNOTATION_PREFIXES)
+        and len(str(v)) < 500
+    }
+
+
+def _parse_metadata_field(raw) -> dict:
+    """Parse a Neo4j-stored labels/annotations field (JSON string or dict).
+
+    L7Workload nodes persist labels/annotations as JSON-encoded strings
+    (services/graph-writer/app/l7_graph_builder.py json.dumps), but L4
+    Workload nodes may already arrive as dicts. We tolerate both forms and
+    fall back to {} on malformed JSON so a single corrupt row never breaks
+    a filter sweep.
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+    return {}
+
+
+def _glob_match_metadata(
+    metadata: dict,
+    key: Optional[str],
+    value: Optional[str],
+) -> bool:
+    """Test whether ``metadata`` contains an entry matching key/value.
+
+    Mirrors the L4 ``find_pod_dependencies`` post-filter semantics so the new
+    L7 filter path behaves identically (audit B-2 / E-13):
+      * No key      → match (filter inactive).
+      * Key has glob (``*``/``?``) → fnmatch against every key.
+      * Value empty or ``*`` → any value matches once key is found.
+      * Value has glob → fnmatch against the stringified value.
+      * Otherwise → exact equality.
+    """
+    if not key:
+        return True
+    key_has_glob = '*' in key or '?' in key
+    if key_has_glob:
+        hit_keys = [k for k in metadata if fnmatch(k, key)]
+    else:
+        hit_keys = [key] if key in metadata else []
+    if not hit_keys:
+        return False
+    if not value or value == '*':
+        return True
+    value_has_glob = '*' in value or '?' in value
+    for k in hit_keys:
+        v = str(metadata[k])
+        if value_has_glob:
+            if fnmatch(v, value):
+                return True
+        elif v == value:
+            return True
+    return False
 
 
 class GraphQueryEngine:
@@ -211,6 +304,9 @@ class GraphQueryEngine:
             src.annotations AS source_annotations,
             src.owner_kind AS source_owner_kind,
             src.owner_name AS source_owner_name,
+            src.network_type AS source_network_type,
+            src.is_external AS source_is_external,
+            src.resolution_source AS source_resolution_source,
             src.pod_uid AS source_pod_uid,
             src.host_ip AS source_host_ip,
             src.container AS source_container,
@@ -227,12 +323,23 @@ class GraphQueryEngine:
             dst.annotations AS destination_annotations,
             dst.owner_kind AS destination_owner_kind,
             dst.owner_name AS destination_owner_name,
+            dst.network_type AS destination_network_type,
+            dst.is_external AS destination_is_external,
+            dst.resolution_source AS destination_resolution_source,
             dst.pod_uid AS destination_pod_uid,
             dst.host_ip AS destination_host_ip,
             dst.container AS destination_container,
             dst.image AS destination_image,
             dst.service_account AS destination_service_account,
             dst.phase AS destination_phase,
+            // Per-node cluster_id projection. Without this the backend
+            // transformer fell back to the request-level `cluster_id`
+            // parameter, which is empty on multi-cluster queries -> every
+            // edge then carried `cluster_id="1"` and the Network Map
+            // collapsed all clusters into one. Coerce via toString in
+            // case Neo4j stored it as integer in older datasets.
+            toString(src.cluster_id) AS source_cluster_id,
+            toString(dst.cluster_id) AS destination_cluster_id,
             comm.protocol AS protocol,
             comm.destination_port AS destination_port,
             comm.port AS port,
@@ -795,7 +902,7 @@ class GraphQueryEngine:
             RETURN DISTINCT
                 w.id AS id,
                 COALESCE(w.name, 'unknown') AS name,
-                CASE WHEN w.owner_kind = 'Service' THEN 'Service' ELSE COALESCE(labels(w)[0], 'Workload') END AS kind,
+                CASE WHEN w.owner_kind = 'Service' THEN 'Service' ELSE COALESCE(w.kind, labels(w)[0], 'Workload') END AS kind,
                 COALESCE(w.namespace, 'external') AS namespace,
                 COALESCE(w.cluster_id, '1') AS cluster_id,
                 COALESCE(w.status, 'unknown') AS status,
@@ -827,10 +934,14 @@ class GraphQueryEngine:
         if missing_node_ids:
             logger.warning(f"[GRAPH_QUERY_DEBUG] Creating {len(missing_node_ids)} synthetic nodes for missing endpoints")
             # Create synthetic nodes for missing endpoints
-            # Parse node ID format: cluster_id:namespace:name
+            # Parse node ID format: analysis_id:cluster_id:namespace:workload (4-part)
+            # or legacy: cluster_id:namespace:workload (3-part)
             for node_id in missing_node_ids:
-                parts = node_id.split(":", 2)  # Split into max 3 parts
-                if len(parts) >= 3:
+                parts = node_id.split(":", 3)  # Split into max 4 parts
+                if len(parts) >= 4:
+                    # New format: analysis_id:cluster_id:namespace:workload
+                    _, node_cluster, node_ns, node_name = parts[0], parts[1], parts[2], parts[3]
+                elif len(parts) == 3:
                     node_cluster, node_ns, node_name = parts[0], parts[1], parts[2]
                 elif len(parts) == 2:
                     node_cluster, node_ns, node_name = "1", parts[0], parts[1]
@@ -850,10 +961,20 @@ class GraphQueryEngine:
                 elif node_ns == "sdn-infrastructure":
                     network_type = "SDN-Gateway"
                 
+                # Infer kind from namespace
+                if node_ns == "external":
+                    synth_kind = "External"
+                elif node_ns in ("sdn-infrastructure", "cluster-network", "service-network"):
+                    synth_kind = "Infrastructure"
+                elif node_ns in ("internal-network", "datacenter"):
+                    synth_kind = "DataCenter"
+                else:
+                    synth_kind = "Pod"
+
                 synthetic_node = {
                     "id": node_id,
                     "name": node_name,
-                    "kind": "Workload",
+                    "kind": synth_kind,
                     "namespace": node_ns,
                     "cluster_id": node_cluster,
                     "status": "unknown",
@@ -1001,6 +1122,899 @@ class GraphQueryEngine:
             "analysis_id": analysis_id
         }
     
+    def _l7_match_where(
+        self,
+        analysis_id: str,
+        cluster_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+        protocol: Optional[str] = None,
+        protocols: Optional[str] = None,
+        rel_alias: str = "r",
+        src_alias: str = "src",
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Build WHERE clause for L7_COMMUNICATES_WITH patterns (multi-cluster analysis_id)."""
+        conditions = []
+        params: Dict[str, Any] = {}
+        aid = str(analysis_id)
+        params["analysis_id"] = aid
+        params["analysis_id_prefix"] = f"{aid}-"
+        conditions.append(
+            f"({rel_alias}.analysis_id = $analysis_id OR {rel_alias}.analysis_id STARTS WITH $analysis_id_prefix)"
+        )
+        if cluster_id:
+            conditions.append(f"({src_alias}.cluster = $cluster_id OR dst.cluster = $cluster_id)")
+            params["cluster_id"] = str(cluster_id)
+        if namespace:
+            conditions.append(
+                f"({src_alias}.namespace = $namespace OR dst.namespace = $namespace)"
+            )
+            params["namespace"] = namespace
+        # Multi-protocol support: `protocols` (comma-separated) takes priority over `protocol` (single)
+        if protocols:
+            proto_list = [p.strip().upper() for p in protocols.split(",") if p.strip()]
+            if proto_list:
+                conditions.append(f"toUpper({rel_alias}.protocol) IN $protocols_list")
+                params["protocols_list"] = proto_list
+        elif protocol:
+            conditions.append(f"toUpper({rel_alias}.protocol) = toUpper($protocol)")
+            params["protocol"] = protocol
+        return " AND ".join(conditions), params
+
+    def get_l7_dependency_graph(
+        self,
+        analysis_id: str,
+        cluster_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+        protocol: Optional[str] = None,
+        protocols: Optional[str] = None,
+        namespaces: Optional[str] = None,
+        include_metadata: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        L7 workload dependency graph from Neo4j L7Workload / L7_COMMUNICATES_WITH.
+        Returns {"nodes": [...], "edges": [...]}.
+        """
+        where_clause, params = self._l7_match_where(
+            analysis_id, cluster_id=cluster_id, namespace=namespace,
+            protocol=protocol, protocols=protocols,
+        )
+        if namespaces:
+            ns_list = [n.strip() for n in namespaces.split(",") if n.strip()]
+            if ns_list:
+                params["ns_list"] = ns_list
+                where_clause += " AND (src.namespace IN $ns_list OR dst.namespace IN $ns_list)"
+        meta_return = ""
+        if include_metadata:
+            meta_return = """,
+            src.labels AS src_labels,
+            src.annotations AS src_annotations,
+            src.owner_kind AS src_owner_kind,
+            dst.labels AS dst_labels,
+            dst.annotations AS dst_annotations,
+            dst.owner_kind AS dst_owner_kind"""
+        query = f"""
+        MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+        WHERE {where_clause}
+        RETURN
+            src.id AS src_id,
+            src.name AS src_name,
+            src.namespace AS src_namespace,
+            src.cluster AS src_cluster,
+            src.kind AS src_kind,
+            src.analysis_id AS src_analysis_id,
+            src.network_type AS src_network_type,
+            src.is_external AS src_is_external,
+            dst.id AS dst_id,
+            dst.name AS dst_name,
+            dst.namespace AS dst_namespace,
+            dst.cluster AS dst_cluster,
+            dst.kind AS dst_kind,
+            dst.analysis_id AS dst_analysis_id,
+            dst.network_type AS dst_network_type,
+            dst.is_external AS dst_is_external,
+            r.protocol AS protocol,
+            r.http_method AS http_method,
+            r.http_path AS http_path,
+            r.request_count AS request_count,
+            r.error_count AS error_count,
+            r.avg_latency_ms AS avg_latency_ms,
+            r.last_trace_id AS last_trace_id,
+            r.last_span_id AS last_span_id,
+            r.trace_count AS trace_count{meta_return}
+        LIMIT {settings.max_results}
+        """
+        result = self.execute_query(query, params)
+        if not result.get("success"):
+            return {"nodes": [], "edges": [], "error": result.get("error")}
+
+        nodes_map: Dict[str, Dict[str, Any]] = {}
+        edges: List[Dict[str, Any]] = []
+
+        def add_node(
+            nid: Any,
+            name: Any,
+            ns: Any,
+            cluster: Any,
+            kind: Any,
+            aid: Any,
+            network_type: Any = None,
+            is_external: Any = None,
+            labels: Any = None,
+            annotations: Any = None,
+            owner_kind: Any = None,
+        ) -> None:
+            if not nid:
+                return
+            sid = str(nid)
+            if sid not in nodes_map:
+                node: Dict[str, Any] = {
+                    "id": sid,
+                    "name": name or "",
+                    "namespace": ns or "",
+                    "cluster": cluster or "",
+                    "kind": kind or "",
+                    "analysis_id": str(aid) if aid is not None else "",
+                    "network_type": str(network_type or ""),
+                    "is_external": bool(is_external) if is_external is not None else False,
+                }
+                if include_metadata:
+                    node["labels"] = self._parse_json_field(labels)
+                    node["annotations"] = self._parse_json_field(annotations)
+                    node["owner_kind"] = str(owner_kind or "")
+                nodes_map[sid] = node
+
+        for row in result.get("data", []):
+            add_node(
+                row.get("src_id"),
+                row.get("src_name"),
+                row.get("src_namespace"),
+                row.get("src_cluster"),
+                row.get("src_kind"),
+                row.get("src_analysis_id"),
+                network_type=row.get("src_network_type"),
+                is_external=row.get("src_is_external"),
+                labels=row.get("src_labels"),
+                annotations=row.get("src_annotations"),
+                owner_kind=row.get("src_owner_kind"),
+            )
+            add_node(
+                row.get("dst_id"),
+                row.get("dst_name"),
+                row.get("dst_namespace"),
+                row.get("dst_cluster"),
+                row.get("dst_kind"),
+                row.get("dst_analysis_id"),
+                network_type=row.get("dst_network_type"),
+                is_external=row.get("dst_is_external"),
+                labels=row.get("dst_labels"),
+                annotations=row.get("dst_annotations"),
+                owner_kind=row.get("dst_owner_kind"),
+            )
+            src_id = row.get("src_id")
+            dst_id = row.get("dst_id")
+            if not src_id or not dst_id:
+                continue
+            edges.append(
+                {
+                    "source_id": str(src_id),
+                    "target_id": str(dst_id),
+                    "protocol": row.get("protocol"),
+                    "http_method": row.get("http_method"),
+                    "http_path": row.get("http_path"),
+                    "request_count": row.get("request_count") or 0,
+                    "error_count": row.get("error_count") or 0,
+                    "avg_latency_ms": row.get("avg_latency_ms"),
+                    "last_trace_id": str(row.get("last_trace_id") or ""),
+                    "last_span_id": str(row.get("last_span_id") or ""),
+                    "trace_count": int(row.get("trace_count") or 0),
+                }
+            )
+
+        # SAME_WORKLOAD bridges — surface cross-cluster equivalence to the UI
+        # so it can collapse "external placeholder ↔ enriched node" pairs into
+        # a single visual entity. Bridges are returned as a sibling list and
+        # not embedded into edges so the existing render path stays unchanged.
+        # Mirror `_l7_match_where` semantics: match either the parent
+        # analysis_id exactly OR any sub-analysis with the "<parent>-..." prefix.
+        # Without this, multi-cluster bridges (where each cluster carries a
+        # different sub-analysis ID) would not appear in the graph response.
+        same_workload_bridges: List[Dict[str, Any]] = []
+        try:
+            sw_query = """
+            MATCH (a:L7Workload)-[sw:SAME_WORKLOAD]->(b:L7Workload)
+            WHERE (a.analysis_id = $aid OR a.analysis_id STARTS WITH $aid_prefix)
+              AND (b.analysis_id = $aid OR b.analysis_id STARTS WITH $aid_prefix)
+            RETURN a.id AS a_id, b.id AS b_id,
+                   sw.confidence AS confidence, sw.matched_by AS matched_by,
+                   sw.last_trace_id AS last_trace_id
+            """
+            sw_result = self.execute_query(
+                sw_query,
+                {"aid": str(analysis_id), "aid_prefix": f"{analysis_id}-"},
+            )
+            if sw_result.get("success"):
+                for sw_row in sw_result.get("data", []):
+                    a_id, b_id = sw_row.get("a_id"), sw_row.get("b_id")
+                    if not a_id or not b_id:
+                        continue
+                    # UI requires both endpoints to be in renderedNodeIds before
+                    # drawing the dashed bridge edge, so bridges with only one
+                    # endpoint visible would be dropped client-side anyway.
+                    # Filtering server-side saves payload size on large graphs.
+                    if str(a_id) in nodes_map and str(b_id) in nodes_map:
+                        same_workload_bridges.append({
+                            "a_id": str(a_id),
+                            "b_id": str(b_id),
+                            "confidence": str(sw_row.get("confidence") or ""),
+                            "matched_by": str(sw_row.get("matched_by") or ""),
+                            "last_trace_id": str(sw_row.get("last_trace_id") or ""),
+                        })
+        except Exception:
+            logger.exception("SAME_WORKLOAD bridge query failed (non-fatal)")
+
+        return {
+            "nodes": list(nodes_map.values()),
+            "edges": edges,
+            "same_workload_bridges": same_workload_bridges,
+            "total_nodes": len(nodes_map),
+            "total_edges": len(edges),
+        }
+
+    def get_l7_communication_stats(
+        self,
+        analysis_id: str,
+        cluster_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregated L7 stats: workloads, edges, requests, errors, avg latency."""
+        where_clause, params = self._l7_match_where(
+            analysis_id, cluster_id=cluster_id, namespace=None, protocol=None
+        )
+        stats_query = f"""
+        MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+        WHERE {where_clause}
+        RETURN
+            count(r) AS total_edges,
+            sum(coalesce(r.request_count, 0)) AS total_request_count,
+            sum(coalesce(r.error_count, 0)) AS total_error_count,
+            avg(r.avg_latency_ms) AS avg_latency_ms
+        """
+        stats_result = self.execute_query(stats_query, params)
+        if not stats_result.get("success") or not stats_result.get("data"):
+            return {
+                "success": False,
+                "total_workloads": 0,
+                "total_edges": 0,
+                "total_request_count": 0,
+                "total_error_count": 0,
+                "avg_latency_ms": 0.0,
+                "error": stats_result.get("error"),
+            }
+        row0 = stats_result["data"][0]
+        ids_query = f"""
+        MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+        WHERE {where_clause}
+        RETURN collect(DISTINCT src.id) + collect(DISTINCT dst.id) AS node_ids
+        """
+        ids_result = self.execute_query(ids_query, params)
+        node_ids = []
+        if ids_result.get("success") and ids_result.get("data"):
+            raw = ids_result["data"][0].get("node_ids") or []
+            node_ids = list({str(x) for x in raw if x is not None})
+        avg_lat = row0.get("avg_latency_ms")
+        try:
+            avg_lat_f = float(avg_lat) if avg_lat is not None else 0.0
+        except (TypeError, ValueError):
+            avg_lat_f = 0.0
+        return {
+            "success": True,
+            "total_workloads": len(node_ids),
+            "total_edges": int(row0.get("total_edges") or 0),
+            "total_request_count": int(row0.get("total_request_count") or 0),
+            "total_error_count": int(row0.get("total_error_count") or 0),
+            "avg_latency_ms": round(avg_lat_f, 4),
+            "analysis_id": str(analysis_id),
+            "cluster_id": str(cluster_id) if cluster_id else None,
+        }
+
+    def get_l7_dependency_summary(
+        self,
+        analysis_id: str,
+        cluster_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+        include_metadata: bool = True,
+        annotation_key: Optional[str] = None,
+        annotation_value: Optional[str] = None,
+        label_key: Optional[str] = None,
+        label_value: Optional[str] = None,
+        owner_name: Optional[str] = None,
+        pod_name: Optional[str] = None,
+        workload_name: Optional[str] = None,
+        filter_noise_annotations: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Per-workload L7 summary: inbound/outbound edge counts, requests, errors, error rate.
+
+        Audit v3 (B-16, B-19, B-22, E-13): when any of ``annotation_*``/``label_*``/
+        ``owner_name``/``pod_name``/``workload_name`` is supplied, the response
+        includes both the *matched* workloads (``is_matched=True``) and their
+        immediate neighbours (``is_matched=False``) so the operator gets the
+        same dependency context the L4 path provides via ``find_pod_dependencies``.
+
+        ``owner_name`` is accepted as a backend alias of ``workload_name``;
+        if both are passed, ``workload_name`` wins. Both perform a
+        case-insensitive substring match for L4 UX parity.
+
+        ``filter_noise_annotations=True`` runs the shared module-level
+        ``_filter_summary_annotations`` over each workload's annotations
+        in the response so infrastructure-prefixed noise is stripped.
+        Defaults to False (backward compat — audit G-8).
+
+        ``include_metadata`` keeps its public contract: when False the
+        response omits ``labels``/``annotations``/``owner_kind`` on each
+        workload, but the engine still fetches those columns internally
+        so server-side filters keep working (audit B-22).
+        """
+        # Normalise the workload-name alias up front so the rest of the
+        # function only deals with `effective_workload_name`.
+        effective_workload_name = workload_name or owner_name or None
+
+        # Detect whether any filter is active. We use this to:
+        #   * decide if we need to widen the Cypher LIMIT (filter passes drop
+        #     rows, so we over-fetch and let Python post-filter narrow back),
+        #   * decide whether to emit ``is_matched`` on workloads at all
+        #     (avoid breaking the legacy response shape when nobody is
+        #     filtering).
+        filter_active = any(
+            v for v in (
+                annotation_key, label_key, label_value, effective_workload_name, pod_name,
+            )
+        )
+
+        where_clause, params = self._l7_match_where(
+            analysis_id, cluster_id=cluster_id, namespace=namespace, protocol=None
+        )
+
+        # Cypher CONTAINS prefilter — mirrors the L4 find_pod_dependencies
+        # pattern (L7Workload labels/annotations are persisted as JSON
+        # strings via graph-writer's json.dumps, so wrapping the key in
+        # double quotes makes the prefilter exact-enough to discard rows
+        # whose annotation map never references the key. Python post-filter
+        # below does the precise glob match.)
+        extra_clauses: List[str] = []
+        if annotation_key:
+            ann_key_prefix = annotation_key.split('*')[0].split('?')[0]
+            if ann_key_prefix:
+                extra_clauses.append(
+                    "(src.annotations CONTAINS $annotation_key_search "
+                    "OR dst.annotations CONTAINS $annotation_key_search)"
+                )
+                params["annotation_key_search"] = f'"{ann_key_prefix}'
+        if label_key and label_value:
+            extra_clauses.append(
+                "(src.labels CONTAINS $label_key_search "
+                "OR dst.labels CONTAINS $label_key_search)"
+            )
+            params["label_key_search"] = f'"{label_key}"'
+        elif label_key:
+            extra_clauses.append(
+                "(src.labels CONTAINS $label_key_search "
+                "OR dst.labels CONTAINS $label_key_search)"
+            )
+            params["label_key_search"] = f'"{label_key}"'
+        if effective_workload_name:
+            extra_clauses.append(
+                "(toLower(src.name) CONTAINS toLower($workload_name) "
+                "OR toLower(dst.name) CONTAINS toLower($workload_name))"
+            )
+            params["workload_name"] = effective_workload_name
+        if pod_name:
+            extra_clauses.append(
+                "(toLower(src.name) CONTAINS toLower($pod_name) "
+                "OR toLower(dst.name) CONTAINS toLower($pod_name))"
+            )
+            params["pod_name"] = pod_name
+
+        if extra_clauses:
+            where_clause = where_clause + " AND " + " AND ".join(extra_clauses)
+
+        # We always pull metadata columns from Neo4j so the post-filter has
+        # data to work with. The `include_metadata=False` request only
+        # affects what we *return* to the caller.
+        meta_return = """,
+            src.labels AS src_labels, src.annotations AS src_annotations, src.owner_kind AS src_owner_kind,
+            dst.labels AS dst_labels, dst.annotations AS dst_annotations, dst.owner_kind AS dst_owner_kind"""
+
+        # Widen LIMIT when filter is active — the prefilter narrows the
+        # Cypher result enough that 10x is still a small ceiling, but it
+        # gives the Python post-filter room to drop rows without producing
+        # a sparse final list. Capped at settings.max_results when no
+        # filter is active to preserve historical performance budget.
+        effective_limit = (settings.max_results * 10) if filter_active else settings.max_results
+
+        query = f"""
+        MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+        WHERE {where_clause}
+        RETURN
+            src.id AS src_id,
+            src.name AS src_name,
+            src.namespace AS src_namespace,
+            src.cluster AS src_cluster,
+            dst.id AS dst_id,
+            dst.name AS dst_name,
+            dst.namespace AS dst_namespace,
+            dst.cluster AS dst_cluster,
+            coalesce(r.request_count, 0) AS request_count,
+            coalesce(r.error_count, 0) AS error_count{meta_return}
+        LIMIT {effective_limit}
+        """
+        result = self.execute_query(query, params)
+        if not result.get("success"):
+            return {
+                "success": False,
+                "workloads": [],
+                "error": result.get("error"),
+            }
+
+        by_id: Dict[str, Dict[str, Any]] = {}
+
+        def touch(
+            wid: Any,
+            name: Any,
+            ns: Any,
+            cluster: Any,
+            labels: Any = None,
+            annotations: Any = None,
+            owner_kind: Any = None,
+        ) -> str:
+            sid = str(wid) if wid else ""
+            if not sid:
+                return ""
+            if sid not in by_id:
+                entry: Dict[str, Any] = {
+                    "id": sid,
+                    "name": name or "",
+                    "namespace": ns or "",
+                    "cluster": cluster or "",
+                    "inbound_count": 0,
+                    "outbound_count": 0,
+                    "request_count": 0,
+                    "error_count": 0,
+                    # Always parse metadata so server-side filters can run.
+                    # We strip these from the response below when
+                    # include_metadata=False.
+                    "labels": _parse_metadata_field(labels),
+                    "annotations": _parse_metadata_field(annotations),
+                    "owner_kind": str(owner_kind or ""),
+                }
+                by_id[sid] = entry
+            return sid
+
+        for row in result.get("data", []):
+            rc = int(row.get("request_count") or 0)
+            ec = int(row.get("error_count") or 0)
+            s = touch(
+                row.get("src_id"), row.get("src_name"), row.get("src_namespace"), row.get("src_cluster"),
+                row.get("src_labels"), row.get("src_annotations"), row.get("src_owner_kind"),
+            )
+            d = touch(
+                row.get("dst_id"), row.get("dst_name"), row.get("dst_namespace"), row.get("dst_cluster"),
+                row.get("dst_labels"), row.get("dst_annotations"), row.get("dst_owner_kind"),
+            )
+            if s:
+                by_id[s]["outbound_count"] += 1
+                by_id[s]["request_count"] += rc
+                by_id[s]["error_count"] += ec
+            if d:
+                by_id[d]["inbound_count"] += 1
+                by_id[d]["request_count"] += rc
+                by_id[d]["error_count"] += ec
+
+        # Python post-filter — decides which workloads count as ``matched``.
+        # The Cypher prefilter is intentionally permissive (CONTAINS over the
+        # JSON-encoded property) so the precise glob/equality check happens
+        # here. We never drop *rows*; we only annotate workloads with the
+        # ``is_matched`` flag so the operator can still see neighbours.
+        def _matches(entry: Dict[str, Any]) -> bool:
+            if not filter_active:
+                return True
+            wname = entry.get("name") or ""
+            ns = entry.get("namespace") or ""
+            ann = entry.get("annotations") or {}
+            lbl = entry.get("labels") or {}
+            if annotation_key and not _glob_match_metadata(ann, annotation_key, annotation_value):
+                return False
+            if label_key and not _glob_match_metadata(lbl, label_key, label_value):
+                return False
+            if effective_workload_name and effective_workload_name.lower() not in wname.lower():
+                return False
+            if pod_name and pod_name.lower() not in wname.lower():
+                return False
+            return True
+
+        matched_ids: set = set()
+        if filter_active:
+            for sid, entry in by_id.items():
+                if _matches(entry):
+                    matched_ids.add(sid)
+
+        workloads = []
+        for w in by_id.values():
+            req = w["request_count"]
+            err = w["error_count"]
+            rate = round((err / req) * 100.0, 4) if req > 0 else 0.0
+            entry: Dict[str, Any] = {
+                "id": w["id"],
+                "name": w["name"],
+                "namespace": w["namespace"],
+                "cluster": w["cluster"],
+                "inbound_count": w["inbound_count"],
+                "outbound_count": w["outbound_count"],
+                "request_count": req,
+                "error_count": err,
+                "error_rate_percent": rate,
+            }
+            if filter_active:
+                entry["is_matched"] = w["id"] in matched_ids
+            if include_metadata:
+                annotations = w.get("annotations", {})
+                if filter_noise_annotations:
+                    annotations = _filter_summary_annotations(annotations)
+                entry["labels"] = w.get("labels", {})
+                entry["annotations"] = annotations
+                entry["owner_kind"] = w.get("owner_kind", "")
+            workloads.append(entry)
+        workloads.sort(key=lambda x: (x["namespace"], x["name"]))
+
+        # When a filter is active the operator usually only cares about
+        # matched workloads plus their immediate neighbours. Anything else
+        # in the Cypher edge sweep is unrelated namespace noise — drop it
+        # so the workloads[] list doesn't balloon with edges that don't
+        # touch the matched set.
+        if filter_active and matched_ids:
+            neighbour_ids: set = set()
+            for row in result.get("data", []):
+                s_id = str(row.get("src_id") or "")
+                d_id = str(row.get("dst_id") or "")
+                if s_id in matched_ids and d_id:
+                    neighbour_ids.add(d_id)
+                if d_id in matched_ids and s_id:
+                    neighbour_ids.add(s_id)
+            keep_ids = matched_ids | neighbour_ids
+            workloads = [w for w in workloads if w["id"] in keep_ids]
+
+        response: Dict[str, Any] = {
+            "success": True,
+            "analysis_id": str(analysis_id),
+            "cluster_id": str(cluster_id) if cluster_id else None,
+            "workloads": workloads,
+        }
+        if filter_active:
+            response["summary"] = {
+                "total_matched": sum(1 for w in workloads if w.get("is_matched")),
+                "total_workloads": len(workloads),
+            }
+        return response
+
+    def find_l7_workload_dependencies(
+        self,
+        analysis_id: str,
+        cluster_id: Optional[str] = None,
+        workload_name: Optional[str] = None,
+        namespace: Optional[str] = None,
+        depth: int = 1,
+        label_key: Optional[str] = None,
+        label_value: Optional[str] = None,
+        annotation_key: Optional[str] = None,
+        annotation_value: Optional[str] = None,
+        include_metadata: bool = True,
+        workload_name_exact: bool = True,
+    ) -> Dict[str, Any]:
+        """L7 dependency tree rooted at a workload, mirroring L4's matched_services format.
+
+        When workload_name is given, returns that workload as upstream with its
+        downstream (outgoing) and callers (incoming) grouped by protocol.
+        When workload_name is omitted, returns all workloads with their edges.
+
+        ``workload_name_exact`` (default True) controls the matching semantics
+        for ``workload_name`` so we preserve backward compatibility for
+        external callers that depend on exact-equality matches. The Integration
+        Hub frontend opts in to ``workload_name_exact=False`` (case-insensitive
+        substring) so the L7 tree behaves like L4 ``owner_name`` filtering.
+        """
+        aid = str(analysis_id)
+        params: Dict[str, Any] = {
+            "analysis_id": aid,
+            "analysis_id_prefix": f"{aid}-",
+        }
+
+        rel_where = "(r.analysis_id = $analysis_id OR r.analysis_id STARTS WITH $analysis_id_prefix)"
+        if cluster_id:
+            params["cluster_id"] = str(cluster_id)
+            rel_where += " AND src.cluster = $cluster_id"
+
+        match_conditions = []
+        if workload_name:
+            params["workload_name"] = workload_name
+            if workload_name_exact:
+                match_conditions.append("(src.name = $workload_name OR dst.name = $workload_name)")
+            else:
+                match_conditions.append(
+                    "(toLower(src.name) CONTAINS toLower($workload_name) "
+                    "OR toLower(dst.name) CONTAINS toLower($workload_name))"
+                )
+        if namespace:
+            params["namespace"] = namespace
+            match_conditions.append("(src.namespace = $namespace OR dst.namespace = $namespace)")
+
+        where_full = rel_where
+        if match_conditions:
+            where_full += " AND " + " AND ".join(match_conditions)
+
+        meta_cols = ""
+        if include_metadata:
+            meta_cols = """,
+                src.labels AS src_labels, src.annotations AS src_annotations, src.owner_kind AS src_owner_kind,
+                dst.labels AS dst_labels, dst.annotations AS dst_annotations, dst.owner_kind AS dst_owner_kind"""
+
+        safe_depth = max(1, min(depth, 3))
+        if workload_name and safe_depth > 1:
+            root_ns_filter = " AND root.namespace = $namespace" if namespace else ""
+            if workload_name_exact:
+                root_name_filter = "root.name = $workload_name"
+            else:
+                root_name_filter = "toLower(root.name) CONTAINS toLower($workload_name)"
+            query = f"""
+            MATCH path = (root:L7Workload)-[rels:L7_COMMUNICATES_WITH*1..{safe_depth}]->(leaf:L7Workload)
+            WHERE {root_name_filter}{root_ns_filter}
+              AND ALL(r IN rels WHERE {rel_where.replace("src.cluster", "root.cluster")})
+            UNWIND relationships(path) AS r
+            WITH startNode(r) AS src, endNode(r) AS dst, r
+            RETURN DISTINCT
+                src.name AS src_name, src.namespace AS src_namespace, src.cluster AS src_cluster,
+                dst.name AS dst_name, dst.namespace AS dst_namespace, dst.cluster AS dst_cluster,
+                r.protocol AS protocol, r.http_method AS http_method, r.http_path AS http_path,
+                coalesce(r.request_count, 0) AS request_count,
+                coalesce(r.error_count, 0) AS error_count,
+                coalesce(r.avg_latency_ms, 0.0) AS avg_latency_ms{meta_cols}
+            LIMIT {settings.max_results}
+            """
+        else:
+            query = f"""
+            MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+            WHERE {where_full}
+            RETURN
+                src.name AS src_name, src.namespace AS src_namespace, src.cluster AS src_cluster,
+                dst.name AS dst_name, dst.namespace AS dst_namespace, dst.cluster AS dst_cluster,
+                r.protocol AS protocol, r.http_method AS http_method, r.http_path AS http_path,
+                coalesce(r.request_count, 0) AS request_count,
+                coalesce(r.error_count, 0) AS error_count,
+                coalesce(r.avg_latency_ms, 0.0) AS avg_latency_ms{meta_cols}
+            LIMIT {settings.max_results}
+            """
+        result = self.execute_query(query, params)
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error"), "matched_services": []}
+
+        node_key = lambda name, ns: f"{ns}/{name}"
+        nodes: Dict[str, Dict[str, Any]] = {}
+        outgoing: Dict[str, list] = defaultdict(list)
+        incoming: Dict[str, list] = defaultdict(list)
+
+        def ensure_node(name, ns, cluster, labels=None, annotations=None, owner_kind=None):
+            key = node_key(name, ns)
+            if key not in nodes:
+                nd: Dict[str, Any] = {"name": name or "", "namespace": ns or "", "cluster": cluster or ""}
+                if include_metadata:
+                    nd["labels"] = self._parse_json_field(labels)
+                    nd["annotations"] = self._parse_json_field(annotations)
+                    nd["owner_kind"] = str(owner_kind or "")
+                nodes[key] = nd
+            return key
+
+        # Use the shared module-level glob matcher so L4 and L7 label/annotation
+        # filters apply identical semantics (audit B-2 / E-13: fnmatch '*', '?',
+        # '[seq]'; empty value or '*' means any value).
+        _label_match = _glob_match_metadata
+
+        for row in result.get("data", []):
+            sk = ensure_node(
+                row["src_name"], row["src_namespace"], row.get("src_cluster"),
+                row.get("src_labels"), row.get("src_annotations"), row.get("src_owner_kind"),
+            )
+            dk = ensure_node(
+                row["dst_name"], row["dst_namespace"], row.get("dst_cluster"),
+                row.get("dst_labels"), row.get("dst_annotations"), row.get("dst_owner_kind"),
+            )
+            edge_info = {
+                "name": row["dst_name"] or "",
+                "namespace": row["dst_namespace"] or "",
+                "cluster": row.get("dst_cluster") or "",
+                "protocol": row.get("protocol") or "",
+                "http_method": row.get("http_method") or "",
+                "http_path": row.get("http_path") or "",
+                "request_count": int(row.get("request_count") or 0),
+                "error_count": int(row.get("error_count") or 0),
+                "avg_latency_ms": float(row.get("avg_latency_ms") or 0.0),
+            }
+            outgoing[sk].append(edge_info)
+            caller_info = {
+                "name": row["src_name"] or "",
+                "namespace": row["src_namespace"] or "",
+                "cluster": row.get("src_cluster") or "",
+                "protocol": row.get("protocol") or "",
+                "http_method": row.get("http_method") or "",
+                "http_path": row.get("http_path") or "",
+                "request_count": int(row.get("request_count") or 0),
+                "error_count": int(row.get("error_count") or 0),
+                "avg_latency_ms": float(row.get("avg_latency_ms") or 0.0),
+            }
+            incoming[dk].append(caller_info)
+
+        def group_by_protocol(edges: list) -> Dict[str, list]:
+            groups: Dict[str, list] = defaultdict(list)
+            for e in edges:
+                cat = e.get("protocol") or "unknown"
+                groups[cat].append(e)
+            return dict(groups)
+
+        if workload_name:
+            if workload_name_exact:
+                root_keys = [k for k, n in nodes.items()
+                             if n["name"] == workload_name
+                             and (not namespace or n["namespace"] == namespace)]
+            else:
+                needle = workload_name.lower()
+                root_keys = [k for k, n in nodes.items()
+                             if needle in (n["name"] or "").lower()
+                             and (not namespace or n["namespace"] == namespace)]
+        else:
+            root_keys = sorted(nodes.keys())
+
+        matched_services = []
+        for rk in root_keys:
+            n = nodes[rk]
+            node_labels = n.get("labels", {}) if include_metadata else {}
+            node_annots = n.get("annotations", {}) if include_metadata else {}
+            if not _label_match(node_labels, label_key, label_value):
+                continue
+            if not _label_match(node_annots, annotation_key, annotation_value):
+                continue
+            ds_edges = outgoing.get(rk, [])
+            cl_edges = incoming.get(rk, [])
+            svc: Dict[str, Any] = {
+                "name": n["name"],
+                "namespace": n["namespace"],
+                "cluster": n["cluster"],
+                "downstream": {
+                    "total": len(ds_edges),
+                    "by_protocol": group_by_protocol(ds_edges),
+                },
+                "callers": {
+                    "total": len(cl_edges),
+                    "by_protocol": group_by_protocol(cl_edges),
+                },
+            }
+            if include_metadata:
+                svc["labels"] = node_labels
+                svc["annotations"] = node_annots
+                svc["owner_kind"] = n.get("owner_kind", "")
+            matched_services.append(svc)
+
+        total_ds = sum(s["downstream"]["total"] for s in matched_services)
+        total_cl = sum(s["callers"]["total"] for s in matched_services)
+
+        return {
+            "success": True,
+            "analysis_id": aid,
+            "cluster_id": str(cluster_id) if cluster_id else None,
+            "multi_service": len(matched_services) > 1,
+            "summary": {
+                "total_matched": len(matched_services),
+                "total_downstream": total_ds,
+                "total_callers": total_cl,
+                "total_workloads": len(nodes),
+            },
+            "matched_services": matched_services,
+        }
+
+    def get_l7_communications(
+        self,
+        analysis_id: str,
+        cluster_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+        protocol: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """Flat L7 communication records (Neo4j shape compatible with /communications)."""
+        where_clause, params = self._l7_match_where(
+            analysis_id,
+            cluster_id=cluster_id,
+            namespace=namespace,
+            protocol=protocol,
+        )
+        params["limit"] = min(limit, settings.max_results)
+        query = f"""
+        MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+        WHERE {where_clause}
+        RETURN
+            src.id AS source_id,
+            src.name AS source_name,
+            src.namespace AS source_namespace,
+            src.cluster AS source_cluster,
+            src.kind AS source_kind,
+            dst.id AS destination_id,
+            dst.name AS destination_name,
+            dst.namespace AS destination_namespace,
+            dst.cluster AS destination_cluster,
+            dst.kind AS destination_kind,
+            r.protocol AS protocol,
+            r.http_method AS http_method,
+            r.http_path AS http_path,
+            r.request_count AS request_count,
+            r.error_count AS error_count,
+            r.avg_latency_ms AS avg_latency_ms,
+            r.analysis_id AS analysis_id
+        ORDER BY coalesce(r.request_count, 0) DESC
+        LIMIT $limit
+        """
+        return self.execute_query(query, params)
+
+    def get_l7_error_stats(
+        self,
+        analysis_id: str,
+        cluster_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """L7 error aggregation by protocol and totals."""
+        where_clause, params = self._l7_match_where(
+            analysis_id,
+            cluster_id=cluster_id,
+            namespace=namespace,
+            protocol=None,
+        )
+        query = f"""
+        MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+        WHERE {where_clause}
+        RETURN
+            r.protocol AS protocol,
+            sum(coalesce(r.error_count, 0)) AS error_count,
+            sum(coalesce(r.request_count, 0)) AS request_count
+        """
+        agg = self.execute_query(query, params)
+        by_protocol: Dict[str, Dict[str, int]] = {}
+        total_err = 0
+        total_req = 0
+        if not agg.get("success"):
+            return {
+                "success": False,
+                "analysis_id": str(analysis_id),
+                "cluster_id": str(cluster_id) if cluster_id else None,
+                "namespace": namespace,
+                "error": agg.get("error", "Neo4j query failed"),
+                "total_errors": 0,
+                "total_requests": 0,
+                "error_rate_percent": 0.0,
+                "by_protocol": {},
+            }
+        for row in agg.get("data", []):
+            proto = row.get("protocol") or "UNKNOWN"
+            e = int(row.get("error_count") or 0)
+            q = int(row.get("request_count") or 0)
+            by_protocol[proto] = {"error_count": e, "request_count": q}
+            total_err += e
+            total_req += q
+        rate = round((total_err / total_req) * 100.0, 4) if total_req > 0 else 0.0
+        return {
+            "success": True,
+            "analysis_id": str(analysis_id),
+            "cluster_id": str(cluster_id) if cluster_id else None,
+            "namespace": namespace,
+            "total_errors": total_err,
+            "total_requests": total_req,
+            "error_rate_percent": rate,
+            "by_protocol": by_protocol,
+        }
+
     def health_check(self) -> Dict[str, Any]:
         """Check Neo4j connection health"""
         try:
@@ -1044,7 +2058,27 @@ class GraphQueryEngine:
         annotation_value: Optional[str] = None,
         ip: Optional[str] = None,
         depth: int = 1,
-        include_communication_details: bool = True
+        include_communication_details: bool = True,
+        # Plan v3 Akış D m.8 — Discovery mode.
+        #
+        # When the operator hasn't picked a service identification method
+        # (no annotation/label/owner/pod_name/ip), they may still want to
+        # see the dependency graph for the analysis scope as a whole.
+        # The previous behaviour was to hard-fail with "At least one
+        # search parameter required". `match_all=True` opts into the
+        # broader query but keeps the result bounded:
+        #
+        #   - depth is capped at MAX_DISCOVERY_DEPTH (=2): preventing a
+        #     `depth=5` discovery from producing a graph that takes
+        #     30s+ to render.
+        #   - the workload `LIMIT` (200) becomes the *seed* limit and
+        #     the operator must pass `cluster_id` AND/OR `namespace` so
+        #     a single analysis owner can't accidentally enumerate
+        #     every workload in a shared cluster ("tenant guard").
+        #
+        # When `match_all` is False the previous semantics apply
+        # verbatim — backward compatible.
+        match_all: bool = False,
     ) -> Dict[str, Any]:
         """
         Find a pod by any metadata and return its upstream/downstream dependencies.
@@ -1053,7 +2087,8 @@ class GraphQueryEngine:
         are "downstream" (targets). Pods that communicate TO the matched pod are
         also returned as callers (reverse upstream).
         
-        Any combination of search parameters can be used. At least one is required.
+        Any combination of search parameters can be used. At least one is required
+        unless `match_all=True` (discovery mode, see kwargs).
         
         Args:
             analysis_id: Single analysis ID for scope (backward compat)
@@ -1126,8 +2161,41 @@ class GraphQueryEngine:
             )
             params["label_key_search"] = f'"{label_key}"'
         
+        # Plan v3 Akış D m.8 — discovery mode (`match_all=True`) lets
+        # the operator see "all workloads in scope" without picking a
+        # service identification method. We still require a tenant
+        # guard (cluster_id OR namespace) AND an analysis scope so a
+        # single discovery query can't enumerate every workload in a
+        # shared multi-tenant cluster. depth is also capped to keep
+        # graph size predictable.
+        MAX_DISCOVERY_DEPTH = 2
+        DISCOVERY_SEED_LIMIT = 200
         if not match_conditions:
-            return {"success": False, "error": "At least one search parameter required (pod_name, namespace, owner_name, ip, annotation_key, label_key)", "count": 0, "results": []}
+            if not match_all:
+                return {"success": False, "error": "At least one search parameter required (pod_name, namespace, owner_name, ip, annotation_key, label_key) or pass match_all=true for discovery mode", "count": 0, "results": []}
+            # Tenant guard: discovery mode without ANY narrowing scope
+            # would enumerate every workload in every analysis the
+            # caller has access to. Force at least one of:
+            #   - cluster_id (single-cluster discovery)
+            #   - namespace (single-namespace discovery)
+            # A bare analysis_id is NOT enough because a single analysis
+            # may span thousands of workloads. The operator can still
+            # combine namespace + cluster + analysis if they want even
+            # tighter scoping.
+            if not cluster_id and not namespace:
+                return {
+                    "success": False,
+                    "error": "Discovery mode requires either cluster_id or namespace to bound the result set.",
+                    "count": 0,
+                    "results": [],
+                }
+            if depth > MAX_DISCOVERY_DEPTH:
+                # Silently cap rather than fail: the operator's
+                # `depth=5` choice still gets them a useful result
+                # (depth-2), and the response payload echoes back
+                # `effective_depth` (added below) so the UI can show
+                # "depth capped at 2 for discovery mode".
+                depth = MAX_DISCOVERY_DEPTH
         
         # Add analysis scope filter
         if effective_ids:
@@ -1559,27 +2627,8 @@ class GraphQueryEngine:
 
         results = stream_result["results"]
 
-        def _safe_labels(entry: dict) -> dict:
-            lbl = entry.get("labels") or {}
-            if isinstance(lbl, str):
-                try:
-                    lbl = json.loads(lbl)
-                except (json.JSONDecodeError, TypeError):
-                    lbl = {}
-            return lbl
-
-        def _strip_template_hash(name: str, pth: str) -> str:
-            """Strip pod-template-hash from a name, handling both
-            ReplicaSet names (name-HASH) and pod names (name-HASH-RANDOM)."""
-            if not pth:
-                return name
-            if name.endswith(f"-{pth}"):
-                return name[:-(len(pth) + 1)]
-            marker = f"-{pth}-"
-            idx = name.find(marker)
-            if idx > 0:
-                return name[:idx]
-            return name
+        _safe_labels = self._safe_labels
+        _strip_template_hash = self._strip_template_hash
 
         def _workload_name(entry: dict) -> str:
             """Resolve the logical workload name from the richest source available."""
@@ -1640,15 +2689,9 @@ class GraphQueryEngine:
 
         _KIND_ALIASES = {"ReplicaSet": "Deployment"}
 
-        _NOISE_ANNOTATION_PREFIXES = (
-            'kubectl.kubernetes.io/',
-            'kubernetes.io/',
-            'openshift.io/',
-            'openshift.openshift.io/',
-            'k8s.v1.cni.cncf.io/',
-            'k8s.ovn.org/',
-            'seccomp.security.alpha.kubernetes.io/',
-        )
+        # _NOISE_ANNOTATION_PREFIXES and _filter_summary_annotations have moved
+        # to module scope so they can be re-used by the L7 dependency_summary
+        # filter path (audit v3 / E-10).
 
         def _resolve_kind(raw: str, labels: dict = None) -> str:
             if raw in _KIND_ALIASES:
@@ -1661,15 +2704,6 @@ class GraphQueryEngine:
                         return "StatefulSet"
                     return "DaemonSet"
             return raw
-
-        def _filter_summary_annotations(ann: dict) -> dict:
-            if not ann or not isinstance(ann, dict):
-                return ann or {}
-            return {
-                k: v for k, v in ann.items()
-                if not any(k.startswith(p) for p in _NOISE_ANNOTATION_PREFIXES)
-                and len(str(v)) < 500
-            }
 
         def _compact_service(entry: dict, direction: str = "downstream") -> dict:
             comm = entry.get("communication") or {}
@@ -1695,6 +2729,11 @@ class GraphQueryEngine:
             hop = entry.get("hop_count", 1)
             if hop > 1:
                 result["hop_count"] = hop
+            if entry.get("l7_details") is not None:
+                result["l7_details"] = entry["l7_details"]
+                result["has_l7_data"] = True
+            elif "has_l7_data" in entry:
+                result["has_l7_data"] = False
             return result
 
         def _dedup_entries(entries: list) -> list:
@@ -2261,11 +3300,218 @@ class GraphQueryEngine:
             "risk_factors": risk_factors,
         }
 
+    # ------------------------------------------------------------------
+    # Shared helpers for logical name resolution (used by both
+    # format_dependency_summary and find_unified_dependencies)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_labels(entry: dict) -> dict:
+        """Parse labels from entry — handles both str and dict forms."""
+        raw = entry.get("labels", {})
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return raw if isinstance(raw, dict) else {}
+
+    @staticmethod
+    def _parse_json_field(raw) -> dict:
+        """Generic JSON field parser — handles str, dict, and None forms."""
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return {}
+
+    @staticmethod
+    def _strip_template_hash(name: str, pth: str) -> str:
+        """Strip pod-template-hash from a name, handling both
+        ReplicaSet names (name-HASH) and pod names (name-HASH-RANDOM)."""
+        if not pth:
+            return name
+        if name.endswith(f"-{pth}"):
+            return name[:-(len(pth) + 1)]
+        marker = f"-{pth}-"
+        idx = name.find(marker)
+        if idx > 0:
+            return name[:idx]
+        return name
+
+    def _resolve_logical_name(self, entry: dict) -> str:
+        """Resolve logical workload name from L4 dependency entry (for L7 join).
+
+        Resolution order matches _workload_name in format_dependency_summary:
+          1. app.kubernetes.io/name or app label
+          2. owner_name (stripped of template hash)
+          3. pod_name (stripped of template hash)
+        """
+        labels = self._safe_labels(entry)
+
+        name = labels.get("app.kubernetes.io/name") or labels.get("app")
+        if name:
+            return str(name)
+
+        pth = labels.get("pod-template-hash", "")
+        owner = entry.get("owner_name") or ""
+        if owner:
+            return self._strip_template_hash(owner, pth)
+
+        pod = entry.get("pod_name", "")
+        return self._strip_template_hash(pod, pth)
+
+    # ------------------------------------------------------------------
+    # Unified L4+L7 dependency methods
+    # ------------------------------------------------------------------
+
+    def _batch_get_l7_edges(self, analysis_ids, pairs):
+        """Batch L7 edge lookup.
+
+        pairs: list of dicts with keys:
+            src_ns, src_name, src_name_re, dst_ns, dst_name, dst_name_re
+        src_name_re/dst_name_re are regex-escaped versions for safe =~ matching.
+
+        Returns (all_results_dict, batch_success_count, batch_fail_count).
+        """
+        if not pairs:
+            return {}, 0, 0
+        aids = [str(a) for a in analysis_ids]
+        prefixes = [f"{a}-" for a in aids]
+
+        MAX_BATCH = 500
+        all_results = {}
+        batch_success = 0
+        batch_fail = 0
+        for i in range(0, len(pairs), MAX_BATCH):
+            chunk = pairs[i:i + MAX_BATCH]
+            query = """
+            UNWIND $pairs AS pair
+            OPTIONAL MATCH (src:L7Workload)-[r:L7_COMMUNICATES_WITH]->(dst:L7Workload)
+            WHERE src.namespace = pair.src_ns
+              AND dst.namespace = pair.dst_ns
+              AND (src.name = pair.src_name OR src.name =~ (pair.src_name_re + '-\\\\d+$')
+                   OR pair.src_name =~ (src.name + '-\\\\d+$'))
+              AND (dst.name = pair.dst_name OR dst.name =~ (pair.dst_name_re + '-\\\\d+$')
+                   OR pair.dst_name =~ (dst.name + '-\\\\d+$'))
+              AND (r.analysis_id IN $aids OR ANY(p IN $prefixes WHERE r.analysis_id STARTS WITH p))
+            WITH pair, collect(CASE WHEN r IS NOT NULL THEN {
+                protocol: r.protocol,
+                http_method: r.http_method,
+                http_path: r.http_path,
+                request_count: coalesce(r.request_count, 0),
+                error_count: coalesce(r.error_count, 0),
+                avg_latency_ms: coalesce(r.avg_latency_ms, 0.0)
+            } END) AS edges
+            RETURN pair.src_ns + ':' + pair.src_name + '->' + pair.dst_ns + ':' + pair.dst_name AS pair_key,
+                   [e IN edges WHERE e IS NOT NULL] AS edges
+            """
+            result = self.execute_query(query, {"pairs": chunk, "aids": aids, "prefixes": prefixes})
+            if result.get("success"):
+                batch_success += 1
+                for row in result.get("data", []):
+                    all_results[row["pair_key"]] = row.get("edges", [])
+            else:
+                batch_fail += 1
+                logger.warning("l7_batch_lookup_failed", extra={
+                    "error": result.get("error"),
+                    "batch_idx": i // MAX_BATCH,
+                    "batch_size": len(chunk),
+                    "analysis_ids": aids,
+                })
+        return all_results, batch_success, batch_fail
+
+    def _aggregate_l7_edges(self, raw_edges: list) -> Optional[dict]:
+        """Aggregate L7 edge metrics from one or more relationship records."""
+        if not raw_edges:
+            return None
+        total_req = sum(e.get("request_count", 0) for e in raw_edges)
+        total_err = sum(e.get("error_count", 0) for e in raw_edges)
+        protocols = sorted(set(e.get("protocol", "") for e in raw_edges if e.get("protocol")))
+        avg_lat = round(sum(e.get("avg_latency_ms", 0) for e in raw_edges) / len(raw_edges), 2)
+        return {
+            "total_requests": total_req,
+            "total_errors": total_err,
+            "error_rate_percent": round((total_err / total_req * 100), 2) if total_req > 0 else 0.0,
+            "avg_latency_ms": avg_lat,
+            "protocols": protocols,
+            "last_observed_method": raw_edges[-1].get("http_method", ""),
+            "last_observed_path": raw_edges[-1].get("http_path", ""),
+        }
+
+    def find_unified_dependencies(self, analysis_ids=None, depth=1, include_l7=True, **kwargs):
+        """Find L4 dependencies and enrich with L7 metrics at query-time."""
+        l4_result = self.find_pod_dependencies(analysis_ids=analysis_ids, depth=depth, **kwargs)
+        if not l4_result.get("success") or not include_l7:
+            l4_result["l7_lookup_status"] = "skipped" if not include_l7 else "n/a"
+            return l4_result
+
+        pairs = []
+        pair_index: Dict[str, list] = {}
+        for ri, result in enumerate(l4_result.get("results", [])):
+            up = result.get("upstream", {})
+            up_name = self._resolve_logical_name(up)
+            up_ns = up.get("namespace", "")
+            for direction in ("downstream", "callers"):
+                for di, dep in enumerate(result.get(direction, [])):
+                    dep_name = self._resolve_logical_name(dep)
+                    dep_ns = dep.get("namespace", "")
+                    if not up_name or not dep_name:
+                        continue
+                    if direction == "downstream":
+                        src_ns, src_name = up_ns, up_name
+                        dst_ns, dst_name = dep_ns, dep_name
+                    else:
+                        src_ns, src_name = dep_ns, dep_name
+                        dst_ns, dst_name = up_ns, up_name
+                    pair_key = f"{src_ns}:{src_name}->{dst_ns}:{dst_name}"
+                    if pair_key not in pair_index:
+                        pairs.append({
+                            "src_ns": src_ns, "src_name": src_name,
+                            "src_name_re": re.escape(src_name),
+                            "dst_ns": dst_ns, "dst_name": dst_name,
+                            "dst_name_re": re.escape(dst_name),
+                        })
+                        pair_index[pair_key] = []
+                    pair_index[pair_key].append((ri, direction, di))
+
+        l7_map, batch_success, batch_fail = self._batch_get_l7_edges(analysis_ids, pairs)
+
+        l7_pairs_matched = 0
+        for pair_key, locations in pair_index.items():
+            raw_edges = l7_map.get(pair_key, [])
+            l7_details = self._aggregate_l7_edges(raw_edges)
+            if l7_details is not None:
+                l7_pairs_matched += 1
+            for ri, direction, di in locations:
+                l4_result["results"][ri][direction][di]["l7_details"] = l7_details
+                l4_result["results"][ri][direction][di]["has_l7_data"] = l7_details is not None
+
+        if batch_fail > 0 and batch_success == 0:
+            status = "error"
+        elif batch_fail > 0 and batch_success > 0:
+            status = "partial"
+        elif not pairs:
+            status = "no_pairs"
+        else:
+            status = "ok"
+        l4_result["l7_lookup_status"] = status
+        l4_result["l7_pairs_checked"] = len(pairs)
+        l4_result["l7_pairs_matched"] = l7_pairs_matched
+        l4_result["l7_batch_success"] = batch_success
+        l4_result["l7_batch_fail"] = batch_fail
+        return l4_result
+
     def _is_ip_address(self, value: str) -> bool:
         """Check if a string is a valid IP address"""
         if not value:
             return False
-        import re
         # IPv4 pattern
         ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
         if re.match(ipv4_pattern, value):

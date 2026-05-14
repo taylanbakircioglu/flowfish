@@ -82,6 +82,12 @@ class KubernetesClient:
         self._version_api = None
         self._api_client = None
         self._temp_files = []  # Track temp files for cleanup
+        # 403 (Forbidden) dedupe set: (resource_kind, namespace_or_'cluster').
+        # Optional resources like ingresses/routes routinely return Forbidden
+        # on clusters where the SA was scoped to a single namespace. We log
+        # the first occurrence per (resource, namespace) at WARNING and
+        # everything after at DEBUG so background scans don't flood logs.
+        self._forbidden_logged: set = set()
     
     def _init_client(self):
         """Initialize Kubernetes client based on connection type"""
@@ -274,7 +280,7 @@ class KubernetesClient:
                 for ns in namespaces.items
             ]
         except ApiException as e:
-            logger.error("Failed to list namespaces", status=e.status, reason=e.reason)
+            self._log_api_exception("namespaces", None, e)
             return []
     
     # =========================================================================
@@ -302,7 +308,7 @@ class KubernetesClient:
                                    name=getattr(dep.metadata, 'name', '?'), error=str(e))
             return result
         except ApiException as e:
-            logger.error("Failed to list deployments", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("deployments", namespace, e)
             return []
 
     def _format_workload(self, workload, workload_type: str) -> Dict[str, Any]:
@@ -403,8 +409,12 @@ class KubernetesClient:
             else:
                 pods = self._core_v1.list_pod_for_all_namespaces(**kwargs)
             
-            return [
-                {
+            result = []
+            for pod in pods.items:
+                first_image = ""
+                if pod.spec and pod.spec.containers:
+                    first_image = pod.spec.containers[0].image or ""
+                result.append({
                     "name": pod.metadata.name,
                     "namespace": pod.metadata.namespace,
                     "uid": pod.metadata.uid,
@@ -413,12 +423,12 @@ class KubernetesClient:
                     "labels": pod.metadata.labels or {},
                     "annotations": pod.metadata.annotations or {},
                     "ip": pod.status.pod_ip,
+                    "image": first_image,
                     "created_at": pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else None
-                }
-                for pod in pods.items
-            ]
+                })
+            return result
         except ApiException as e:
-            logger.error("Failed to list pods", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("pods", namespace, e)
             return []
     
     # =========================================================================
@@ -465,7 +475,7 @@ class KubernetesClient:
                                    name=getattr(svc.metadata, 'name', '?'), error=str(e))
             return result
         except ApiException as e:
-            logger.error("Failed to list services", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("services", namespace, e)
             return []
     
     # =========================================================================
@@ -500,7 +510,7 @@ class KubernetesClient:
                                    name=getattr(cm.metadata, 'name', '?'), error=str(e))
             return result
         except ApiException as e:
-            logger.error("Failed to list configmaps", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("configmaps", namespace, e)
             return []
 
     # =========================================================================
@@ -538,7 +548,7 @@ class KubernetesClient:
                                    name=getattr(sec.metadata, 'name', '?'), error=str(e))
             return result
         except ApiException as e:
-            logger.error("Failed to list secrets", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("secrets", namespace, e)
             return []
 
     @staticmethod
@@ -589,7 +599,7 @@ class KubernetesClient:
                                    name=getattr(np.metadata, 'name', '?'), error=str(e))
             return result
         except ApiException as e:
-            logger.error("Failed to list network policies", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("networkpolicies", namespace, e)
             return []
 
     # =========================================================================
@@ -635,7 +645,7 @@ class KubernetesClient:
                                    name=getattr(ing.metadata, 'name', '?'), error=str(e))
             return result
         except ApiException as e:
-            logger.error("Failed to list ingresses", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("ingresses", namespace, e)
             return []
 
     # =========================================================================
@@ -682,11 +692,60 @@ class KubernetesClient:
             if e.status == 404:
                 logger.debug("Route API not available (non-OpenShift cluster)")
             else:
-                logger.error("Failed to list routes", namespace=namespace, status=e.status, reason=e.reason)
+                self._log_api_exception("routes", namespace, e)
             return []
         except Exception:
             logger.debug("Route API not available")
             return []
+
+    def _log_api_exception(
+        self,
+        resource_kind: str,
+        namespace: Optional[str],
+        exc: ApiException,
+    ) -> None:
+        """Log a Kubernetes ApiException with sane verbosity.
+
+        Forbidden (403) is the common, expected failure mode for optional
+        resources like ingresses/routes when the ServiceAccount is scoped to
+        a subset of namespaces. We log the *first* time we see a Forbidden
+        for a given (resource, namespace) at WARNING so operators are still
+        notified, and every subsequent occurrence at DEBUG to avoid log
+        floods on each scan iteration. Any non-403 status keeps the
+        original ERROR severity because it's an actually unexpected failure.
+        """
+        ns_key = namespace or "_cluster_"
+        key = (resource_kind, ns_key)
+        if exc.status == 403:
+            if key not in self._forbidden_logged:
+                self._forbidden_logged.add(key)
+                logger.warning(
+                    "Skipping resource: ServiceAccount lacks RBAC permission",
+                    resource=resource_kind,
+                    namespace=namespace,
+                    status=exc.status,
+                    reason=exc.reason,
+                    cluster_id=self.cluster_id,
+                    note=(
+                        "Subsequent occurrences for this namespace will be "
+                        "logged at DEBUG. Grant `list` on this resource if "
+                        "you want it surfaced in the discovery output."
+                    ),
+                )
+            else:
+                logger.debug(
+                    "Skipping resource (still forbidden)",
+                    resource=resource_kind,
+                    namespace=namespace,
+                    status=exc.status,
+                )
+        else:
+            logger.error(
+                f"Failed to list {resource_kind}",
+                namespace=namespace,
+                status=exc.status,
+                reason=exc.reason,
+            )
 
     # =========================================================================
     # StatefulSets
@@ -713,7 +772,7 @@ class KubernetesClient:
                                    name=getattr(sts.metadata, 'name', '?'), error=str(e))
             return result
         except ApiException as e:
-            logger.error("Failed to list statefulsets", namespace=namespace, status=e.status, reason=e.reason)
+            self._log_api_exception("statefulsets", namespace, e)
             return []
 
     # =========================================================================
@@ -761,7 +820,7 @@ class KubernetesClient:
             
             return result
         except ApiException as e:
-            logger.error("Failed to list nodes", status=e.status, reason=e.reason)
+            self._log_api_exception("nodes", None, e)
             return []
     
     def _get_node_status(self, node) -> str:
@@ -856,7 +915,7 @@ class KubernetesClient:
                     version = image.split(':')[-1]
             
             if desired == 0:
-                issues.append("No nodes scheduled for DaemonSet")
+                issues.append("DaemonSet exists but no pods scheduled (node selector may not match)")
             elif ready < desired:
                 issues.append(f"Only {ready}/{desired} pods ready")
             
@@ -913,7 +972,7 @@ class KubernetesClient:
             # Determine health status
             # Priority: All pods running and no active errors = healthy (even with past restarts)
             if desired == 0:
-                health_status = "unknown"
+                health_status = "degraded"
             elif ready == desired and not has_active_errors:
                 # All pods running, no active errors - healthy even if there were past restarts
                 if issues:
@@ -951,7 +1010,7 @@ class KubernetesClient:
         except ApiException as e:
             if e.status == 404:
                 return {
-                    "health_status": "unknown",
+                    "health_status": "not_installed",
                     "version": None,
                     "error": "DaemonSet not found",
                     "pods_ready": 0,
@@ -978,6 +1037,119 @@ class KubernetesClient:
                 "details": {"issues": [str(e)]}
             }
 
+    # =========================================================================
+    # Grafana Beyla (L7) Health Check
+    # =========================================================================
+
+    async def check_beyla_health(self, beyla_namespace: str) -> Dict[str, Any]:
+        """Check Grafana Beyla DaemonSet + L7 Collector health."""
+        return await asyncio.to_thread(self._check_beyla_health_sync, beyla_namespace)
+
+    def _check_beyla_health_sync(self, beyla_namespace: str) -> Dict[str, Any]:
+        self._init_client()
+
+        issues: list = []
+        version = ""
+        ds_ready = 0
+        ds_total = 0
+        collector_ready = False
+
+        try:
+            ds = self._apps_v1.read_namespaced_daemon_set(
+                name="beyla", namespace=beyla_namespace
+            )
+            ds_total = ds.status.desired_number_scheduled or 0
+            ds_ready = ds.status.number_ready or 0
+
+            if ds.spec.template.spec.containers:
+                image = ds.spec.template.spec.containers[0].image or ""
+                if "beyla" in image and ":" in image:
+                    tag = image.rsplit(":", 1)[-1]
+                    version = tag if tag.startswith("v") else f"v{tag}"
+
+            if ds_total == 0:
+                issues.append("No nodes scheduled for Beyla DaemonSet")
+            elif ds_ready < ds_total:
+                issues.append(f"Only {ds_ready}/{ds_total} Beyla pods ready")
+
+            pods = self._core_v1.list_namespaced_pod(
+                namespace=beyla_namespace, label_selector="app=beyla"
+            )
+            for pod in pods.items:
+                if pod.status and pod.status.container_statuses:
+                    for cs in pod.status.container_statuses:
+                        if cs.state and cs.state.waiting:
+                            reason = cs.state.waiting.reason
+                            if reason in ("CrashLoopBackOff", "Error", "ImagePullBackOff", "OOMKilled"):
+                                issues.append(f"Pod {pod.metadata.name}: {reason}")
+
+        except ApiException as e:
+            if e.status == 404:
+                issues.append("Beyla DaemonSet not found")
+            else:
+                issues.append(f"Beyla DaemonSet API error: {e.reason}")
+                logger.error("Beyla DaemonSet check failed", status=e.status, reason=e.reason)
+        except Exception as e:
+            issues.append(f"Beyla DaemonSet check error: {e}")
+            logger.error("Beyla DaemonSet check exception", error=str(e))
+
+        try:
+            collector_deps = self._apps_v1.list_namespaced_deployment(
+                namespace=beyla_namespace, label_selector="app=flowfish-l7-collector"
+            )
+            if not collector_deps.items:
+                collector_deps = self._apps_v1.list_namespaced_deployment(
+                    namespace=beyla_namespace, label_selector="app=l7-collector"
+                )
+            if collector_deps.items:
+                dep = collector_deps.items[0]
+                avail = dep.status.available_replicas or 0
+                collector_ready = avail > 0
+                if not collector_ready:
+                    issues.append("flowfish-l7-collector deployment not available")
+            else:
+                collector_pods = self._core_v1.list_namespaced_pod(
+                    namespace=beyla_namespace, label_selector="app=flowfish-l7-collector"
+                )
+                if not collector_pods.items:
+                    collector_pods = self._core_v1.list_namespaced_pod(
+                        namespace=beyla_namespace, label_selector="app=l7-collector"
+                    )
+                collector_ready = any(
+                    p.status.phase == "Running" for p in collector_pods.items
+                )
+                if not collector_ready:
+                    issues.append("flowfish-l7-collector not running")
+        except Exception as e:
+            issues.append(f"L7 Collector check error: {e}")
+            logger.error("L7 Collector check exception", error=str(e))
+
+        if ds_total == 0 and not collector_ready:
+            health_status = "not_installed"
+        elif ds_total == 0 and collector_ready:
+            health_status = "degraded"
+        elif ds_ready == ds_total and collector_ready:
+            health_status = "healthy"
+        elif ds_ready > 0 or collector_ready:
+            health_status = "degraded"
+        else:
+            health_status = "unhealthy"
+
+        logger.info("Beyla health check completed",
+                    health_status=health_status,
+                    ds_ready=ds_ready, ds_total=ds_total,
+                    collector_ready=collector_ready, version=version)
+
+        return {
+            "health_status": health_status,
+            "version": version,
+            "error": "; ".join(issues) if issues else None,
+            "daemonset_ready": ds_ready,
+            "daemonset_total": ds_total,
+            "collector_ready": collector_ready,
+            "issues": issues,
+        }
+
 
 # =========================================================================
 # Client Factory with TTL-based Caching
@@ -991,12 +1163,14 @@ class KubernetesClientFactory:
     Features:
     - Singleton pattern for default in-cluster client
     - TTL-based cache for remote cluster clients
+    - Credential-aware invalidation (detects token/cert changes)
     - Thread-safe client creation
     - Automatic cleanup of expired clients
     """
     
     _clients: Dict[str, KubernetesClient] = {}
     _client_timestamps: Dict[str, datetime] = {}
+    _client_cred_hashes: Dict[str, str] = {}
     _default_client: Optional[KubernetesClient] = None
     _lock = None  # Will be initialized on first use
     
@@ -1005,12 +1179,23 @@ class KubernetesClientFactory:
     
     @classmethod
     def _get_lock(cls):
-        """Get or create the asyncio lock (lazy initialization)"""
+        """Get or create the thread lock (lazy initialization)"""
         if cls._lock is None:
             import threading
             cls._lock = threading.Lock()
         return cls._lock
-    
+
+    @staticmethod
+    def _credential_hash(**kwargs) -> str:
+        """Compute a short hash of credential-related kwargs to detect changes."""
+        import hashlib
+        h = hashlib.sha256()
+        for key in sorted(kwargs.keys()):
+            val = kwargs[key]
+            if val is not None:
+                h.update(f"{key}={val}\n".encode())
+        return h.hexdigest()[:16]
+
     @classmethod
     def get_client(
         cls,
@@ -1022,6 +1207,7 @@ class KubernetesClientFactory:
         Get or create a Kubernetes client for a cluster.
         
         Thread-safe with TTL-based cache invalidation for remote clusters.
+        Automatically recreates clients when credentials change.
         
         Args:
             cluster_id: Unique identifier for the cluster
@@ -1040,30 +1226,35 @@ class KubernetesClientFactory:
                         cluster_id="default"
                     )
                 return cls._default_client
-            
+
+            new_hash = cls._credential_hash(connection_type=connection_type, **kwargs)
+
             # Check if cached client exists and is still valid
             if cluster_id in cls._clients:
                 created_at = cls._client_timestamps.get(cluster_id)
+                old_hash = cls._client_cred_hashes.get(cluster_id)
                 now = datetime.utcnow()
-                
-                if created_at and (now - created_at).total_seconds() < cls.CLIENT_TTL:
-                    # Cache hit - return existing client
+
+                credentials_changed = old_hash != new_hash
+                ttl_expired = not created_at or (now - created_at).total_seconds() >= cls.CLIENT_TTL
+
+                if not credentials_changed and not ttl_expired:
                     logger.debug("Returning cached K8s client",
                                 cluster_id=cluster_id,
                                 age_seconds=(now - created_at).total_seconds())
                     return cls._clients[cluster_id]
                 else:
-                    # TTL expired - close old client and create new one
-                    logger.info("K8s client cache expired, recreating",
-                               cluster_id=cluster_id)
+                    reason = "credentials changed" if credentials_changed else "TTL expired"
+                    logger.info("K8s client cache invalidated",
+                               cluster_id=cluster_id, reason=reason)
                     try:
                         cls._clients[cluster_id].close()
                     except Exception as e:
-                        logger.warning("Error closing expired client",
+                        logger.warning("Error closing cached client",
                                       cluster_id=cluster_id, error=str(e))
                     del cls._clients[cluster_id]
-                    if cluster_id in cls._client_timestamps:
-                        del cls._client_timestamps[cluster_id]
+                    cls._client_timestamps.pop(cluster_id, None)
+                    cls._client_cred_hashes.pop(cluster_id, None)
             
             # Create new client
             logger.info("Creating new K8s client",
@@ -1076,9 +1267,10 @@ class KubernetesClientFactory:
                 **kwargs
             )
             
-            # Cache the client
+            # Cache the client with credential hash
             cls._clients[cluster_id] = new_client
             cls._client_timestamps[cluster_id] = datetime.utcnow()
+            cls._client_cred_hashes[cluster_id] = new_hash
             
             return new_client
     
@@ -1086,12 +1278,12 @@ class KubernetesClientFactory:
     def invalidate(cls, cluster_id: str) -> bool:
         """
         Invalidate and close cached client for a specific cluster.
-        
+
         Use when cluster credentials change or on connection errors.
-        
+
         Args:
             cluster_id: Cluster ID to invalidate
-            
+
         Returns:
             True if client was found and invalidated, False otherwise
         """
@@ -1102,11 +1294,11 @@ class KubernetesClientFactory:
                 except Exception as e:
                     logger.warning("Error closing client during invalidation",
                                   cluster_id=cluster_id, error=str(e))
-                
+
                 del cls._clients[cluster_id]
-                if cluster_id in cls._client_timestamps:
-                    del cls._client_timestamps[cluster_id]
-                
+                cls._client_timestamps.pop(cluster_id, None)
+                cls._client_cred_hashes.pop(cluster_id, None)
+
                 logger.info("K8s client invalidated", cluster_id=cluster_id)
                 return True
             return False
@@ -1147,9 +1339,10 @@ class KubernetesClientFactory:
                 except Exception as e:
                     logger.warning("Error closing client",
                                   cluster_id=cluster_id, error=str(e))
-            
+
             cls._clients = {}
             cls._client_timestamps = {}
+            cls._client_cred_hashes = {}
             
             if cls._default_client:
                 try:

@@ -85,9 +85,11 @@ Unlike traditional APM tools that require agent installation or service meshes t
 
 ### Features at a Glance
 
-- **eBPF-Powered Data Collection** — Kernel-level capture via Inspektor Gadget DaemonSet with zero application changes required
+- **eBPF-Powered Data Collection** — Kernel-level capture via Inspektor Gadget DaemonSet (L4/Network) and Grafana Beyla DaemonSet (L7/Application) with zero application changes required
 - **Interactive Dependency Map** — Real-time graph visualization showing both in-cluster and external system dependencies (datacenter, public internet, SaaS APIs), with 18 layout algorithms, smart filtering (Public/DataCenter/Workload views), focus mode, and DNS enrichment
-- **Guided Analysis Wizard** — Create analyses by selecting scope, gadget modules, timing, and data retention in a step-by-step flow
+- **L7 Application Service Map** — eBPF-based HTTP/gRPC/DNS traffic capture via Grafana Beyla, resolving full API gateway chains (A → APISIX → B), with protocol-aware graph visualization, latency metrics, and error rate analysis
+- **L7 Distributed Tracing (W3C OpenTelemetry)** — End-to-end span correlation across services and clusters using passive Beyla `traceparent` header capture, ClickHouse trace storage, Neo4j SAME_WORKLOAD cross-cluster bridges, dedicated Trace Explorer page with waterfall visualization, and Service Map edge → trace drill-down (no application code changes, no header injection)
+- **Guided Analysis Wizard** — Create analyses by selecting scope, gadget modules (L4), L7 protocols (HTTP/gRPC/DNS), capture filters, timing, and data retention in a step-by-step flow with L4/L7/Both analysis level support
 - **Concurrent Multi-Analysis** — Run multiple analyses simultaneously across different clusters and namespaces
 - **Network Explorer** — Tabular deep-dive into flows, DNS queries, TLS/SNI connections, and services
 - **Change Detection Engine** — Dual-source detection (Kubernetes API + eBPF) with three comparison strategies and 30+ change types
@@ -98,11 +100,11 @@ Unlike traditional APM tools that require agent installation or service meshes t
 - **Security Center** — Security posture scoring, Linux capabilities audit, violations tracking, and OOM event monitoring
 - **Reports & Export** — PDF, Excel, CSV, JSON reports with scheduling, quick templates, and custom report builder
 - **Developer Console** — Dual-database query interface (ClickHouse SQL + Neo4j Cypher) with Monaco editor and query templates
-- **Secure Multi-Cluster Management** — Add clusters from any Kubernetes distribution (EKS, GKE, AKS, OpenShift, vanilla K8s) with encrypted token storage, connection pooling, and one-click health checks
+- **Secure Multi-Cluster Management** — Add clusters from any Kubernetes distribution (EKS, GKE, AKS, OpenShift, vanilla K8s) with encrypted token storage, connection pooling, one-click health checks, and dual-agent management (Inspector Gadget L4 + Beyla L7) with cluster scale presets
 - **Role-Based Access Control** — User and role management with Admin, Viewer, and custom roles with granular permissions
 - **Multi-Tab Dashboard** — Overview, Operations, Security, Network, Changes, and Workloads tabs with real-time metrics
 - **CI/CD Pipeline Integration** — Blast radius checks for Azure DevOps, GitHub Actions, Jenkins, and GitLab CI
-- **Integration Hub** — Four-step wizard (Integration Type → Configure → Preview → Integration Code) for dependency data and blast radius gate integrations with ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, JavaScript, and cURL
+- **Integration Hub** — Four-step wizard (Integration Type → Configure → Preview → Integration Code) for dependency data and blast radius gate integrations with Network Level (L3/L4) and Application Level (L7) analysis support, unified L4+L7 views, and ready-to-use code snippets for Azure DevOps, GitHub Actions, Jenkins, GitLab CI, Python, JavaScript, and cURL
 - **Pod & Deployment Annotations** — Full annotation support including automatic merge of Deployment/StatefulSet annotations into pods, visible across Map, Network Explorer, Application Inventory, Impact Simulation, and Integration Hub
 - **API Key Management** — Generate, expire, and revoke API keys for secure programmatic access alongside JWT authentication
 
@@ -186,6 +188,10 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 
 ![Network Explorer](docs/screenshots/network-explorer.png)
 
+**Service Map (L7)** — Application-level service map built from Grafana Beyla's eBPF-captured HTTP, gRPC, and DNS flows. Resolves API gateway chains (e.g., `client → APISIX → service`) that L4 cannot, supports protocol filters, RED-metric edge labels, and inline drill-down to Trace Explorer:
+
+![Service Map](docs/screenshots/service-map.png)
+
 ---
 
 ### Impact
@@ -248,6 +254,10 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 
 ![Events Timeline](docs/screenshots/events-timeline.png)
 
+**Trace Explorer** — Distributed tracing view powered by Beyla's passive W3C `traceparent` header propagation (no instrumentation, no header injection). Drill into individual traces from any Service Map edge or APM service, view span hierarchy, latency distribution, and HTTP/gRPC method breakdowns. Cross-cluster traces are correlated via `virtual_trace_id` when external systems do not propagate `traceparent` end-to-end:
+
+![Trace Explorer](docs/screenshots/trace-explorer.png)
+
 ---
 
 ### Security
@@ -293,6 +303,10 @@ The analysis wizard guides you through creating a new eBPF data collection sessi
 ![Clusters 2](docs/screenshots/clusters-2.png)
 
 ![Clusters 3](docs/screenshots/clusters-3.png)
+
+**Add Cluster (Dual-Agent: Inspector Gadget L4 + Beyla L7)** — Guided dual-agent onboarding with one-click installation script generation for both the L4 (network) and L7 (application) collection stack. Scripts auto-detect OpenShift via the `security.openshift.io` API group and emit the correct SecurityContextConstraints regardless of whether the operator runs them with `kubectl` or `oc`:
+
+![Add Cluster](docs/screenshots/cluster-add.png)
 
 **User & Role Management** — User CRUD with status, roles (Admin, Viewer, custom), activity logs, and audit trail:
 
@@ -1136,8 +1150,9 @@ The frontend dynamically adapts based on the user's permissions. Users without c
 |-------|-----------|------|
 | **Presentation** | Nginx Ingress, React SPA | TLS termination, single-page application UI |
 | **Application** | FastAPI, Analysis Orchestrator, Cluster Manager, API Gateway, Change Detection Worker | Business logic, orchestration, cluster ops, change analysis |
-| **Data Collection** | Inspektor Gadget DaemonSet (per node) | Kernel-level eBPF capture of network, DNS, process, file, security events |
-| **Data Ingestion** | Ingestion Service, RabbitMQ, Graph Writer, Timeseries Writer | K8s metadata enrichment, event routing, batch writes (write path) |
+| **Data Collection (L4)** | Inspektor Gadget DaemonSet (per node) | Kernel-level eBPF capture of network, DNS, process, file, security events |
+| **Data Collection (L7)** | Grafana Beyla DaemonSet + flowfish-l7-collector | eBPF-based HTTP/gRPC/DNS capture, OTLP-to-pull bridge |
+| **Data Ingestion** | Ingestion Service (L4), L7 Ingestion Service, RabbitMQ, Graph Writer, Timeseries Writer | K8s metadata enrichment, event routing, batch writes (write path) |
 | **Query** | Graph Query Service, Timeseries Query Service | Database-agnostic query abstraction for Neo4j and ClickHouse (read path) |
 | **Data Storage** | PostgreSQL, Neo4j, ClickHouse, Redis | Metadata, dependency graph, time-series analytics, caching |
 
@@ -1193,6 +1208,26 @@ The frontend dynamically adapts based on the user's permissions. Users without c
                │  ts_events ─────────▶ Timeseries Writer ─▶ ClickHouse
                │                       (batch insert)      (time-series events)
                └──────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │           L7 DATA COLLECTION (per node, via Grafana Beyla)             │
+  │                                                                         │
+  │   Beyla DaemonSet (eBPF)                                                │
+  │   │ HTTP, gRPC, DNS interception                                        │
+  │   │                                                                     │
+  │   └──▶ OTLP push ──▶ flowfish-l7-collector (in-cluster)                │
+  │                       │ OTLP → Flowfish event transform (Layer 1)       │
+  │                       │ Circular buffer + Pull API                      │
+  │                       │                                                 │
+  │   Flowfish Central:   │                                                 │
+  │   L7 Ingestion Service ◄── K8s API Service Proxy (polling)             │
+  │   │ Add analysis_id, cluster_id (Layer 2)                               │
+  │   │ Apply namespace/capture filters                                     │
+  │   │                                                                     │
+  │   └──▶ RabbitMQ (flowfish.l7.*)                                         │
+  │         ├──▶ Graph Writer ──▶ Neo4j (L7Workload graph)                  │
+  │         └──▶ Timeseries Writer ──▶ ClickHouse (l7_http/grpc/dns_flows) │
+  └─────────────────────────────────────────────────────────────────────────┘
 
   ┌─────────────────────────────────────────────────────────────────────────┐
   │                  CHANGE DETECTION (periodic)                            │
@@ -1326,7 +1361,10 @@ Flowfish uses a polyglot persistence strategy, choosing the optimal database for
 | **Timeseries Writer** | Python | Batch write enriched events and change events to ClickHouse | 1-2 |
 | **Timeseries Query Service** | Python + FastAPI | Query abstraction for ClickHouse: event queries (network, DNS, process, file, security, OOM, SNI, mount, bind), statistics, Dev Console (SQL) | 1-2 |
 | **Change Detection Worker** | Python | Periodic K8s + eBPF change detection, circuit breaker, WebSocket alerts | 1 (leader election) |
-| **Inspektor Gadget** | Go + eBPF | Kernel-level event capture | 1 per node (DaemonSet) |
+| **L7 Ingestion Service** | Python + gRPC | Poll L7 events from collector, enrich, publish to RabbitMQ | 1-2 |
+| **flowfish-l7-collector** | Python (in-cluster) | OTLP receiver bridge, event buffer, pull API | 1 per cluster |
+| **Inspektor Gadget** | Go + eBPF | Kernel-level L4 event capture | 1 per node (DaemonSet) |
+| **Grafana Beyla** | Go + eBPF | Kernel-level L7 event capture (HTTP/gRPC/DNS) | 1 per node (DaemonSet) |
 | **PostgreSQL** | 15+ | User, cluster, analysis config (ACID) | 1 master + 1 replica |
 | **Neo4j** | 5.x Community | Dependency graph | 1+ |
 | **ClickHouse** | 23+ | Time-series events, change events | 1-3 |
@@ -1339,7 +1377,8 @@ Flowfish uses a polyglot persistence strategy, choosing the optimal database for
 
 | Layer | Technology | Version | Rationale |
 |-------|-----------|---------|-----------|
-| **Data Collection** | Inspektor Gadget + eBPF | Latest | Kubernetes-native, zero-overhead kernel-level capture |
+| **Data Collection (L4)** | Inspektor Gadget + eBPF | Latest | Kubernetes-native, zero-overhead kernel-level network capture |
+| **Data Collection (L7)** | Grafana Beyla + eBPF | v3.8+ | eBPF-based HTTP/gRPC/DNS capture, multi-arch, Apache 2.0 |
 | **Backend** | Python + FastAPI | 3.11+ / 0.100+ | Async-native, auto OpenAPI docs, rich ecosystem |
 | **Frontend** | React + TypeScript | 18+ / 5+ | Industry standard, component-based, type-safe |
 | **UI Framework** | Ant Design | 5+ | Enterprise-grade, 60+ components, WCAG compliant |
@@ -1720,4 +1759,4 @@ In summary: you are free to use, modify, and distribute this software, but any m
 
 ---
 
-**Version:** 2.5.0 | **Last Updated:** April 2026
+**Version:** 2.6.0 | **Last Updated:** May 2026

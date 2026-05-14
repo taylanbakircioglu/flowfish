@@ -24,7 +24,7 @@
 # ==============================================================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🔍 CHANGE DETECTION"
+echo "[CHECK] CHANGE DETECTION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd ${BUILD_SOURCESDIRECTORY}
@@ -32,10 +32,10 @@ cd ${BUILD_SOURCESDIRECTORY}
 # ==============================================================================
 # Git config cleanup - Azure DevOps checkout extraheader warning'i önlemek için
 # ==============================================================================
-echo "🧹 Git config temizleniyor..."
+echo "[CLEAN] Git config temizleniyor..."
 git config --unset-all http.extraheader 2>/dev/null || true
 git config --unset-all http.https://dev.azure.com.extraheader 2>/dev/null || true
-echo "   ✅ Git config temizlendi"
+echo "   [OK] Git config temizlendi"
 echo ""
 
 # Son başarılı build'in commit hash'ini al
@@ -112,9 +112,9 @@ set_variable() {
 
 # Build-all flag kontrolü (pipeline variable: BUILD_ALL=true)
 if [ "${BUILD_ALL}" = "true" ]; then
-    echo "⚠️  BUILD_ALL=true - Tüm servisler derlenecek"
+    echo "[WARN] BUILD_ALL=true - Tüm servisler derlenecek"
     echo ""
-    echo "📋 Setting Azure DevOps Variables:"
+    echo "[INFO] Setting Azure DevOps Variables:"
     set_variable "BACKEND_CHANGED" "1"
     set_variable "FRONTEND_CHANGED" "1"
     set_variable "SHARED_CHANGED" "1"
@@ -127,8 +127,10 @@ if [ "${BUILD_ALL}" = "true" ]; then
     set_variable "TIMESERIES_QUERY_CHANGED" "1"
     set_variable "INGESTION_SERVICE_CHANGED" "1"
     set_variable "CHANGE_WORKER_CHANGED" "1"
+    set_variable "L7_INGESTION_SERVICE_CHANGED" "1"
+    set_variable "L7_COLLECTOR_CHANGED" "1"
     echo ""
-    echo "✅ Change detection completed!"
+    echo "[OK] Change detection completed!"
     exit 0
 fi
 
@@ -136,9 +138,9 @@ fi
 last_commit=$(get_last_successful_commit)
 
 if [ -z "$last_commit" ]; then
-    echo "⚠️  İlk build veya API erişimi yok - Tüm servisler derlenecek"
+    echo "[WARN] İlk build veya API erişimi yok - Tüm servisler derlenecek"
     echo ""
-    echo "📋 Setting Azure DevOps Variables:"
+    echo "[INFO] Setting Azure DevOps Variables:"
     set_variable "BACKEND_CHANGED" "1"
     set_variable "FRONTEND_CHANGED" "1"
     set_variable "SHARED_CHANGED" "1"
@@ -151,13 +153,15 @@ if [ -z "$last_commit" ]; then
     set_variable "TIMESERIES_QUERY_CHANGED" "1"
     set_variable "INGESTION_SERVICE_CHANGED" "1"
     set_variable "CHANGE_WORKER_CHANGED" "1"
+    set_variable "L7_INGESTION_SERVICE_CHANGED" "1"
+    set_variable "L7_COLLECTOR_CHANGED" "1"
     echo ""
-    echo "✅ Change detection completed!"
+    echo "[OK] Change detection completed!"
     exit 0
 fi
 
-echo "📌 Son başarılı build: ${last_commit:0:7}"
-echo "📌 Mevcut commit: ${BUILD_SOURCEVERSION:0:7}"
+echo "[INFO] Son başarılı build: ${last_commit:0:7}"
+echo "[INFO] Mevcut commit: ${BUILD_SOURCEVERSION:0:7}"
 
 # Değişen dosyaları al
 changed_files=$(get_changed_files "$last_commit")
@@ -165,15 +169,15 @@ changed_files=$(get_changed_files "$last_commit")
 total_changes=$(echo "$changed_files" | grep -v '^$' | wc -l | tr -d ' ')
 total_changes=${total_changes:-0}
 
-echo "📊 Toplam değişen dosya: $total_changes"
+echo "[SUMMARY] Toplam değişen dosya: $total_changes"
 echo ""
 
 # DEBUG: Değişen frontend dosyalarını göster
 frontend_files=$(echo "$changed_files" | grep -E "^frontend/" || echo "")
 frontend_count=$(echo "$frontend_files" | grep -v '^$' | wc -l | tr -d ' ')
-echo "🔍 DEBUG - Frontend değişen dosya sayısı: $frontend_count"
+echo "[CHECK] DEBUG - Frontend değişen dosya sayısı: $frontend_count"
 if [ -n "$frontend_files" ]; then
-    echo "🔍 DEBUG - Frontend değişen dosyalar:"
+    echo "[CHECK] DEBUG - Frontend değişen dosyalar:"
     echo "$frontend_files" | head -10
 fi
 echo ""
@@ -188,39 +192,39 @@ BUILD_MARKER_BACKEND=$(has_changes_in_path "^backend/\.build-marker" "$changed_f
 BUILD_MARKER_FRONTEND=$(has_changes_in_path "^frontend/\.build-marker" "$changed_files")
 
 if [ "${BUILD_MARKER_BACKEND:-0}" -gt 0 ] 2>/dev/null; then
-    echo "⚠️  Backend build marker değişti - Backend rebuild gerekli"
+    echo "[WARN] Backend build marker değişti - Backend rebuild gerekli"
     BACKEND_CHANGED=1
 fi
 
 if [ "${BUILD_MARKER_FRONTEND:-0}" -gt 0 ] 2>/dev/null; then
-    echo "⚠️  Frontend build marker değişti - Frontend rebuild gerekli"
+    echo "[WARN] Frontend build marker değişti - Frontend rebuild gerekli"
     FRONTEND_CHANGED=1
 fi
 
 # Pipeline script değişiklikleri de ilgili servisleri etkiler
 PIPELINE_FRONTEND_CHANGED=$(has_changes_in_path "^pipelines/.*(frontend|build-frontend)" "$changed_files")
 if [ "${PIPELINE_FRONTEND_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
-    echo "⚠️  Pipeline script değişikliği - Frontend rebuild gerekli"
+    echo "[WARN] Pipeline script değişikliği - Frontend rebuild gerekli"
     FRONTEND_CHANGED=1
 fi
 
 PIPELINE_BACKEND_CHANGED=$(has_changes_in_path "^pipelines/.*(backend|build-backend)" "$changed_files")
 if [ "${PIPELINE_BACKEND_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
-    echo "⚠️  Pipeline script değişikliği - Backend rebuild gerekli"
+    echo "[WARN] Pipeline script değişikliği - Backend rebuild gerekli"
     BACKEND_CHANGED=1
 fi
 
 # version.json değişikliği - tüm ana servisleri etkiler
 VERSION_CHANGED=$(has_changes_in_path "^version\.json" "$changed_files")
 if [ "${VERSION_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
-    echo "⚠️  version.json değişti - Backend ve Frontend rebuild gerekli"
+    echo "[WARN] version.json değişti - Backend ve Frontend rebuild gerekli"
     BACKEND_CHANGED=1
     FRONTEND_CHANGED=1
 fi
 
 # Eğer has_changes_in_path çalışmadıysa, frontend_count ile kontrol et
 if [ "${FRONTEND_CHANGED:-0}" -eq 0 ] && [ "${frontend_count:-0}" -gt 0 ] 2>/dev/null; then
-    echo "⚠️  Frontend değişikliği tespit edildi (fallback) - Frontend rebuild gerekli"
+    echo "[WARN] Frontend değişikliği tespit edildi (fallback) - Frontend rebuild gerekli"
     FRONTEND_CHANGED=$frontend_count
 fi
 API_GATEWAY_CHANGED=$(has_changes_in_path "^services/api-gateway/" "$changed_files")
@@ -231,6 +235,8 @@ GRAPH_QUERY_CHANGED=$(has_changes_in_path "^services/graph-query/" "$changed_fil
 TIMESERIES_WRITER_CHANGED=$(has_changes_in_path "^services/timeseries-writer/" "$changed_files")
 TIMESERIES_QUERY_CHANGED=$(has_changes_in_path "^services/timeseries-query/" "$changed_files")
 INGESTION_SERVICE_CHANGED=$(has_changes_in_path "^services/ingestion-service/" "$changed_files")
+L7_INGESTION_SERVICE_CHANGED=$(has_changes_in_path "^services/l7-ingestion-service/" "$changed_files")
+L7_COLLECTOR_CHANGED=$(has_changes_in_path "^services/flowfish-l7-collector/" "$changed_files")
 
 # Change Detection Worker - backend içinde ama ayrı servis olarak deploy ediliyor
 # Worker uses: worker_main, change_detection module, gRPC clients, connection managers, DB layer
@@ -248,17 +254,19 @@ GRAPH_QUERY_CHANGED=${GRAPH_QUERY_CHANGED:-0}
 TIMESERIES_WRITER_CHANGED=${TIMESERIES_WRITER_CHANGED:-0}
 TIMESERIES_QUERY_CHANGED=${TIMESERIES_QUERY_CHANGED:-0}
 INGESTION_SERVICE_CHANGED=${INGESTION_SERVICE_CHANGED:-0}
+L7_INGESTION_SERVICE_CHANGED=${L7_INGESTION_SERVICE_CHANGED:-0}
+L7_COLLECTOR_CHANGED=${L7_COLLECTOR_CHANGED:-0}
 CHANGE_WORKER_CHANGED=${CHANGE_WORKER_CHANGED:-0}
 
 # Backend değişikliği varsa Change Worker da etkilenir (aynı codebase)
 if [ "${BACKEND_CHANGED:-0}" -gt 0 ] 2>/dev/null && [ "${CHANGE_WORKER_CHANGED:-0}" -eq 0 ] 2>/dev/null; then
-    echo "⚠️  Backend değişikliği - Change Worker da rebuild edilecek"
+    echo "[WARN] Backend değişikliği - Change Worker da rebuild edilecek"
     CHANGE_WORKER_CHANGED=1
 fi
 
 # Proto/shared değişikliği varsa tüm microservices'i etkiler
 if [ "${SHARED_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
-    echo "⚠️  Proto/Shared değişikliği - Tüm microservices etkilenecek"
+    echo "[WARN] Proto/Shared değişikliği - Tüm microservices etkilenecek"
     API_GATEWAY_CHANGED=1
     CLUSTER_MANAGER_CHANGED=1
     ANALYSIS_ORCHESTRATOR_CHANGED=1
@@ -267,12 +275,14 @@ if [ "${SHARED_CHANGED:-0}" -gt 0 ] 2>/dev/null; then
     TIMESERIES_WRITER_CHANGED=1
     TIMESERIES_QUERY_CHANGED=1
     INGESTION_SERVICE_CHANGED=1
+    L7_INGESTION_SERVICE_CHANGED=1
+    L7_COLLECTOR_CHANGED=1
     CHANGE_WORKER_CHANGED=1
     BACKEND_CHANGED=1
 fi
 
 # Azure DevOps değişkenlerini set et
-echo "📋 Setting Azure DevOps Variables:"
+echo "[INFO] Setting Azure DevOps Variables:"
 set_variable "BACKEND_CHANGED" "$BACKEND_CHANGED"
 set_variable "FRONTEND_CHANGED" "$FRONTEND_CHANGED"
 set_variable "SHARED_CHANGED" "$SHARED_CHANGED"
@@ -284,6 +294,8 @@ set_variable "GRAPH_QUERY_CHANGED" "$GRAPH_QUERY_CHANGED"
 set_variable "TIMESERIES_WRITER_CHANGED" "$TIMESERIES_WRITER_CHANGED"
 set_variable "TIMESERIES_QUERY_CHANGED" "$TIMESERIES_QUERY_CHANGED"
 set_variable "INGESTION_SERVICE_CHANGED" "$INGESTION_SERVICE_CHANGED"
+set_variable "L7_INGESTION_SERVICE_CHANGED" "$L7_INGESTION_SERVICE_CHANGED"
+set_variable "L7_COLLECTOR_CHANGED" "$L7_COLLECTOR_CHANGED"
 set_variable "CHANGE_WORKER_CHANGED" "$CHANGE_WORKER_CHANGED"
 
 # Özet yazdır
@@ -296,9 +308,9 @@ print_status() {
     local name="$1"
     local value="${2:-0}"
     if [ "$value" -gt 0 ] 2>/dev/null; then
-        printf "│ %-25s ✅ BUILD             │\n" "$name"
+        printf "│ %-25s [OK] BUILD             │\n" "$name"
     else
-        printf "│ %-25s ⏭️  SKIP              │\n" "$name"
+        printf "│ %-25s [SKIP] SKIP              │\n" "$name"
     fi
 }
 
@@ -312,9 +324,11 @@ print_status "Graph Query" "$GRAPH_QUERY_CHANGED"
 print_status "Timeseries Writer" "$TIMESERIES_WRITER_CHANGED"
 print_status "Timeseries Query" "$TIMESERIES_QUERY_CHANGED"
 print_status "Ingestion Service" "$INGESTION_SERVICE_CHANGED"
+print_status "L7 Ingestion Service" "$L7_INGESTION_SERVICE_CHANGED"
+print_status "L7 Collector" "$L7_COLLECTOR_CHANGED"
 print_status "Change Worker" "$CHANGE_WORKER_CHANGED"
 
 echo "└─────────────────────────────────────────────────┘"
 echo ""
-echo "✅ Change detection completed!"
+echo "[OK] Change detection completed!"
 

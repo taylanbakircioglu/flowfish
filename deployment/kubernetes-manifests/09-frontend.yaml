@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: frontend
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: frontend
 spec:
@@ -21,7 +21,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: frontend
 spec:
@@ -58,7 +58,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: frontend
-        image: taylanbakircioglu/flowfish:frontend-latest
+        image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-frontend:{{IMAGE_TAG}}
         imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
@@ -109,15 +109,17 @@ spec:
           mountPath: /var/run
       volumes:
       - name: cache
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 128Mi
       - name: run
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 8Mi
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: frontend-hpa
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1

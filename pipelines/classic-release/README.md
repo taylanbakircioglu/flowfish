@@ -102,7 +102,7 @@ classic-release/
 | `GADGET_VERSION` | `v0.50.1` | Release | No |
 
 > **GADGET_VERSION:** Inspektor Gadget image versiyonu. Build pipeline'daki değerle aynı olmalıdır.
-> **v0.50.1 includes ring buffer fix + socket cleanup improvements.**
+> **CVE-2024-24790 fix için v0.50.1 gereklidir.**
 
 ### 6.1 Build Pipeline Output Variables (Incremental Deploy İçin)
 
@@ -130,6 +130,12 @@ Build pipeline'dan gelen output variables'ları release'e bağlamak için:
 | `TIMESERIES_WRITER_TAG` | `$(Release.Artifacts._Flowfish-CI.TIMESERIES_WRITER_TAG)` | |
 | `INGESTION_SERVICE_BUILT` | `$(Release.Artifacts._Flowfish-CI.INGESTION_SERVICE_BUILT)` | |
 | `INGESTION_SERVICE_TAG` | `$(Release.Artifacts._Flowfish-CI.INGESTION_SERVICE_TAG)` | |
+| `L7_INGESTION_SERVICE_BUILT` | `$(Release.Artifacts._Flowfish-CI.L7_INGESTION_SERVICE_BUILT)` | L7 Ingestion Service derlendi mi |
+| `L7_INGESTION_SERVICE_TAG` | `$(Release.Artifacts._Flowfish-CI.L7_INGESTION_SERVICE_TAG)` | L7 Ingestion Service image tag |
+| `L7_COLLECTOR_BUILT` | `$(Release.Artifacts._Flowfish-CI.L7_COLLECTOR_BUILT)` | L7 Collector derlendi mi |
+| `L7_COLLECTOR_TAG` | `$(Release.Artifacts._Flowfish-CI.L7_COLLECTOR_TAG)` | L7 Collector image tag |
+| `CHANGE_WORKER_BUILT` | `$(Release.Artifacts._Flowfish-CI.CHANGE_WORKER_BUILT)` | Change Worker derlendi mi |
+| `CHANGE_WORKER_TAG` | `$(Release.Artifacts._Flowfish-CI.CHANGE_WORKER_TAG)` | Change Worker image tag |
 
 > **Not:** Artifact alias `_Flowfish-CI` varsayılmıştır. Farklı ise güncelleyin.
 
@@ -259,6 +265,10 @@ Add the following tasks in order:
   BACKEND_TAG=$(BACKEND_TAG)
   FRONTEND_BUILT=$(FRONTEND_BUILT)
   FRONTEND_TAG=$(FRONTEND_TAG)
+  L7_INGESTION_SERVICE_BUILT=$(L7_INGESTION_SERVICE_BUILT)
+  L7_INGESTION_SERVICE_TAG=$(L7_INGESTION_SERVICE_TAG)
+  L7_COLLECTOR_BUILT=$(L7_COLLECTOR_BUILT)
+  L7_COLLECTOR_TAG=$(L7_COLLECTOR_TAG)
   ```
 
 **Purpose:**
@@ -293,18 +303,27 @@ Add the following tasks in order:
   TIMESERIES_WRITER_TAG=$(TIMESERIES_WRITER_TAG)
   INGESTION_SERVICE_BUILT=$(INGESTION_SERVICE_BUILT)
   INGESTION_SERVICE_TAG=$(INGESTION_SERVICE_TAG)
+  L7_INGESTION_SERVICE_BUILT=$(L7_INGESTION_SERVICE_BUILT)
+  L7_INGESTION_SERVICE_TAG=$(L7_INGESTION_SERVICE_TAG)
+  L7_COLLECTOR_BUILT=$(L7_COLLECTOR_BUILT)
+  L7_COLLECTOR_TAG=$(L7_COLLECTOR_TAG)
+  CHANGE_WORKER_BUILT=$(CHANGE_WORKER_BUILT)
+  CHANGE_WORKER_TAG=$(CHANGE_WORKER_TAG)
   ```
 
 **Purpose:**
 - Deploys **only** microservices that were built in the CI pipeline
-- If `RELEASE_ALL=true`, deploys all 7 microservices:
+- If `RELEASE_ALL=true`, deploys all microservices:
   - API Gateway
   - Cluster Manager
   - Ingestion Service
+  - L7 Ingestion Service
+  - L7 Collector
   - Timeseries Writer
   - Graph Writer
   - Graph Query
   - Analysis Orchestrator
+  - Change Detection Worker
 
 **Incremental Deployment Logic:**
 ```
@@ -435,9 +454,11 @@ VAULT_TOKEN=********
 │    - PostgreSQL (StatefulSet)                           │
 │    - Redis (Deployment)                                 │
 │    - RabbitMQ (StatefulSet)                             │
-│    - Neo4j (StatefulSet)                          │
+│    - Neo4j (StatefulSet)                                │
 │    - ClickHouse (StatefulSet)                           │
 │    - Database Migrations (Job)                          │
+│    - Inspektor Gadget (DaemonSet)                       │
+│    - Beyla L7 Agent (DaemonSet)                         │
 └─────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────┐
@@ -452,10 +473,13 @@ VAULT_TOKEN=********
 │    - API Gateway                                        │
 │    - Cluster Manager                                    │
 │    - Ingestion Service                                  │
+│    - L7 Ingestion Service                               │
+│    - L7 Collector                                       │
 │    - Timeseries Writer                                  │
 │    - Graph Writer                                       │
 │    - Graph Query                                        │
 │    - Analysis Orchestrator                              │
+│    - Change Detection Worker                            │
 └─────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────┐

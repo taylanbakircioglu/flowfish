@@ -32,6 +32,13 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
       
       # Wait for ClickHouse to be ready
       - name: wait-for-clickhouse
@@ -49,6 +56,13 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           runAsNonRoot: true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
       
       containers:
       # PostgreSQL Migrations
@@ -107,7 +121,7 @@ spec:
               gadget_auto_detect BOOLEAN DEFAULT TRUE,
               gadget_version VARCHAR(50),
               gadget_capabilities JSONB DEFAULT '[]',
-              gadget_health_status VARCHAR(50) DEFAULT 'unknown',
+              gadget_health_status VARCHAR(50) DEFAULT 'not_installed',
               gadget_last_check TIMESTAMP WITH TIME ZONE,
               status VARCHAR(50) DEFAULT 'active',
               validation_status JSONB,
@@ -162,7 +176,7 @@ spec:
               -- Add gadget_health_status if missing
               IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                            WHERE table_name = 'clusters' AND column_name = 'gadget_health_status') THEN
-                  ALTER TABLE clusters ADD COLUMN gadget_health_status VARCHAR(50) DEFAULT 'unknown';
+                  ALTER TABLE clusters ADD COLUMN gadget_health_status VARCHAR(50) DEFAULT 'not_installed';
               END IF;
               
               -- Add gadget_last_check if missing
@@ -1275,15 +1289,88 @@ spec:
               schedule VARCHAR(20) NOT NULL DEFAULT 'daily',
               filters JSONB DEFAULT '{}',
               recipients JSONB DEFAULT '[]',
-              is_enabled BOOLEAN DEFAULT TRUE,
+              -- The backend selects column "enabled" (not "is_enabled");
+              -- older migrations created the column under the wrong
+              -- name and the API surfaced a 500. Create with the right
+              -- name on fresh installs and patch the older name in
+              -- the idempotent block below.
+              enabled BOOLEAN DEFAULT TRUE,
+              -- Time-of-day for the report ("HH:MM"), per backend SQL.
+              time VARCHAR(10),
+              -- Recipient email (single-address shortcut alongside the
+              -- `recipients` JSONB array). The backend `INSERT INTO
+              -- scheduled_reports (..., time, email, ...)` requires it.
+              email VARCHAR(255),
+              -- Optional scope filters that the backend reads/writes
+              -- alongside `name`/`report_type`.
+              cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+              analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL,
+              namespace VARCHAR(255),
               last_run TIMESTAMP WITH TIME ZONE,
               next_run TIMESTAMP WITH TIME ZONE,
               created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
               created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
               updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
           );
-          
-          CREATE INDEX IF NOT EXISTS idx_scheduled_reports_enabled ON scheduled_reports(is_enabled);
+
+          -- Idempotent patch-up for clusters that ran an earlier
+          -- migration job (which created the table without these
+          -- columns). All ALTERs are safe to re-run.
+          --
+          -- IMPORTANT: `enabled` is added WITHOUT `DEFAULT TRUE` here.
+          -- If we let ADD COLUMN apply the default, every existing row
+          -- gets `enabled = TRUE` immediately, and the `is_enabled ->
+          -- enabled` backfill below becomes a no-op (rows are no longer
+          -- NULL). That would silently flip every disabled report
+          -- (`is_enabled = false`) back to enabled. We add the column
+          -- nullable, copy values, then set the default for new inserts.
+          ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS enabled BOOLEAN;
+          ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS time VARCHAR(10);
+          ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+          ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS cluster_id INTEGER REFERENCES clusters(id) ON DELETE SET NULL;
+          ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS analysis_id INTEGER REFERENCES analyses(id) ON DELETE SET NULL;
+          ALTER TABLE scheduled_reports ADD COLUMN IF NOT EXISTS namespace VARCHAR(255);
+
+          -- Phase 1: copy values from the legacy `is_enabled` column
+          -- when present. Preserves user intent (a report explicitly
+          -- disabled by the operator stays disabled).
+          DO $$
+          BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'scheduled_reports'
+                       AND column_name = 'is_enabled') THEN
+              UPDATE scheduled_reports
+                 SET enabled = is_enabled
+               WHERE enabled IS NULL;
+            END IF;
+          END$$;
+
+          -- Phase 2: any rows still NULL (no `is_enabled` column,
+          -- e.g. brand-new tables that didn't pre-exist) default to
+          -- TRUE. Then attach the column-level default so future
+          -- INSERTs don't need to specify it.
+          UPDATE scheduled_reports SET enabled = TRUE WHERE enabled IS NULL;
+          ALTER TABLE scheduled_reports ALTER COLUMN enabled SET DEFAULT TRUE;
+          ALTER TABLE scheduled_reports ALTER COLUMN enabled SET NOT NULL;
+
+          -- Phase 3: index hygiene. The previous version of this
+          -- migration created `idx_scheduled_reports_enabled` on the
+          -- (wrong) `is_enabled` column. `CREATE INDEX IF NOT EXISTS`
+          -- only checks the index *name*, so a plain re-run wouldn't
+          -- move the index to the right column — we have to drop it
+          -- explicitly when its definition still points at is_enabled.
+          DO $$
+          BEGIN
+            IF EXISTS (
+              SELECT 1 FROM pg_indexes
+              WHERE schemaname = current_schema()
+                AND indexname = 'idx_scheduled_reports_enabled'
+                AND indexdef NOT LIKE '%(enabled)%'
+            ) THEN
+              EXECUTE 'DROP INDEX idx_scheduled_reports_enabled';
+            END IF;
+          END$$;
+          CREATE INDEX IF NOT EXISTS idx_scheduled_reports_enabled ON scheduled_reports(enabled);
           CREATE INDEX IF NOT EXISTS idx_scheduled_reports_next_run ON scheduled_reports(next_run);
           
           -- Generated reports history table
@@ -1773,6 +1860,39 @@ spec:
           END $BODY$;
           EOSQL
           echo "analysis_event_types FK fix complete."
+
+          # =========================================
+          # Migration 022: L7 Beyla Support
+          # =========================================
+          echo "Running migration 022: L7 Beyla Support columns..."
+          psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" << 'EOSQL'
+          DO $BODY$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = 22) THEN
+              -- clusters: Beyla columns
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_namespace VARCHAR(255);
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_health_status VARCHAR(50) DEFAULT 'not_installed';
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_version VARCHAR(50);
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS l7_collector_endpoint TEXT;
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_last_check TIMESTAMP WITH TIME ZONE;
+
+              -- analyses: L7 columns
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS analysis_level VARCHAR(20) DEFAULT 'l4';
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS l7_config JSONB;
+
+              -- system_settings: Beyla defaults
+              INSERT INTO system_settings (key, value, description) VALUES
+              ('beyla_settings',
+               '{"default_protocols":["http","grpc"],"l7_sampling_rate":1.0,"l7_enabled":false,"beyla_version":"v3.9.5","max_events_per_second":5000,"default_beyla_mem_limit":"256Mi","default_collector_mem_limit":"256Mi","default_excluded_namespaces":["kube-system"]}',
+               'L7 Beyla configuration defaults')
+              ON CONFLICT (key) DO NOTHING;
+
+              INSERT INTO schema_migrations (version, name) VALUES (22, 'l7_beyla_support') ON CONFLICT (version) DO NOTHING;
+              RAISE NOTICE 'Migration 022: L7 Beyla columns and settings created';
+            END IF;
+          END $BODY$;
+          EOSQL
+          echo "Migration 022 completed!"
 
           echo ""
           echo "========================================="
@@ -2463,6 +2583,385 @@ spec:
           GROUP BY analysis_id, run_id, cluster_id
           "
           
+          # =========================================
+          # L7 Application Level Tables (Beyla eBPF)
+          # =========================================
+          echo "Creating L7 HTTP flows table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_http_flows (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              src_namespace String,
+              src_workload String,
+              src_pod String,
+              src_ip String,
+              src_port UInt16,
+              dst_namespace String,
+              dst_workload String,
+              dst_pod String,
+              dst_ip String,
+              dst_port UInt16,
+              dst_service String,
+              http_method String,
+              http_path String,
+              http_host String,
+              http_status_code UInt16,
+              http_version String,
+              content_type String,
+              request_size UInt64,
+              response_size UInt64,
+              latency_ms Float64,
+              src_labels String DEFAULT '{}',
+              dst_labels String DEFAULT '{}',
+              request_headers String DEFAULT '{}',
+              trace_id String DEFAULT '',
+              span_id String DEFAULT '',
+              parent_span_id String DEFAULT '',
+              span_name String DEFAULT '',
+              span_kind UInt8 DEFAULT 0,
+              event_data_json String,
+              INDEX idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (analysis_id, cluster_id, timestamp, src_namespace, dst_namespace)
+          TTL toDateTime(timestamp) + INTERVAL 30 DAY
+          "
+
+          # L7 distributed tracing migration (idempotent — works on existing tables)
+          echo "Adding L7 trace columns to l7_http_flows (if missing)..."
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS trace_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS span_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS parent_span_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS span_name String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS span_kind UInt8 DEFAULT 0"
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD INDEX IF NOT EXISTS idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4" || true
+
+          echo "Creating L7 gRPC flows table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_grpc_flows (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              src_namespace String,
+              src_workload String,
+              src_pod String,
+              src_ip String,
+              src_port UInt16,
+              dst_namespace String,
+              dst_workload String,
+              dst_pod String,
+              dst_ip String,
+              dst_port UInt16,
+              dst_service String,
+              grpc_service String,
+              grpc_method String,
+              grpc_status_code Int32,
+              grpc_status_message String,
+              request_size UInt64,
+              response_size UInt64,
+              latency_ms Float64,
+              src_labels String DEFAULT '{}',
+              dst_labels String DEFAULT '{}',
+              trace_id String DEFAULT '',
+              span_id String DEFAULT '',
+              parent_span_id String DEFAULT '',
+              span_name String DEFAULT '',
+              span_kind UInt8 DEFAULT 0,
+              event_data_json String,
+              INDEX idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (analysis_id, cluster_id, timestamp, src_namespace, dst_namespace)
+          TTL toDateTime(timestamp) + INTERVAL 30 DAY
+          "
+
+          echo "Adding L7 trace columns to l7_grpc_flows (if missing)..."
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS trace_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS span_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS parent_span_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS span_name String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS span_kind UInt8 DEFAULT 0"
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD INDEX IF NOT EXISTS idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4" || true
+
+          echo "Creating L7 DNS flows table..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_dns_flows (
+              timestamp DateTime64(3) DEFAULT now64(3),
+              event_id String DEFAULT generateUUIDv4(),
+              cluster_id String,
+              cluster_name String,
+              analysis_id String,
+              src_namespace String,
+              src_workload String,
+              src_pod String,
+              src_ip String,
+              src_port UInt16,
+              dst_namespace String,
+              dst_workload String,
+              dst_pod String,
+              dst_ip String,
+              dst_port UInt16,
+              query_name String,
+              query_type String,
+              response_code Int32,
+              response_ips String DEFAULT '[]',
+              latency_ms Float64,
+              src_labels String DEFAULT '{}',
+              dst_labels String DEFAULT '{}',
+              trace_id String DEFAULT '',
+              span_id String DEFAULT '',
+              parent_span_id String DEFAULT '',
+              span_name String DEFAULT '',
+              span_kind UInt8 DEFAULT 0,
+              event_data_json String,
+              INDEX idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4
+          ) ENGINE = MergeTree()
+          PARTITION BY toYYYYMMDD(timestamp)
+          ORDER BY (analysis_id, cluster_id, timestamp, src_namespace, query_name)
+          TTL toDateTime(timestamp) + INTERVAL 30 DAY
+          "
+
+          echo "Adding L7 trace columns to l7_dns_flows (if missing)..."
+          ch_query --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS trace_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS span_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS parent_span_id String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS span_name String DEFAULT ''"
+          ch_query --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS span_kind UInt8 DEFAULT 0"
+          ch_query --database flowfish --query "ALTER TABLE l7_dns_flows ADD INDEX IF NOT EXISTS idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4" || true
+
+          echo "Creating L7 HTTP flows 5-minute materialized view..."
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS l7_http_flows_5min_mv
+          ENGINE = SummingMergeTree()
+          PARTITION BY toYYYYMMDD(timestamp_5min)
+          ORDER BY (analysis_id, timestamp_5min, cluster_id, src_workload, dst_workload, http_method, http_path)
+          AS SELECT
+              analysis_id,
+              toStartOfFiveMinutes(timestamp) AS timestamp_5min,
+              cluster_id,
+              src_workload, dst_workload,
+              http_method, http_path,
+              count() AS request_count,
+              countIf(http_status_code >= 400) AS error_count,
+              sum(latency_ms) AS total_latency_ms,
+              sum(request_size) AS total_request_size,
+              sum(response_size) AS total_response_size
+          FROM l7_http_flows
+          GROUP BY analysis_id, timestamp_5min, cluster_id, src_workload, dst_workload, http_method, http_path
+          "
+
+          # ===================================================================
+          # APM-style L7 Refactor — Phase 2/3B/4 migrations (Plan v1.5)
+          # Mirror of schemas/migrations/clickhouse_005_..007_*.sql, inlined
+          # so the Azure DevOps deploy job applies them automatically. Each
+          # statement is idempotent (IF NOT EXISTS), safe to re-run.
+          # ===================================================================
+
+          # ----- Phase 2 (005): APM RED Materialized Views ------------------
+          # Existing l7_http_flows_5min_mv is SummingMergeTree (avg latency
+          # only). These parallel MVs use AggregatingMergeTree with
+          # quantileTDigestState so the APM Service Detail page can render
+          # true p50/p95/p99. Path normalization keeps op cardinality bounded.
+
+          echo "Creating APM RED MV: HTTP service-level (Phase 2)..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_http_red_svc_5min (
+              timestamp_5min DateTime,
+              cluster_id String,
+              analysis_id String,
+              src_workload String,
+              dst_workload String,
+              src_namespace String,
+              dst_namespace String,
+              request_count_state AggregateFunction(sum, UInt64),
+              error_count_state AggregateFunction(sum, UInt64),
+              lat_quantile_state AggregateFunction(quantileTDigest, Float64)
+          ) ENGINE = AggregatingMergeTree()
+          PARTITION BY toYYYYMMDD(timestamp_5min)
+          ORDER BY (cluster_id, analysis_id, dst_workload, src_workload, timestamp_5min)
+          TTL toDateTime(timestamp_5min) + INTERVAL 30 DAY
+          "
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS l7_http_red_svc_5min_mv
+          TO l7_http_red_svc_5min AS
+          SELECT
+              toStartOfFiveMinutes(timestamp) AS timestamp_5min,
+              cluster_id, analysis_id, src_workload, dst_workload,
+              src_namespace, dst_namespace,
+              sumState(toUInt64(1)) AS request_count_state,
+              sumState(toUInt64(if(http_status_code >= 400, 1, 0))) AS error_count_state,
+              quantileTDigestState(latency_ms) AS lat_quantile_state
+          FROM l7_http_flows
+          GROUP BY timestamp_5min, cluster_id, analysis_id,
+                   src_workload, dst_workload, src_namespace, dst_namespace
+          "
+
+          echo "Creating APM RED MV: HTTP operation-level (Phase 2)..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_http_red_ops_5min (
+              timestamp_5min DateTime,
+              cluster_id String,
+              analysis_id String,
+              dst_workload String,
+              dst_namespace String,
+              http_method String,
+              http_path_normalized String,
+              request_count_state AggregateFunction(sum, UInt64),
+              error_count_state AggregateFunction(sum, UInt64),
+              lat_quantile_state AggregateFunction(quantileTDigest, Float64)
+          ) ENGINE = AggregatingMergeTree()
+          PARTITION BY toYYYYMMDD(timestamp_5min)
+          ORDER BY (cluster_id, analysis_id, dst_workload, http_method, http_path_normalized, timestamp_5min)
+          TTL toDateTime(timestamp_5min) + INTERVAL 30 DAY
+          "
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS l7_http_red_ops_5min_mv
+          TO l7_http_red_ops_5min AS
+          SELECT
+              toStartOfFiveMinutes(timestamp) AS timestamp_5min,
+              cluster_id, analysis_id, dst_workload, dst_namespace, http_method,
+              replaceRegexpAll(
+                  replaceRegexpAll(http_path, '/[0-9]+(/|\$)', '/{id}\\\\1'),
+                  '/[0-9a-f-]{16,}(/|\$)', '/{uuid}\\\\1'
+              ) AS http_path_normalized,
+              sumState(toUInt64(1)) AS request_count_state,
+              sumState(toUInt64(if(http_status_code >= 400, 1, 0))) AS error_count_state,
+              quantileTDigestState(latency_ms) AS lat_quantile_state
+          FROM l7_http_flows
+          GROUP BY timestamp_5min, cluster_id, analysis_id, dst_workload,
+                   dst_namespace, http_method, http_path_normalized
+          "
+
+          echo "Creating APM RED MV: gRPC service-level (Phase 2)..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_grpc_red_svc_5min (
+              timestamp_5min DateTime,
+              cluster_id String,
+              analysis_id String,
+              src_workload String,
+              dst_workload String,
+              src_namespace String,
+              dst_namespace String,
+              request_count_state AggregateFunction(sum, UInt64),
+              error_count_state AggregateFunction(sum, UInt64),
+              lat_quantile_state AggregateFunction(quantileTDigest, Float64)
+          ) ENGINE = AggregatingMergeTree()
+          PARTITION BY toYYYYMMDD(timestamp_5min)
+          ORDER BY (cluster_id, analysis_id, dst_workload, src_workload, timestamp_5min)
+          TTL toDateTime(timestamp_5min) + INTERVAL 30 DAY
+          "
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS l7_grpc_red_svc_5min_mv
+          TO l7_grpc_red_svc_5min AS
+          SELECT
+              toStartOfFiveMinutes(timestamp) AS timestamp_5min,
+              cluster_id, analysis_id, src_workload, dst_workload,
+              src_namespace, dst_namespace,
+              sumState(toUInt64(1)) AS request_count_state,
+              sumState(toUInt64(if(grpc_status_code != 0, 1, 0))) AS error_count_state,
+              quantileTDigestState(latency_ms) AS lat_quantile_state
+          FROM l7_grpc_flows
+          GROUP BY timestamp_5min, cluster_id, analysis_id,
+                   src_workload, dst_workload, src_namespace, dst_namespace
+          "
+
+          echo "Creating APM RED MV: gRPC operation-level (Phase 2)..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_grpc_red_ops_5min (
+              timestamp_5min DateTime,
+              cluster_id String,
+              analysis_id String,
+              dst_workload String,
+              dst_namespace String,
+              grpc_service String,
+              grpc_method String,
+              request_count_state AggregateFunction(sum, UInt64),
+              error_count_state AggregateFunction(sum, UInt64),
+              lat_quantile_state AggregateFunction(quantileTDigest, Float64)
+          ) ENGINE = AggregatingMergeTree()
+          PARTITION BY toYYYYMMDD(timestamp_5min)
+          ORDER BY (cluster_id, analysis_id, dst_workload, grpc_service, grpc_method, timestamp_5min)
+          TTL toDateTime(timestamp_5min) + INTERVAL 30 DAY
+          "
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS l7_grpc_red_ops_5min_mv
+          TO l7_grpc_red_ops_5min AS
+          SELECT
+              toStartOfFiveMinutes(timestamp) AS timestamp_5min,
+              cluster_id, analysis_id, dst_workload, dst_namespace,
+              grpc_service, grpc_method,
+              sumState(toUInt64(1)) AS request_count_state,
+              sumState(toUInt64(if(grpc_status_code != 0, 1, 0))) AS error_count_state,
+              quantileTDigestState(latency_ms) AS lat_quantile_state
+          FROM l7_grpc_flows
+          GROUP BY timestamp_5min, cluster_id, analysis_id,
+                   dst_workload, dst_namespace, grpc_service, grpc_method
+          "
+
+          echo "Creating APM RED MV: DNS service-level (Phase 2)..."
+          ch_query --database flowfish --query "
+          CREATE TABLE IF NOT EXISTS l7_dns_red_svc_5min (
+              timestamp_5min DateTime,
+              cluster_id String,
+              analysis_id String,
+              src_workload String,
+              dst_workload String,
+              src_namespace String,
+              request_count_state AggregateFunction(sum, UInt64),
+              error_count_state AggregateFunction(sum, UInt64),
+              lat_quantile_state AggregateFunction(quantileTDigest, Float64)
+          ) ENGINE = AggregatingMergeTree()
+          PARTITION BY toYYYYMMDD(timestamp_5min)
+          ORDER BY (cluster_id, analysis_id, dst_workload, src_workload, timestamp_5min)
+          TTL toDateTime(timestamp_5min) + INTERVAL 30 DAY
+          "
+          ch_query --database flowfish --query "
+          CREATE MATERIALIZED VIEW IF NOT EXISTS l7_dns_red_svc_5min_mv
+          TO l7_dns_red_svc_5min AS
+          SELECT
+              toStartOfFiveMinutes(timestamp) AS timestamp_5min,
+              cluster_id, analysis_id, src_workload, dst_workload, src_namespace,
+              sumState(toUInt64(1)) AS request_count_state,
+              sumState(toUInt64(if(response_code != 0, 1, 0))) AS error_count_state,
+              quantileTDigestState(latency_ms) AS lat_quantile_state
+          FROM l7_dns_flows
+          GROUP BY timestamp_5min, cluster_id, analysis_id,
+                   src_workload, dst_workload, src_namespace
+          "
+
+          # ----- Phase 3B (006): bloom filter indexes for Related Traces ----
+          # Accelerate same-pod pivot queries used by the Related Traces tab.
+          # MATERIALIZE INDEX is intentionally OMITTED here — it's a heavy
+          # operation that operators run during a low-traffic window. New
+          # parts will use the index immediately; historical parts only
+          # benefit after the manual MATERIALIZE (see migration runbook).
+          echo "Adding APM bloom indexes (Phase 3B)..."
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD INDEX IF NOT EXISTS idx_src_pod src_pod TYPE bloom_filter(0.01) GRANULARITY 4" || true
+          ch_query --database flowfish --query "ALTER TABLE l7_http_flows ADD INDEX IF NOT EXISTS idx_dst_pod dst_pod TYPE bloom_filter(0.01) GRANULARITY 4" || true
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD INDEX IF NOT EXISTS idx_src_pod src_pod TYPE bloom_filter(0.01) GRANULARITY 4" || true
+          ch_query --database flowfish --query "ALTER TABLE l7_grpc_flows ADD INDEX IF NOT EXISTS idx_dst_pod dst_pod TYPE bloom_filter(0.01) GRANULARITY 4" || true
+          ch_query --database flowfish --query "ALTER TABLE l7_dns_flows ADD INDEX IF NOT EXISTS idx_src_pod src_pod TYPE bloom_filter(0.01) GRANULARITY 4" || true
+
+          # ----- Phase 4 (007): PID columns + virtual_trace_id --------------
+          # Required by timeseries-writer's PID-temporal correlator. All
+          # default to 0 / '' — old rows continue to work; the writer's
+          # 3-layer INSERT fallback handles writers that race ahead of this
+          # migration, but this Job ensures the columns exist on every
+          # standard deploy so the fallback rarely trips in practice.
+          echo "Adding Phase 4 PID columns to L7 HTTP/gRPC flows..."
+          for table in l7_http_flows l7_grpc_flows; do
+            ch_query --database flowfish --query "ALTER TABLE $table ADD COLUMN IF NOT EXISTS pid UInt32 DEFAULT 0"
+            ch_query --database flowfish --query "ALTER TABLE $table ADD COLUMN IF NOT EXISTS ppid UInt32 DEFAULT 0"
+            ch_query --database flowfish --query "ALTER TABLE $table ADD COLUMN IF NOT EXISTS container_id String DEFAULT ''"
+            ch_query --database flowfish --query "ALTER TABLE $table ADD COLUMN IF NOT EXISTS virtual_trace_id String DEFAULT ''"
+            ch_query --database flowfish --query "ALTER TABLE $table ADD INDEX IF NOT EXISTS idx_virtual_trace_id virtual_trace_id TYPE bloom_filter(0.01) GRANULARITY 4" || true
+          done
+
           echo "========================================="
           echo "ClickHouse Migrations Complete!"
           echo "========================================="

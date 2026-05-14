@@ -164,6 +164,14 @@ Pipeline aşağıdaki sırayla deploy eder:
 
 ## 🔍 Troubleshooting
 
+### Container Runtime Auto-Detection
+
+Inspektor Gadget DaemonSet, pod başlangıcında bir init container aracılığıyla container runtime socket yolunu otomatik tespit eder. Desteklenen platformlar: K3s, RKE2, standard K8s, MicroK8s. Init container loglarında tespit edilen socket yolunu görebilirsiniz:
+
+```bash
+kubectl logs -n $NS -l app=inspektor-gadget -c detect-runtime
+```
+
 ### Inspektor Gadget Pod'ları Başlamıyor
 
 ```bash

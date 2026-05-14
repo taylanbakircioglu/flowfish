@@ -390,9 +390,17 @@ class KubectlGadgetClient(AbstractGadgetClient):
                 "started_at": datetime.utcnow().isoformat(),
                 "events_collected": 0,
                 "process": process,
+                # Captured so _parse_gadget_error can show the operator the
+                # exact reproduce command (including kubeconfig/context) when
+                # stderr is empty. Note: TraceManager._retry_failed_gadgets
+                # does not consume `cmd` directly — it recreates the trace
+                # by calling start_trace(config) again — but we keep `cmd`
+                # in the trace_info for diagnostic logging and the
+                # operator-facing error message.
+                "cmd": cmd,
                 "target_namespaces": target_namespaces,  # For multi-namespace filtering
                 "startup_error": None,  # Will be set if gadget fails to start (checked later)
-                "startup_warning": None  # Will be set if gadget has issues
+                "startup_warning": None,  # Will be set if gadget has issues
             }
             
             # NOTE: Don't wait here - errors will be checked later via check_startup_errors()
@@ -455,7 +463,7 @@ class KubectlGadgetClient(AbstractGadgetClient):
         process = trace_info["process"]
         config = trace_info["config"]
         target_namespaces = trace_info.get("target_namespaces")  # Set of namespaces or None
-        
+
         try:
             logger.info("Starting event stream", 
                        trace_id=trace_id,
@@ -1318,19 +1326,74 @@ class KubectlGadgetClient(AbstractGadgetClient):
             logger.error("Failed to get capabilities", error=str(e))
             return list(self.TRACE_TYPE_TO_GADGET.values())
     
-    def _parse_gadget_error(self, stderr: str, gadget_name: str) -> str:
+    def _parse_gadget_error(
+        self,
+        stderr: str,
+        gadget_name: str,
+        cmd: Optional[List[str]] = None,
+    ) -> str:
         """
         Parse gadget stderr output and return user-friendly error message.
-        
+
         Handles common errors:
         - Image pull failures (ghcr.io timeout)
         - Permission denied
         - Resource not found
         - Network errors
+
+        Args:
+            stderr: stderr output captured from the failed subprocess.
+            gadget_name: gadget that failed (e.g. "trace_open").
+            cmd: the exact argv that was launched. When provided, the empty-
+                stderr branch echoes it back so the operator can reproduce
+                what Flowfish ran (including custom registry / kubeconfig).
+                Falling back to a synthesized command is intentionally less
+                accurate — the synthesized form does not know about overrides
+                applied at start_trace time.
         """
+        # When stderr is empty, the most likely cause is one of:
+        # (1) cold-start race: first run of this gadget in the IG DS has to
+        #     pull the OCI image and bootstrap the gRPC dial; the process
+        #     exits with a non-zero code before our wait window completes.
+        #     This is now auto-retried by TraceManager._retry_failed_gadgets
+        #     so if you are seeing this message it means the retry ALSO
+        #     failed — usually a sign of a deeper issue, not a transient
+        #     race. (2) the OCI image is missing from the configured registry
+        #     / Harbor mirror for this gadget at this version, (3) the
+        #     gadget DS on the target cluster is not Ready, or (4) the
+        #     binary was killed by signal before writing diagnostics.
+        # Surface an actionable hint with the exact reproduce command so
+        # operators can quickly distinguish (1) from (2)/(3)/(4).
         if not stderr:
-            return f"Gadget '{gadget_name}' failed to start (unknown error)"
-        
+            registry_hint = self.gadget_registry or "ghcr.io/inspektor-gadget/gadget (default)"
+            # Prefer the actual command we launched (includes kubeconfig,
+            # context, and any custom registry); fall back to a synthesized
+            # command for older callers that don't pass cmd.
+            if cmd:
+                reproduce_cmd = " ".join(cmd)
+            else:
+                image_path = (
+                    f"{self.gadget_registry}/{self.gadget_image_prefix}"
+                    if self.gadget_registry else ""
+                )
+                reproduce_cmd = (
+                    f"kubectl gadget run "
+                    f"{image_path}{gadget_name}:{self.gadget_image_version} "
+                    f"--gadget-namespace {self.gadget_namespace} -A -o json"
+                )
+            return (
+                f"Gadget '{gadget_name}' failed to start (no stderr output). "
+                f"This persisted past the auto-retry, so it is unlikely to be "
+                f"a transient cold-start race. Most likely causes, in order: "
+                f"(1) OCI image '{gadget_name}:{self.gadget_image_version}' "
+                f"not present in registry '{registry_hint}' (mirror it or "
+                f"override gadget_registry on the cluster), "
+                f"(2) gadget DaemonSet on the target cluster is not Ready, "
+                f"(3) the binary was killed by signal before writing "
+                f"diagnostics. To see the underlying error directly, run "
+                f"inside the ingestion-service pod: `{reproduce_cmd}`."
+            )
+
         stderr_lower = stderr.lower()
         
         # Image pull failures (most common for air-gapped environments)
@@ -1380,35 +1443,64 @@ class KubectlGadgetClient(AbstractGadgetClient):
                 errors[gadget_name] = trace_info["startup_error"]
         return errors
     
-    async def check_startup_errors(self, wait_seconds: float = 2.0) -> None:
+    async def check_startup_errors(
+        self,
+        wait_seconds: float = 8.0,
+    ) -> None:
         """
-        Wait briefly and check all active traces for startup errors.
-        
-        This should be called ONCE after all traces are started, not per-trace.
-        This prevents blocking for N*wait_seconds when starting N gadgets.
-        
+        Wait then check all active traces for startup errors.
+
+        On the first run of a gadget against a cluster, three things race
+        in the cold path:
+        (1) `kubectl gadget run` opens a gRPC dial to the IG DaemonSet,
+        (2) the IG DS pulls the gadget OCI artifact from the configured
+            registry into its local store, and
+        (3) the IG DS bootstraps eBPF programs and per-pod tracking state.
+
+        Operators report empirically that the *first* analysis attempt after
+        IG is freshly installed surfaces "failed to start (no stderr output)"
+        for some gadgets, while immediately re-starting the same analysis
+        succeeds (that's the cold-start race above clearing once IG has the
+        artifact cached and the gRPC pool is warm). Field measurements:
+        trace_open ~260 ms cold/warm, trace_sni ~2400 ms cold then ~640 ms
+        warm. We previously waited only 2 seconds, which was too tight to
+        clear the cold path. Bumping the default wait to 8s eliminates the
+        bulk of false positives without making genuine errors meaningfully
+        slower to surface.
+
+        The retry that resurrects gadgets which lost this race lives one
+        layer up in `TraceManager._retry_failed_gadgets`, because retrying
+        here would orphan the `_collect_events` asyncio task that already
+        holds the now-dead process handle.
+
         Args:
-            wait_seconds: Time to wait for gadgets to fail (default 2s)
+            wait_seconds: Time to wait for gadgets to fail (default 8s).
         """
+
         await asyncio.sleep(wait_seconds)
-        
-        for trace_id, trace_info in self.active_traces.items():
+
+        for trace_id, trace_info in list(self.active_traces.items()):
             if trace_info.get("startup_error"):
                 continue  # Already has error
-            
+
             process = trace_info.get("process")
-            if process and process.poll() is not None:
-                # Process exited
+            if process and process.poll() is not None and process.returncode != 0:
                 stderr = process.stderr.read() if process.stderr else ""
-                if process.returncode != 0:
-                    gadget_name = trace_info.get("gadget_name", "unknown")
-                    error_msg = self._parse_gadget_error(stderr, gadget_name)
-                    trace_info["startup_error"] = error_msg
-                    logger.warning("Gadget startup failed (detected in check)",
-                                  trace_id=trace_id,
-                                  gadget=gadget_name,
-                                  returncode=process.returncode,
-                                  error=error_msg)
+                gadget_name = trace_info.get("gadget_name", "unknown")
+                error_msg = self._parse_gadget_error(
+                    stderr,
+                    gadget_name,
+                    cmd=trace_info.get("cmd"),
+                )
+                trace_info["startup_error"] = error_msg
+                logger.warning(
+                    "Gadget startup failed (detected after wait)",
+                    trace_id=trace_id,
+                    gadget=gadget_name,
+                    returncode=process.returncode,
+                    wait_seconds=wait_seconds,
+                    error=error_msg,
+                )
     
     def get_all_gadget_errors(self) -> List[Dict[str, str]]:
         """

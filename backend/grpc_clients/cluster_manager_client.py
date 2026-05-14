@@ -183,6 +183,7 @@ class ClusterManagerClient:
                     "node_name": pod.node_name,
                     "labels": dict(pod.labels),
                     "ip": pod.ip,
+                    "image": pod.image,
                     "created_at": pod.created_at
                 }
                 for pod in response.pods
@@ -463,7 +464,61 @@ class ClusterManagerClient:
                 "pods_total": 0,
                 "details": {"issues": [str(e)]}
             }
-    
+
+    async def check_beyla_health(self, cluster_id: str = "", beyla_namespace: str = "") -> Dict[str, Any]:
+        """Check Grafana Beyla DaemonSet + L7 Collector health via cluster-manager."""
+        if cluster_manager_pb2 is None:
+            logger.warning("cluster_manager proto not available for beyla health check")
+            return {
+                "health_status": "unknown",
+                "version": "",
+                "error": "Proto not available",
+                "daemonset_ready": 0,
+                "daemonset_total": 0,
+                "collector_ready": False,
+                "issues": ["Proto not available"],
+            }
+
+        try:
+            await self._ensure_connected()
+            request = cluster_manager_pb2.CheckBeylaHealthRequest(
+                cluster_id=cluster_id,
+                beyla_namespace=beyla_namespace,
+            )
+            response = await self._stub.CheckBeylaHealth(request, timeout=15)
+
+            return {
+                "health_status": response.health_status,
+                "version": response.version if response.version else "",
+                "error": response.error if response.error else None,
+                "daemonset_ready": response.daemonset_ready,
+                "daemonset_total": response.daemonset_total,
+                "collector_ready": response.collector_ready,
+                "issues": list(response.issues) if response.issues else [],
+            }
+        except grpc.aio.AioRpcError as e:
+            logger.error("CheckBeylaHealth gRPC error", code=e.code(), details=e.details())
+            return {
+                "health_status": "unknown",
+                "version": "",
+                "error": f"gRPC error: {e.details()}",
+                "daemonset_ready": 0,
+                "daemonset_total": 0,
+                "collector_ready": False,
+                "issues": [f"gRPC error: {e.details()}"],
+            }
+        except Exception as e:
+            logger.error("CheckBeylaHealth failed", error=str(e))
+            return {
+                "health_status": "unknown",
+                "version": "",
+                "error": str(e),
+                "daemonset_ready": 0,
+                "daemonset_total": 0,
+                "collector_ready": False,
+                "issues": [str(e)],
+            }
+
     # Mock data for fallback when cluster-manager is not available
     def _mock_cluster_info(self):
         return {

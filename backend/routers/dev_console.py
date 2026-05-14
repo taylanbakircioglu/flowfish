@@ -18,7 +18,9 @@ Security Features:
 - Large value truncation
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from utils.jwt_utils import get_current_user
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
@@ -967,7 +969,10 @@ async def execute_neo4j_query(query: str, limit: int, timeout: int) -> QueryResp
 # ============ API Endpoints ============
 
 @router.post("/query", response_model=QueryResponse)
-async def execute_query(request: QueryRequest):
+async def execute_query(
+    request: QueryRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Execute a query against ClickHouse or Neo4j
     
@@ -1004,7 +1009,10 @@ async def execute_query(request: QueryRequest):
 
 
 @router.get("/schema/{database}", response_model=SchemaResponse)
-async def get_schema(database: Literal["clickhouse", "neo4j"]):
+async def get_schema(
+    database: Literal["clickhouse", "neo4j"],
+    current_user: dict = Depends(get_current_user),
+):
     """
     Get database schema information
     

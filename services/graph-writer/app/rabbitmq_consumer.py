@@ -53,20 +53,35 @@ class RabbitMQConsumer:
         """Register a message handler for a queue"""
         self.handlers[queue_name] = handler
     
+    L7_QUEUE_EXCHANGE_MAP = {
+        "flowfish.queue.l7_http_flows.graph": "flowfish.l7.http_flows",
+        "flowfish.queue.l7_grpc_flows.graph": "flowfish.l7.grpc_flows",
+        "flowfish.queue.l7_dns_flows.graph": "flowfish.l7.dns_flows",
+    }
+
     async def start_consuming(self, queue_name: str):
         """Start consuming from a queue"""
         try:
-            # Declare queue with same arguments as ingestion-service
-            # Must match x-message-ttl and x-max-length from queue creation
+            q_args = {
+                "x-message-ttl": 86400000,
+                "x-max-length": 1000000,
+            }
+            if queue_name.startswith("flowfish.queue.l7_"):
+                q_args["x-dead-letter-exchange"] = "flowfish.l7.dlx"
             queue = await self.channel.declare_queue(
                 queue_name,
                 durable=True,
                 auto_delete=False,
-                arguments={
-                    "x-message-ttl": 86400000,  # 24 hours in ms
-                    "x-max-length": 1000000     # 1M messages (same as ingestion-service)
-                }
+                arguments=q_args,
             )
+
+            l7_exchange_name = self.L7_QUEUE_EXCHANGE_MAP.get(queue_name)
+            if l7_exchange_name:
+                exchange = await self.channel.declare_exchange(
+                    l7_exchange_name, type="topic", durable=True
+                )
+                await queue.bind(exchange, routing_key="#")
+                logger.info(f"Queue {queue_name} bound to exchange {l7_exchange_name}")
             
             logger.info(f"📥 Started consuming from queue: {queue_name}")
             
@@ -79,19 +94,19 @@ class RabbitMQConsumer:
             # Start consuming
             async with queue.iterator() as queue_iter:
                 async for message in queue_iter:
-                    async with message.process():
+                    async with message.process(reject_on_redelivered=True, ignore_processed=True):
                         try:
-                            # Decode message
                             body = message.body.decode('utf-8')
                             data = json.loads(body)
-                            
-                            # Call handler
+                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                            logger.error(f"Malformed message (discarding): {e}")
+                            await message.reject(requeue=False)
+                            continue
+                        try:
                             await handler(data)
-                            
                         except Exception as e:
-                            logger.error(f"Failed to process message: {e}")
-                            # Message will be rejected and requeued
-                            raise
+                            logger.error(f"Failed to process graph message: {e}", exc_info=True)
+                            await message.reject(requeue=not message.redelivered)
         
         except Exception as e:
             logger.error(f"Consumer error for queue {queue_name}: {e}")
@@ -118,4 +133,3 @@ class RabbitMQConsumer:
 
 # Global consumer instance
 consumer = RabbitMQConsumer()
-

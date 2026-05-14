@@ -55,7 +55,7 @@ class ClusterInfo:
 @dataclass
 class GadgetHealth:
     """Inspector Gadget health status"""
-    health_status: str = "unknown"  # healthy, degraded, unhealthy, unknown
+    health_status: str = "not_installed"  # healthy, degraded, unhealthy, unknown, not_installed
     version: Optional[str] = None
     pods_ready: int = 0
     pods_total: int = 0
@@ -70,6 +70,29 @@ class GadgetHealth:
             "pods_total": self.pods_total,
             "error": self.error,
             "details": self.details
+        }
+
+
+@dataclass
+class BeylaHealth:
+    """Grafana Beyla L7 agent health status"""
+    health_status: str = "not_installed"  # healthy, degraded, unhealthy, unknown, not_installed
+    version: str = ""
+    daemonset_ready: int = 0
+    daemonset_total: int = 0
+    collector_ready: bool = False
+    issues: List[str] = field(default_factory=list)
+    error: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "health_status": self.health_status,
+            "version": self.version,
+            "daemonset_ready": self.daemonset_ready,
+            "daemonset_total": self.daemonset_total,
+            "collector_ready": self.collector_ready,
+            "issues": self.issues,
+            "error": self.error,
         }
 
 
@@ -134,6 +157,7 @@ class Pod:
     node_name: Optional[str] = None
     labels: Dict[str, str] = field(default_factory=dict)
     ip: Optional[str] = None
+    image: Optional[str] = None
     created_at: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
@@ -325,6 +349,63 @@ class ClusterConnection(ABC):
         """Check Inspector Gadget health status"""
         pass
     
+    async def check_beyla_health(self, beyla_namespace: str = "") -> BeylaHealth:
+        """Check Grafana Beyla DaemonSet + L7 Collector health.
+
+        Default implementation queries pods via get_pods(); subclasses may
+        override with a dedicated gRPC call when available.
+        """
+        if not beyla_namespace:
+            return BeylaHealth(health_status="not_installed", error="beyla_namespace not configured")
+        try:
+            pods = await self.get_pods(namespace=beyla_namespace, label_selector="app=beyla")
+            ds_total = len(pods)
+            ds_ready = sum(1 for p in pods if p.status == "Running")
+
+            collector_pods = await self.get_pods(namespace=beyla_namespace, label_selector="app=flowfish-l7-collector")
+            if not collector_pods:
+                collector_pods = await self.get_pods(namespace=beyla_namespace, label_selector="app=l7-collector")
+            collector_ready = any(p.status == "Running" for p in collector_pods)
+
+            issues: List[str] = []
+            if ds_total == 0:
+                issues.append("No Beyla pods found")
+            if ds_ready < ds_total:
+                issues.append(f"Only {ds_ready}/{ds_total} Beyla pods ready")
+            if not collector_ready:
+                issues.append("flowfish-l7-collector not running")
+
+            if ds_total == 0 and not collector_ready:
+                h_status = "not_installed"
+            elif ds_total == 0 and collector_ready:
+                h_status = "degraded"
+                issues.append("Collector running but no Beyla DaemonSet pods found")
+            elif ds_ready == ds_total and collector_ready:
+                h_status = "healthy"
+            elif ds_ready > 0 or collector_ready:
+                h_status = "degraded"
+            else:
+                h_status = "unhealthy"
+
+            version = ""
+            for p in pods:
+                img = p.image or ""
+                if "beyla" in img and ":" in img:
+                    tag = img.rsplit(":", 1)[-1]
+                    version = tag if tag.startswith("v") else f"v{tag}"
+                    break
+
+            return BeylaHealth(
+                health_status=h_status,
+                version=version,
+                daemonset_ready=ds_ready,
+                daemonset_total=ds_total,
+                collector_ready=collector_ready,
+                issues=issues,
+            )
+        except Exception as e:
+            return BeylaHealth(health_status="unknown", error=str(e))
+
     @abstractmethod
     async def get_namespaces(self) -> List[Namespace]:
         """Get list of namespaces"""

@@ -19,6 +19,34 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+def _parse_cluster_id_from_node_id(node_id: str) -> str:
+    """Parse cluster_id out of a graph node id.
+
+    The graph-writer encodes node ids as
+    `{analysis_id}-{cluster_id}:{cluster_id}:{namespace}:{workload}`
+    (the cluster_id appears twice on purpose so that legacy code paths
+    that split off the prefix still get a useful value). This helper
+    is the canonical recovery path the API routers use when graph-query
+    didn't project an explicit `*_cluster_id` field — without it the
+    transformer would fall back to the request-level `cluster_id`
+    parameter, which is empty for multi-cluster queries and used to
+    silently collapse the whole graph onto cluster "1".
+
+    Promoted to module scope so both `get_communications` and
+    `get_dependency_graph` can share it; previously each defined a
+    local copy and only one transformer used it.
+    """
+    if not node_id:
+        return ""
+    try:
+        parts = node_id.split(":")
+        if len(parts) >= 2:
+            return parts[1]
+    except Exception:
+        return ""
+    return ""
+
+
 # Known valid error type keywords (whitelist approach for safety)
 # Only these keywords are recognized as meaningful error qualifiers
 VALID_ERROR_KEYWORDS = {
@@ -135,6 +163,10 @@ class DependencyNode(BaseModel):
     node: Optional[str] = None
     owner_kind: Optional[str] = None  # Deployment, StatefulSet, DaemonSet, etc.
     owner_name: Optional[str] = None  # Name of the owner resource
+    # Network classification
+    network_type: Optional[str] = None  # Pod-Network, External-Network, SDN-Gateway, etc.
+    is_external: Optional[bool] = None
+    resolution_source: Optional[str] = None  # dns, pod, ip
     # Extended metadata
     pod_uid: Optional[str] = None
     host_ip: Optional[str] = None
@@ -391,22 +423,50 @@ class GraphQueryClient:
         
         if result and result.get("success"):
             # Transform Neo4j result to API format
+            #
+            # Prefer the per-node cluster_id projected by graph-query
+            # (it knows the truth from the Workload node). When the
+            # graph-query deployment is older and doesn't yet project
+            # source/destination_cluster_id, fall back to parsing it
+            # out of the node id itself ("{analysis_id}-{cluster}:{cluster}:..."),
+            # then to the request-level cluster_id parameter. Only as a
+            # last resort do we render "unknown" — this keeps multi-cluster
+            # graph rendering correct without depending on request-level
+            # filters being set.
+            #
+            # `rec` is passed as an explicit parameter (rather than
+            # closing over the loop variable) so the function is safe
+            # to lift outside the loop and easier for static analysis
+            # to reason about.
+            def _resolve_cid(rec: dict, record_key: str, node_id: str) -> str:
+                rc = rec.get(record_key)
+                if rc is not None and str(rc).strip() not in ("", "None", "null"):
+                    return str(rc)
+                parsed = _parse_cluster_id_from_node_id(node_id)
+                if parsed:
+                    return parsed
+                if cluster_id:
+                    return str(cluster_id)
+                return "unknown"
+
             communications = []
             for record in result.get("data", []):
+                src_cid = _resolve_cid(record, "source_cluster_id", record.get("source_id", ""))
+                dst_cid = _resolve_cid(record, "destination_cluster_id", record.get("destination_id", ""))
                 comm = {
                     "source": {
                         "id": record.get("source_id", ""),
                         "name": record.get("source_name", ""),
                         "kind": record.get("source_kind", "Pod"),
                         "namespace": record.get("source_namespace", ""),
-                        "cluster_id": str(cluster_id) if cluster_id else "1"
+                        "cluster_id": src_cid,
                     },
                     "destination": {
                         "id": record.get("destination_id", ""),
                         "name": record.get("destination_name", ""),
                         "kind": record.get("destination_kind", "Pod"),
                         "namespace": record.get("destination_namespace", ""),
-                        "cluster_id": str(cluster_id) if cluster_id else "1"
+                        "cluster_id": dst_cid,
                     },
                     "protocol": record.get("protocol", "TCP"),
                     "port": record.get("destination_port") or 0,
@@ -501,6 +561,19 @@ class GraphQueryClient:
         if end_time:
             params["end_time"] = end_time
         
+        def _infer_kind(kind_from_db: str, namespace: str) -> str:
+            """Infer proper kind from namespace when DB returns generic 'Pod'."""
+            if kind_from_db and kind_from_db not in ('Pod', 'Workload', ''):
+                return kind_from_db
+            ns = (namespace or '').lower()
+            if ns == 'external':
+                return 'External'
+            if ns in ('sdn-infrastructure', 'cluster-network', 'service-network'):
+                return 'Infrastructure'
+            if ns in ('internal-network', 'datacenter'):
+                return 'DataCenter'
+            return kind_from_db or 'Pod'
+
         # SERVER-SIDE SEARCH: When search term is provided (min 3 chars),
         # call /dependencies/graph endpoint which supports search in Neo4j
         # This allows finding nodes that would otherwise be cut off by the limit
@@ -519,8 +592,11 @@ class GraphQueryClient:
             graph_result = await self._call_graph_query("/dependencies/graph", params=search_params)
             
             if graph_result and "nodes" in graph_result:
+                nodes = graph_result.get("nodes", [])
+                for node in nodes:
+                    node["kind"] = _infer_kind(node.get("kind"), node.get("namespace", ""))
                 return {
-                    "nodes": graph_result.get("nodes", []),
+                    "nodes": nodes,
                     "edges": graph_result.get("edges", [])
                 }
             # Fall through to normal flow if search fails
@@ -537,23 +613,12 @@ class GraphQueryClient:
             # Build graph from communications
             nodes_map = {}
             edges = []
-            
-            def parse_cluster_id_from_node_id(node_id: str) -> str:
-                """Parse cluster_id from node ID format: {analysis_id}-{cluster_id}:{cluster_id}:{namespace}:{workload}
-                Example: 101-12:12:openshift-ingress:router-default -> cluster_id = 12
-                """
-                if not node_id:
-                    return ""
-                try:
-                    # Format: {analysis_id}-{cluster_id}:{cluster_id}:{namespace}:{workload}
-                    # Split by colon, second part should be cluster_id
-                    parts = node_id.split(":")
-                    if len(parts) >= 2:
-                        return parts[1]  # cluster_id is the second colon-separated part
-                except:
-                    pass
-                return ""
-            
+
+            # Use the module-level helper (`_parse_cluster_id_from_node_id`).
+            # The previous local copy inside this function meant
+            # get_communications above had no shared recovery path.
+            parse_cluster_id_from_node_id = _parse_cluster_id_from_node_id
+
             for record in comms_result.get("data", []):
                 # Source node
                 src_id = record.get("source_id", "")
@@ -583,11 +648,12 @@ class GraphQueryClient:
                         ""
                     )
                     
+                    src_ns = record.get("source_namespace") or "unknown"
                     nodes_map[src_id] = {
                         "id": src_id,
                         "name": record.get("source_name") or src_id.split(":")[-1] or "unknown",
-                        "kind": record.get("source_kind") or "Pod",
-                        "namespace": record.get("source_namespace") or "unknown",
+                        "kind": _infer_kind(record.get("source_kind"), src_ns),
+                        "namespace": src_ns,
                         "cluster_id": str(src_cluster_id),
                         "status": "active",
                         "labels": src_labels or {},
@@ -596,6 +662,9 @@ class GraphQueryClient:
                         "node": record.get("source_node"),
                         "owner_kind": record.get("source_owner_kind"),
                         "owner_name": record.get("source_owner_name"),
+                        "network_type": record.get("source_network_type"),
+                        "is_external": record.get("source_is_external"),
+                        "resolution_source": record.get("source_resolution_source"),
                         # Extended metadata
                         "pod_uid": record.get("source_pod_uid"),
                         "host_ip": record.get("source_host_ip"),
@@ -633,11 +702,12 @@ class GraphQueryClient:
                         ""
                     )
                     
+                    dst_ns = record.get("destination_namespace") or "external"
                     nodes_map[dst_id] = {
                         "id": dst_id,
                         "name": record.get("destination_name") or dst_id.split(":")[-1] or "unknown",
-                        "kind": record.get("destination_kind") or "Pod",
-                        "namespace": record.get("destination_namespace") or "external",
+                        "kind": _infer_kind(record.get("destination_kind"), dst_ns),
+                        "namespace": dst_ns,
                         "cluster_id": str(dst_cluster_id),
                         "status": "active",
                         "labels": dst_labels or {},
@@ -646,6 +716,9 @@ class GraphQueryClient:
                         "node": record.get("destination_node"),
                         "owner_kind": record.get("destination_owner_kind"),
                         "owner_name": record.get("destination_owner_name"),
+                        "network_type": record.get("destination_network_type"),
+                        "is_external": record.get("destination_is_external"),
+                        "resolution_source": record.get("destination_resolution_source"),
                         # Extended metadata
                         "pod_uid": record.get("destination_pod_uid"),
                         "host_ip": record.get("destination_host_ip"),
@@ -1504,12 +1577,20 @@ async def get_dependency_summary(
     annotation_value: Optional[str] = Query(None),
     ip: Optional[str] = Query(None),
     depth: int = Query(1, ge=1, le=5),
+    # Plan v3 Akış D m.8 — Discovery mode passthrough.
+    match_all: bool = Query(
+        False,
+        description="Discovery mode — return every workload in scope without picking an identification method. Requires cluster_id or namespace. depth is silently capped at 2.",
+    ),
     current_user: dict = Depends(get_current_user)
 ):
     """
     AI-agent-friendly dependency summary grouped by service category.
     Designed for CI/CD pipelines and AI code agents.
-    Requires at least one analysis_id and one search parameter.
+
+    Either pass at least one identification parameter (annotation,
+    label, owner_name, pod_name, ip) OR set `match_all=true` to use
+    discovery mode (with a cluster_id / namespace tenant guard).
     """
     try:
         params = {
@@ -1534,6 +1615,8 @@ async def get_dependency_summary(
             params["annotation_value"] = annotation_value
         if ip:
             params["ip"] = ip
+        if match_all:
+            params["match_all"] = True
 
         result = await graph_query_client._call_graph_query(
             "/dependencies/summary",

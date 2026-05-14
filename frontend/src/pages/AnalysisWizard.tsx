@@ -23,7 +23,8 @@ import {
   Row,
   Col,
   Statistic,
-  Switch
+  Switch,
+  Slider
 } from 'antd';
 import { 
   ExperimentOutlined, 
@@ -42,7 +43,8 @@ import {
   SyncOutlined,
   StopOutlined,
   FieldTimeOutlined,
-  CalendarOutlined
+  CalendarOutlined,
+  ApiOutlined
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useGetClustersQuery } from '../store/api/clusterApi';
@@ -109,6 +111,14 @@ const GADGET_EVENT_RATES: Record<string, { eventsPerPodPerHour: number; avgEvent
 // Default event rate for unknown gadgets
 const DEFAULT_EVENT_RATE = { eventsPerPodPerHour: 100, avgEventSizeKB: 0.5 };
 
+const L7_PROTOCOL_RATES: Record<string, { eventsPerPodPerHour: number; avgEventSizeKB: number }> = {
+  http: { eventsPerPodPerHour: 500, avgEventSizeKB: 2.5 },
+  grpc: { eventsPerPodPerHour: 300, avgEventSizeKB: 1.8 },
+  dns: { eventsPerPodPerHour: 200, avgEventSizeKB: 0.8 },
+  tcp: { eventsPerPodPerHour: 100, avgEventSizeKB: 0.5 },
+  tls: { eventsPerPodPerHour: 150, avgEventSizeKB: 1.2 },
+};
+
 // Interface for per-cluster scope configuration
 interface PerClusterScope {
   namespaces?: string[];
@@ -171,6 +181,12 @@ const EXCLUSION_PRESETS: { label: string; namespaces: string[]; pods: string[] }
 const AnalysisWizard: React.FC = () => {
   const navigate = useNavigate();
   const [form] = Form.useForm();
+  const watchedLevel = Form.useWatch('analysis_level', form);
+  const [analysisLevelState, setAnalysisLevelState] = useState<string>('l4');
+  useEffect(() => {
+    if (watchedLevel) setAnalysisLevelState(watchedLevel);
+  }, [watchedLevel]);
+  const analysisLevel = analysisLevelState;
   const [currentStep, setCurrentStep] = useState(0);
   const [wizardData, setWizardData] = useState<Partial<AnalysisCreateRequest>>({});
   const [isMultiCluster, setIsMultiCluster] = useState(false);
@@ -187,27 +203,39 @@ const AnalysisWizard: React.FC = () => {
   // Global Settings for Continuous Mode Auto-Stop
   // ============================================
   const [defaultContinuousDuration, setDefaultContinuousDuration] = useState<number>(10);
-  
+  const [l7GlobalEnabled, setL7GlobalEnabled] = useState<boolean>(false);
+
   // Fetch global settings on mount
   useEffect(() => {
     const fetchSettings = async () => {
       try {
         const token = localStorage.getItem('flowfish_token');
-        const response = await fetch('/api/v1/settings/analysis-limits', {
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-        });
-        if (response.ok) {
-          const data = await response.json();
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const [limitsRes, beylaRes] = await Promise.all([
+          fetch('/api/v1/settings/analysis-limits', { headers }),
+          fetch('/api/v1/settings/beyla', { headers }),
+        ]);
+        if (limitsRes.ok) {
+          const data = await limitsRes.json();
           if (data.default_continuous_duration_minutes) {
             setDefaultContinuousDuration(data.default_continuous_duration_minutes);
           }
         }
+        if (beylaRes.ok) {
+          const b = await beylaRes.json();
+          setL7GlobalEnabled(b.l7_enabled === true);
+          form.setFieldsValue({
+            l7_protocols: b.default_protocols || ['http', 'grpc', 'tcp', 'tls'],
+            kfl_filter: '',
+            sampling_rate: Math.round((b.l7_sampling_rate ?? 1.0) * 100),
+          });
+        }
       } catch {
-        // Silently fail, use default value
+        // Silently fail, use default values
       }
     };
     fetchSettings();
-  }, []);
+  }, [form]);
   
   // ============================================
   // Form State Tracking for Reliable Reactivity
@@ -221,15 +249,17 @@ const AnalysisWizard: React.FC = () => {
     deployments?: string[];
     pods?: string[];
     enabled_gadgets?: string[];
+    l7_protocols?: string[];
   }>({});
   
   // Update formState when form values change
   // IMPORTANT: Only update values that are defined in allValues to preserve values from previous steps
   const handleFormValuesChange = useCallback((changedValues: any, allValues: any) => {
+    if (changedValues.analysis_level) {
+      setAnalysisLevelState(changedValues.analysis_level);
+    }
     setFormState(prev => ({
       ...prev,
-      // Only update if the value is explicitly set (not undefined)
-      // This prevents losing values from previous steps
       cluster_id: allValues.cluster_id !== undefined ? allValues.cluster_id : prev.cluster_id,
       cluster_ids: allValues.cluster_ids !== undefined ? allValues.cluster_ids : prev.cluster_ids,
       scope_type: allValues.scope_type !== undefined ? allValues.scope_type : prev.scope_type,
@@ -237,6 +267,7 @@ const AnalysisWizard: React.FC = () => {
       deployments: allValues.deployments !== undefined ? allValues.deployments : prev.deployments,
       pods: allValues.pods !== undefined ? allValues.pods : prev.pods,
       enabled_gadgets: allValues.enabled_gadgets !== undefined ? allValues.enabled_gadgets : prev.enabled_gadgets,
+      l7_protocols: allValues.l7_protocols !== undefined ? allValues.l7_protocols : prev.l7_protocols,
     }));
   }, []);
   
@@ -269,7 +300,27 @@ const AnalysisWizard: React.FC = () => {
     }
     return selectedClusterId;
   }, [isMultiCluster, selectedClusterIds, selectedClusterId]);
-  
+
+  // L7 is enabled if global setting is on OR at least one selected cluster has Beyla healthy/degraded
+  const l7FeatureEnabled = useMemo(() => {
+    if (l7GlobalEnabled) return true;
+    if (!clusters?.length) return false;
+    const idsToCheck = isMultiCluster ? (selectedClusterIds || []) : (primaryClusterId ? [primaryClusterId] : []);
+    return idsToCheck.some((cid: number) => {
+      const cluster = clusters.find((c: any) => c.id === cid);
+      const beylaStatus = cluster?.beyla_health_status;
+      return beylaStatus === 'healthy' || beylaStatus === 'degraded';
+    });
+  }, [l7GlobalEnabled, primaryClusterId, clusters, isMultiCluster, selectedClusterIds]);
+
+  const clustersWithoutBeyla = useMemo(() => {
+    if (!clusters?.length) return [];
+    const idsToCheck = isMultiCluster ? (selectedClusterIds || []) : (primaryClusterId ? [primaryClusterId] : []);
+    return idsToCheck
+      .map((cid: number) => clusters.find((c: any) => c.id === cid))
+      .filter((c: any) => c && c.beyla_health_status !== 'healthy' && c.beyla_health_status !== 'degraded');
+  }, [clusters, isMultiCluster, selectedClusterIds, primaryClusterId]);
+
   // ============================================
   // Multi-Cluster Resource Fetching
   // ============================================
@@ -457,6 +508,14 @@ const AnalysisWizard: React.FC = () => {
     eventTypes.filter((et: any) => et.status === 'available').map((et: any) => et.id),
     [eventTypes]
   );
+
+  useEffect(() => {
+    if (analysisLevel === 'l7') {
+      form.setFieldValue('enabled_gadgets', []);
+    } else if (defaultGadgets.length > 0) {
+      form.setFieldValue('enabled_gadgets', defaultGadgets);
+    }
+  }, [analysisLevel, form, defaultGadgets]);
   
   // ============================================
   // Smart Estimation Calculator
@@ -473,6 +532,7 @@ const AnalysisWizard: React.FC = () => {
       deployments: formState.deployments?.length,
       pods: formState.pods?.length,
       enabled_gadgets: formState.enabled_gadgets?.length,
+      l7_protocols: formState.l7_protocols?.length,
     });
   }, [formState]);
   
@@ -615,14 +675,35 @@ const AnalysisWizard: React.FC = () => {
       totalMBPerHour += (eventsForGadget * rates.avgEventSizeKB) / 1024;
     });
     
-    // If no gadgets selected, use defaults (assuming at least network_flow)
-    if (gadgetsToUse.length === 0) {
+    if (gadgetsToUse.length === 0 && analysisLevel !== 'l7') {
       const defaultRate = GADGET_EVENT_RATES['network_flow'] || DEFAULT_EVENT_RATE;
       totalEventsPerHour = defaultRate.eventsPerPodPerHour * estimatedPodCount;
       totalMBPerHour = (totalEventsPerHour * defaultRate.avgEventSizeKB) / 1024;
     }
+
+    let l7EventsPerHour = 0;
+    let l7MBPerHour = 0;
+    const selectedProtocols = formState.l7_protocols?.length
+      ? formState.l7_protocols
+      : ['http', 'grpc', 'tcp', 'tls'];
+
+    if (analysisLevel === 'l7' || analysisLevel === 'both') {
+      selectedProtocols.forEach(proto => {
+        const rates = L7_PROTOCOL_RATES[proto] || { eventsPerPodPerHour: 100, avgEventSizeKB: 1.0 };
+        const eventsForProto = rates.eventsPerPodPerHour * estimatedPodCount;
+        l7EventsPerHour += eventsForProto;
+        l7MBPerHour += (eventsForProto * rates.avgEventSizeKB) / 1024;
+      });
+    }
+
+    if (analysisLevel === 'l7') {
+      totalEventsPerHour = l7EventsPerHour;
+      totalMBPerHour = l7MBPerHour;
+    } else if (analysisLevel === 'both') {
+      totalEventsPerHour += l7EventsPerHour;
+      totalMBPerHour += l7MBPerHour;
+    }
     
-    // Ensure minimum values to prevent division by zero and show meaningful estimates
     totalMBPerHour = Math.max(totalMBPerHour, 0.1);
     
     return {
@@ -632,15 +713,15 @@ const AnalysisWizard: React.FC = () => {
         const clusterInfo = clusters.find((cl: any) => cl.id === c.id);
         return sum + (clusterInfo?.total_nodes || 3);
       }, 0),
-      gadgetCount: gadgetsToUse.length || 1, // Show at least 1 for default estimation
+      gadgetCount: gadgetsToUse.length || 1,
+      protocolCount: selectedProtocols.length,
       eventsPerHour: Math.round(totalEventsPerHour),
-      mbPerHour: Math.round(totalMBPerHour * 10) / 10, // Round to 1 decimal
-      // Duration estimates for given size (guaranteed non-zero due to minimum mbPerHour)
+      mbPerHour: Math.round(totalMBPerHour * 10) / 10,
       hoursFor100MB: Math.round(100 / totalMBPerHour),
       hoursFor500MB: Math.round(500 / totalMBPerHour),
       hoursFor1GB: Math.round(1024 / totalMBPerHour),
     };
-  }, [formStateVersion, formState, defaultGadgets, allClusterResources, clusters, isMultiCluster, primaryClusterId]);
+  }, [formStateVersion, formState, defaultGadgets, allClusterResources, clusters, isMultiCluster, primaryClusterId, analysisLevel]);
   
   // Reset per-cluster scope when clusters change
   useEffect(() => {
@@ -668,26 +749,41 @@ const AnalysisWizard: React.FC = () => {
       deployments: currentValues.deployments,
       pods: currentValues.pods,
       enabled_gadgets: currentValues.enabled_gadgets,
+      l7_protocols: currentValues.l7_protocols,
     }));
   }, [currentStep, clusters, form, selectedClusterId, selectedClusterIds]);
 
-  const steps = [
-    {
-      title: 'Scope Selection',
-      icon: <AimOutlined />,
-      description: 'Choose what to analyze',
-    },
-    {
-      title: 'Gadget Modules',
-      icon: <AppstoreOutlined />,
-      description: 'Select event types',
-    },
-    {
-      title: 'Time & Sizing',
-      icon: <ClockCircleOutlined />,
-      description: 'Timing & data limits',
-    },
-  ];
+  const steps = useMemo(() => {
+    const step1Title =
+      analysisLevel === 'l7'
+        ? 'L7 Capture Config'
+        : analysisLevel === 'both'
+          ? 'Event Configuration'
+          : 'Gadget Modules';
+    const step1Desc =
+      analysisLevel === 'l7'
+        ? 'Protocols & capture filters'
+        : analysisLevel === 'both'
+          ? 'L4 gadgets & L7 capture'
+          : 'Select event types';
+    return [
+      {
+        title: 'Scope Selection',
+        icon: <AimOutlined />,
+        description: 'Choose what to analyze',
+      },
+      {
+        title: step1Title,
+        icon: analysisLevel === 'l7' ? <GlobalOutlined /> : <AppstoreOutlined />,
+        description: step1Desc,
+      },
+      {
+        title: 'Time & Sizing',
+        icon: <ClockCircleOutlined />,
+        description: 'Timing & data limits',
+      },
+    ];
+  }, [analysisLevel]);
 
   const handleNext = async () => {
     try {
@@ -696,23 +792,44 @@ const AnalysisWizard: React.FC = () => {
       
       // Step 0 (Scope Selection): Validate scope-specific requirements
       if (currentStep === 0) {
-        // Namespace scope requires at least one namespace selected
         if (values.scope_type === 'namespace') {
-          if (!values.namespaces || values.namespaces.length === 0) {
+          if (isMultiCluster && scopeMode === 'per-cluster') {
+            const hasAnyNs = Object.values(perClusterScope).some(
+              (s: any) => s.namespaces?.length > 0
+            );
+            if (!hasAnyNs) {
+              message.error('Please configure namespaces for at least one cluster');
+              return;
+            }
+          } else if (!values.namespaces || values.namespaces.length === 0) {
             message.error('Please select at least one namespace');
             return;
           }
         }
-        // Deployment scope requires at least one deployment selected (if enabled)
         if (values.scope_type === 'deployment') {
-          if (!values.deployments || values.deployments.length === 0) {
+          if (isMultiCluster && scopeMode === 'per-cluster') {
+            const hasAnyDep = Object.values(perClusterScope).some(
+              (s: any) => s.deployments?.length > 0
+            );
+            if (!hasAnyDep) {
+              message.error('Please configure deployments for at least one cluster');
+              return;
+            }
+          } else if (!values.deployments || values.deployments.length === 0) {
             message.error('Please select at least one deployment');
             return;
           }
         }
-        // Pod scope requires at least one pod selected (if enabled)
         if (values.scope_type === 'pod') {
-          if (!values.pods || values.pods.length === 0) {
+          if (isMultiCluster && scopeMode === 'per-cluster') {
+            const hasAnyPod = Object.values(perClusterScope).some(
+              (s: any) => s.pods?.length > 0
+            );
+            if (!hasAnyPod) {
+              message.error('Please configure pods for at least one cluster');
+              return;
+            }
+          } else if (!values.pods || values.pods.length === 0) {
             message.error('Please select at least one pod');
             return;
           }
@@ -942,6 +1059,23 @@ const AnalysisWizard: React.FC = () => {
         change_detection_strategy: finalValues.change_detection_strategy || 'baseline',
         // Change Detection Types - always track all types
         change_detection_types: ['all'],
+        analysis_level: finalValues.analysis_level || 'l4',
+        l7_config:
+          finalValues.analysis_level && finalValues.analysis_level !== 'l4'
+            ? {
+                protocols: finalValues.l7_protocols?.length
+                  ? finalValues.l7_protocols
+                  : ['http', 'grpc', 'tcp', 'tls'],
+                kfl_filter: finalValues.kfl_filter || '',
+                sampling_rate: (finalValues.sampling_rate ?? 100) / 100,
+                service_filter: finalValues.l7_service_filter || '',
+                http_methods: finalValues.l7_http_methods || [],
+                status_codes: finalValues.l7_status_codes || [],
+                path_pattern: finalValues.l7_path_pattern || '',
+                exclude_paths:
+                  finalValues.l7_exclude_paths || '/healthz, /readyz, /livez, /metrics',
+              }
+            : undefined,
       };
 
       const createdAnalysis = await createAnalysis(analysisRequest).unwrap();
@@ -997,6 +1131,50 @@ const AnalysisWizard: React.FC = () => {
               >
                 <TextArea rows={3} placeholder="Describe the purpose of this analysis" />
               </Form.Item>
+
+              <Form.Item
+                name="analysis_level"
+                label="Analysis Level"
+                initialValue="l4"
+                tooltip="Select which level of network analysis to perform"
+              >
+                <Radio.Group>
+                  <Radio value="l4">
+                    <Space direction="vertical" size={0}>
+                      <span>Network Level (L4)</span>
+                      <span style={{ color: '#888', fontSize: 12 }}>Inspector Gadget — eBPF TCP/UDP flow analysis</span>
+                    </Space>
+                  </Radio>
+                  <Radio value="l7" disabled={!l7FeatureEnabled}>
+                    <Space direction="vertical" size={0}>
+                      <span>Application Level (L7){!l7FeatureEnabled && <span style={{ color: '#999', fontSize: 11 }}> — Requires Beyla agent on target cluster</span>}</span>
+                      <span style={{ color: '#888', fontSize: 12 }}>Beyla — HTTP, gRPC application traffic</span>
+                    </Space>
+                  </Radio>
+                  <Radio value="both" disabled={!l7FeatureEnabled}>
+                    <Space direction="vertical" size={0}>
+                      <span>Both (L4 + L7){!l7FeatureEnabled && <span style={{ color: '#999', fontSize: 11 }}> — Requires Beyla agent on target cluster</span>}</span>
+                      <span style={{ color: '#888', fontSize: 12 }}>Combined network and application-level analysis</span>
+                    </Space>
+                  </Radio>
+                </Radio.Group>
+              </Form.Item>
+
+              {(analysisLevel === 'l7' || analysisLevel === 'both') && clustersWithoutBeyla.length > 0 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message="Beyla not detected on selected cluster(s)"
+                  description={
+                    <span>
+                      The following cluster(s) do not have a healthy Beyla agent:{' '}
+                      <strong>{clustersWithoutBeyla.map((c: any) => c.name).join(', ')}</strong>.
+                      L7 events will not be collected from these clusters.
+                    </span>
+                  }
+                />
+              )}
 
               <Form.Item
                 name="change_detection_enabled"
@@ -1117,15 +1295,11 @@ const AnalysisWizard: React.FC = () => {
               
               {isMultiCluster && (
                 <Alert
-                  message="Multi-Cluster Analysis"
+                  message="Multi-cluster"
                   description={
                     <span>
-                      Select multiple clusters to analyze. Events and communications from all selected clusters 
-                      will be collected and displayed together. Use <strong>Ctrl+Click</strong> or <strong>Cmd+Click</strong> to 
-                      select multiple clusters.
-                      <br /><br />
-                      <InfoCircleOutlined /> You can configure scope for each cluster separately or use unified scope 
-                      across all clusters.
+                      Events from all selected clusters are shown together. Use <strong>Ctrl/Cmd-click</strong> to select multiple clusters.
+                      Choose unified or per-cluster scope below when you pick more than one.
                     </span>
                   }
                   type="info"
@@ -1141,35 +1315,18 @@ const AnalysisWizard: React.FC = () => {
                   label={
                     <Space>
                       <span>Scope Configuration Mode</span>
-                      <Tooltip 
+                      <Tooltip
                         title={
-                          <div style={{ maxWidth: 350 }}>
-                            <div style={{ fontWeight: 600, marginBottom: 8 }}>Multi-Cluster Scope Configuration</div>
-                            
-                            <div style={{ marginBottom: 12 }}>
-                              <div style={{ fontWeight: 500, color: '#4d9f7c' }}>🌐 Unified Scope</div>
-                              <div style={{ fontSize: 12, marginTop: 4 }}>
-                                Monitor the <strong>same namespaces</strong> across all clusters. 
-                                Ideal for comparing the same application's behavior in different environments (Prod vs Stage).
-                              </div>
-                              <div style={{ fontSize: 11, color: '#aaa', marginTop: 4, fontStyle: 'italic' }}>
-                                Example: Monitor "payments" namespace in both clusters
-                              </div>
+                          <div style={{ maxWidth: 320 }}>
+                            <div style={{ marginBottom: 8 }}>
+                              <strong>Unified</strong> — same namespaces (or equivalent) in every cluster (e.g. prod vs stage).
                             </div>
-                            
                             <div>
-                              <div style={{ fontWeight: 500, color: '#0891b2' }}>🎯 Per-Cluster Scope</div>
-                              <div style={{ fontSize: 12, marginTop: 4 }}>
-                                Select <strong>different namespaces</strong> for each cluster individually. 
-                                Use when clusters have different naming conventions or you want to monitor different applications.
-                              </div>
-                              <div style={{ fontSize: 11, color: '#aaa', marginTop: 4, fontStyle: 'italic' }}>
-                                Example: Monitor "payments" in Prod, "payments-test" in Stage
-                              </div>
+                              <strong>Per-cluster</strong> — pick different namespaces or workloads per cluster.
                             </div>
                           </div>
                         }
-                        overlayStyle={{ maxWidth: 400 }}
+                        overlayStyle={{ maxWidth: 340 }}
                       >
                         <InfoCircleOutlined style={{ color: '#0891b2', cursor: 'help' }} />
                       </Tooltip>
@@ -1214,6 +1371,11 @@ const AnalysisWizard: React.FC = () => {
                     showSearch
                     loading={isClustersLoading}
                     optionFilterProp="children"
+                    onChange={() => {
+                      form.setFieldValue('namespaces', []);
+                      form.setFieldValue('deployments', []);
+                      form.setFieldValue('pods', []);
+                    }}
                   >
                     {clusters.map((cluster: any) => (
                       <Option key={cluster.id} value={cluster.id}>
@@ -2033,14 +2195,14 @@ const AnalysisWizard: React.FC = () => {
                         </Tooltip>
                       </Radio.Button>
                       <Radio.Button value="conservative">
-                        <Tooltip title="Events are dropped only if BOTH source and destination match. App↔System traffic (ingress, DNS, monitoring) is preserved in the dependency map.">
+                        <Tooltip title="Events are dropped only if BOTH source and destination match. App↔System traffic (ingress, DNS, monitoring) is preserved in the network map.">
                           Conservative
                         </Tooltip>
                       </Radio.Button>
                     </Radio.Group>
                     {excludeStrategy === 'aggressive' && (
                       <Alert
-                        message="Excluded namespaces/pods will be completely removed from the dependency map and timeseries data."
+                        message="Excluded namespaces/pods will be completely removed from the network map and timeseries data."
                         type="info"
                         showIcon
                         style={{ marginTop: 8 }}
@@ -2146,75 +2308,387 @@ const AnalysisWizard: React.FC = () => {
           </Space>
         );
 
-      case 1: // Gadget Modules (Event Types)
+      case 1: // Gadget Modules / L7 protocols
         return (
           <Space direction="vertical" size="large" style={{ width: '100%' }}>
-            <div>
-              <Title level={4}>Select Inspector Gadget Event Types</Title>
-              <Paragraph type="secondary">
-                Choose which eBPF event types to collect from Inspector Gadget
-              </Paragraph>
-            </div>
-
-            {isEventTypesLoading ? (
-              <div style={{ textAlign: 'center', padding: '40px' }}>
-                <Spin size="large" tip="Loading event types..." />
+            {/* Feature modules powered by this analysis level */}
+            <Card
+              size="small"
+              style={{ borderColor: '#0891b220', background: 'transparent' }}
+              title={
+                <Space>
+                  <AppstoreOutlined style={{ color: '#0891b2' }} />
+                  <span>Analysis Modules</span>
+                  <Tag color="blue" style={{ fontSize: 11 }}>
+                    {analysisLevel === 'l7' ? 'L7 only' : analysisLevel === 'both' ? 'L4 + L7' : 'L4 only'}
+                  </Tag>
+                </Space>
+              }
+            >
+              <Space wrap size={[8, 8]}>
+                {(analysisLevel === 'l4' || analysisLevel === 'both') && (
+                  <>
+                    <Tag color="green">Network Map</Tag>
+                    <Tag color="green">Network Explorer</Tag>
+                    <Tag color="green">Impact Simulation</Tag>
+                    <Tag color="green">Change Detection</Tag>
+                    <Tag color="green">Activity Monitor</Tag>
+                    <Tag color="green">Event Timeline</Tag>
+                    <Tag color="green">Security Center</Tag>
+                  </>
+                )}
+                {(analysisLevel === 'l7' || analysisLevel === 'both') && (
+                  <>
+                    <Tag color="cyan">Service Map</Tag>
+                    <Tag color="cyan">Integration Hub</Tag>
+                  </>
+                )}
+              </Space>
+              <div style={{ marginTop: 8 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {analysisLevel === 'l7'
+                    ? 'L7 events will power the Service Map and Integration Hub with HTTP and gRPC traffic visibility.'
+                    : analysisLevel === 'both'
+                    ? 'L4 events feed network-level modules; L7 events power Service Map and Integration Hub.'
+                    : 'L4 eBPF events feed all network-level analysis modules.'}
+                </Text>
               </div>
-            ) : eventTypes.length === 0 ? (
-              <Alert
-                message="No Event Types Available"
-                description="Event types could not be loaded. Please check your backend connection."
-                type="error"
-                showIcon
-              />
-            ) : (
-              <Form.Item
-                name="enabled_gadgets"
-                rules={[{ required: true, message: 'Select at least one event type' }]}
-                initialValue={eventTypes
-                  .filter((et: any) => et.status === 'available')
-                  .map((et: any) => et.id)}
-              >
-                <Checkbox.Group style={{ width: '100%' }}>
-                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                    {eventTypes
-                      .filter((et: any) => et.status === 'available')
-                      .map((eventType: any) => (
-                        <Card 
-                          key={eventType.id} 
-                          size="small"
-                          style={{ 
-                            borderColor: eventType.performance_impact === 'low' ? '#4d9f7c' : undefined,
-                            borderWidth: eventType.performance_impact === 'low' ? 2 : 1
-                          }}
-                        >
-                          <Checkbox value={eventType.id}>
-                            <Space direction="vertical" size={0}>
-                              <Space>
-                                <strong>{eventType.display_name}</strong>
-                                {eventType.performance_impact === 'low' && (
-                                  <Tag color="blue" style={{ fontSize: '11px' }}>Recommended</Tag>
-                                )}
-                                <Tag color={
-                                  eventType.performance_impact === 'low' ? 'green' : 
-                                  eventType.performance_impact === 'medium' ? 'orange' : 'red'
-                                } style={{ fontSize: '11px' }}>
-                                  {eventType.performance_impact.toUpperCase()} Impact
-                                </Tag>
-                              </Space>
-                              <Text type="secondary" style={{ fontSize: '13px' }}>
-                                {eventType.description}
-                              </Text>
-                              <Text type="secondary" style={{ fontSize: '11px' }}>
-                                Gadget: <code>{eventType.gadget_name}</code> | Volume: {eventType.data_volume}
-                              </Text>
-                            </Space>
-                          </Checkbox>
-                        </Card>
-                      ))}
+            </Card>
+
+            {(analysisLevel === 'l4' || analysisLevel === 'both') && (
+              <div>
+                <Title level={4}>
+                  <Space>
+                    <ContainerOutlined style={{ color: '#4d9f7c' }} />
+                    {analysisLevel === 'both' ? 'Network-Level (L4) — Inspector Gadget' : 'Select Inspector Gadget Event Types'}
                   </Space>
-                </Checkbox.Group>
-              </Form.Item>
+                </Title>
+                <Paragraph type="secondary">
+                  Choose which eBPF event types to collect from Inspector Gadget
+                </Paragraph>
+              </div>
+            )}
+
+            {(analysisLevel === 'l4' || analysisLevel === 'both') && (
+              <>
+                {isEventTypesLoading ? (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <Spin size="large" tip="Loading event types..." />
+                  </div>
+                ) : eventTypes.length === 0 ? (
+                  <Alert
+                    message="No Event Types Available"
+                    description="Event types could not be loaded. Please check your backend connection."
+                    type="error"
+                    showIcon
+                  />
+                ) : (
+                  <Form.Item
+                    name="enabled_gadgets"
+                    rules={[
+                      {
+                        validator: async (_, value) => {
+                          const level = form.getFieldValue('analysis_level') || 'l4';
+                          if (level === 'l7') return Promise.resolve();
+                          if (!value || value.length === 0) {
+                            return Promise.reject(new Error('Select at least one event type'));
+                          }
+                          return Promise.resolve();
+                        },
+                      },
+                    ]}
+                  >
+                    <Checkbox.Group style={{ width: '100%' }}>
+                      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                        {eventTypes
+                          .filter((et: any) => et.status === 'available')
+                          .map((eventType: any) => (
+                            <Card
+                              key={eventType.id}
+                              size="small"
+                              style={{
+                                borderColor: eventType.performance_impact === 'low' ? '#4d9f7c' : undefined,
+                                borderWidth: eventType.performance_impact === 'low' ? 2 : 1
+                              }}
+                            >
+                              <Checkbox value={eventType.id}>
+                                <Space direction="vertical" size={0}>
+                                  <Space>
+                                    <strong>{eventType.display_name}</strong>
+                                    {eventType.performance_impact === 'low' && (
+                                      <Tag color="blue" style={{ fontSize: '11px' }}>Recommended</Tag>
+                                    )}
+                                    <Tag color={
+                                      eventType.performance_impact === 'low' ? 'green' :
+                                      eventType.performance_impact === 'medium' ? 'orange' : 'red'
+                                    } style={{ fontSize: '11px' }}>
+                                      {eventType.performance_impact.toUpperCase()} Impact
+                                    </Tag>
+                                  </Space>
+                                  <Text type="secondary" style={{ fontSize: '13px' }}>
+                                    {eventType.description}
+                                  </Text>
+                                  <Text type="secondary" style={{ fontSize: '11px' }}>
+                                    Gadget: <code>{eventType.gadget_name}</code> | Volume: {eventType.data_volume}
+                                  </Text>
+                                </Space>
+                              </Checkbox>
+                            </Card>
+                          ))}
+                      </Space>
+                    </Checkbox.Group>
+                  </Form.Item>
+                )}
+              </>
+            )}
+
+            {analysisLevel === 'both' && (
+              <Divider style={{ margin: '8px 0 16px' }}>
+                <Text type="secondary" style={{ fontSize: 13 }}>Application-Level Configuration</Text>
+              </Divider>
+            )}
+
+            {(analysisLevel === 'l7' || analysisLevel === 'both') && (
+              <div>
+                <Title level={4}>
+                  <Space>
+                    <GlobalOutlined style={{ color: '#0891b2' }} />
+                    {analysisLevel === 'both'
+                      ? 'Application-Level (L7) — Beyla'
+                      : 'Application-Level (L7) Capture'}
+                  </Space>
+                </Title>
+                <Paragraph type="secondary">
+                  Beyla captures application traffic. HTTP and gRPC power the service map; adjust protocols and filters to control volume.
+                </Paragraph>
+
+                <Form.Item
+                  name="l7_protocols"
+                  label="Capture Protocols"
+                  initialValue={['http', 'grpc', 'tcp', 'tls']}
+                  rules={[
+                    { type: 'array', min: 1, message: 'Select at least one protocol' },
+                    {
+                      validator: async (_, value) => {
+                        if (!value || (!value.includes('http') && !value.includes('grpc'))) {
+                          return Promise.reject(new Error('HTTP or gRPC is required for service dependency mapping'));
+                        }
+                        return Promise.resolve();
+                      }
+                    }
+                  ]}
+                >
+                  <Checkbox.Group style={{ width: '100%' }}>
+                    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                      <Text type="secondary" strong style={{ fontSize: 12 }}>
+                        Core protocols (service map)
+                      </Text>
+                      <Card
+                        size="small"
+                        style={{ borderColor: '#4d9f7c', borderWidth: 2 }}
+                      >
+                        <Checkbox value="http">
+                          <Space direction="vertical" size={0}>
+                            <Space>
+                              <Text strong>HTTP / HTTPS</Text>
+                              <Tag color="blue" style={{ fontSize: 11 }}>Recommended</Tag>
+                              <Tag color="green" style={{ fontSize: 11 }}>Service map</Tag>
+                            </Space>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              REST and web APIs — method, path, status, latency
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 11 }}>
+                              Volume: <Text strong style={{ fontSize: 11 }}>High</Text> · Impact:{' '}
+                              <Text strong style={{ fontSize: 11, color: '#4d9f7c' }}>Low</Text>
+                            </Text>
+                          </Space>
+                        </Checkbox>
+                      </Card>
+                      <Card
+                        size="small"
+                        style={{ borderColor: '#4d9f7c', borderWidth: 2 }}
+                      >
+                        <Checkbox value="grpc">
+                          <Space direction="vertical" size={0}>
+                            <Space>
+                              <Text strong>gRPC</Text>
+                              <Tag color="blue" style={{ fontSize: 11 }}>Recommended</Tag>
+                              <Tag color="green" style={{ fontSize: 11 }}>Service map</Tag>
+                            </Space>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              Service-to-service RPC — method, status, metadata
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 11 }}>
+                              Volume: <Text strong style={{ fontSize: 11 }}>Medium</Text> · Impact:{' '}
+                              <Text strong style={{ fontSize: 11, color: '#4d9f7c' }}>Low</Text>
+                            </Text>
+                          </Space>
+                        </Checkbox>
+                      </Card>
+
+                      <Text type="secondary" strong style={{ fontSize: 12, marginTop: 8 }}>
+                        Supplementary protocols
+                      </Text>
+                      <Row gutter={[12, 12]}>
+                        <Col xs={24} sm={12}>
+                          <Card size="small" style={{ height: '100%' }}>
+                            <Checkbox value="tcp">
+                              <Space direction="vertical" size={0}>
+                                <Space>
+                                  <Text strong>TCP</Text>
+                                  <Tag style={{ fontSize: 11 }}>Connections</Tag>
+                                </Space>
+                                <Text type="secondary" style={{ fontSize: 11 }}>
+                                  Connection state, retransmissions
+                                </Text>
+                                <Text type="secondary" style={{ fontSize: 11 }}>
+                                  Volume: high · Impact: low
+                                </Text>
+                              </Space>
+                            </Checkbox>
+                          </Card>
+                        </Col>
+                        <Col xs={24} sm={12}>
+                          <Card size="small" style={{ height: '100%' }}>
+                            <Checkbox value="tls">
+                              <Space direction="vertical" size={0}>
+                                <Space>
+                                  <Text strong>TLS</Text>
+                                  <Tag style={{ fontSize: 11 }}>Encrypted</Tag>
+                                </Space>
+                                <Text type="secondary" style={{ fontSize: 11 }}>
+                                  Handshake, SNI, cipher info
+                                </Text>
+                                <Text type="secondary" style={{ fontSize: 11 }}>
+                                  Volume: low · Impact: low
+                                </Text>
+                              </Space>
+                            </Checkbox>
+                          </Card>
+                        </Col>
+                      </Row>
+                    </Space>
+                  </Checkbox.Group>
+                </Form.Item>
+
+                <Divider style={{ margin: '16px 0' }} />
+
+                <Title level={5}>
+                  <Space>
+                    <DatabaseOutlined style={{ color: '#7c8eb5' }} />
+                    Capture filters
+                  </Space>
+                </Title>
+                <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                  Optional. Leave blank to capture broadly; filters reduce volume.
+                </Paragraph>
+
+                <Form.Item
+                  name="l7_service_filter"
+                  label="Service filter"
+                  tooltip="Comma-separated service name patterns to include."
+                >
+                  <Input placeholder="e.g. api-*, payment-service, auth-*" />
+                </Form.Item>
+
+                <Row gutter={16}>
+                  <Col xs={24} sm={12}>
+                    <Form.Item
+                      name="l7_http_methods"
+                      label="HTTP methods"
+                      tooltip="Leave empty for all methods."
+                      initialValue={[]}
+                    >
+                      <Select mode="multiple" placeholder="All methods (default)" allowClear>
+                        <Option value="GET">GET</Option>
+                        <Option value="POST">POST</Option>
+                        <Option value="PUT">PUT</Option>
+                        <Option value="DELETE">DELETE</Option>
+                        <Option value="PATCH">PATCH</Option>
+                        <Option value="HEAD">HEAD</Option>
+                        <Option value="OPTIONS">OPTIONS</Option>
+                      </Select>
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} sm={12}>
+                    <Form.Item
+                      name="l7_status_codes"
+                      label="HTTP status codes"
+                      tooltip="Capture only these ranges. Leave empty for all."
+                      initialValue={[]}
+                    >
+                      <Select mode="multiple" placeholder="All status codes (default)" allowClear>
+                        <Option value="2xx">2xx (success)</Option>
+                        <Option value="3xx">3xx (redirect)</Option>
+                        <Option value="4xx">4xx (client)</Option>
+                        <Option value="5xx">5xx (server)</Option>
+                      </Select>
+                    </Form.Item>
+                  </Col>
+                </Row>
+
+                <Form.Item
+                  name="l7_path_pattern"
+                  label="HTTP path pattern"
+                  tooltip="Optional regex to filter paths."
+                >
+                  <Input placeholder='e.g. /api/v[12]/.* or /health|/readyz' />
+                </Form.Item>
+
+                <Form.Item
+                  name="l7_exclude_paths"
+                  label="Exclude paths"
+                  tooltip="Comma-separated paths to skip (health, metrics)."
+                  initialValue="/healthz, /readyz, /livez, /metrics"
+                >
+                  <Input placeholder="/healthz, /readyz, /livez, /metrics" />
+                </Form.Item>
+
+                <Form.Item
+                  name="kfl_filter"
+                  label="Advanced filter (optional)"
+                  tooltip="Optional expression for advanced capture filtering. When set, it may override the simple filters above."
+                >
+                  <TextArea
+                    rows={2}
+                    placeholder='e.g. http and request.method == "GET"'
+                    style={{ fontFamily: 'monospace', fontSize: 12 }}
+                  />
+                </Form.Item>
+
+                <Divider style={{ margin: '16px 0' }} />
+
+                <Title level={5}>
+                  <Space>
+                    <ThunderboltOutlined style={{ color: '#b89b5d' }} />
+                    Sampling & performance
+                  </Space>
+                </Title>
+                <Form.Item
+                  name="sampling_rate"
+                  label="Sampling rate"
+                  initialValue={100}
+                  tooltip="Lower sampling reduces volume and cluster overhead."
+                >
+                  <Slider
+                    min={1}
+                    max={100}
+                    marks={{ 1: '1%', 25: '25%', 50: '50%', 75: '75%', 100: '100%' }}
+                  />
+                </Form.Item>
+
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Service map"
+                  description={
+                    <span>
+                      <strong>HTTP</strong> or <strong>gRPC</strong> is required for the service map.{' '}
+                      Tighter filters and lower sampling reduce load on busy clusters.
+                    </span>
+                  }
+                />
+              </div>
             )}
           </Space>
         );
@@ -2572,7 +3046,13 @@ const AnalysisWizard: React.FC = () => {
                 <Space>
                   <ThunderboltOutlined style={{ color: '#7c8eb5' }} />
                   <span>Estimated Data Generation</span>
-                  <Tooltip title="Estimates based on your scope selection, cluster resources, and selected gadgets from previous steps.">
+                  <Tooltip title={
+                    analysisLevel === 'l7'
+                      ? 'Estimates based on scope, cluster resources, and selected L7 protocols'
+                      : analysisLevel === 'both'
+                      ? 'Estimates based on scope, cluster resources, selected gadgets and L7 protocols'
+                      : 'Estimates based on scope, cluster resources, and selected gadgets'
+                  }>
                     <InfoCircleOutlined style={{ color: '#0891b2', cursor: 'help' }} />
                   </Tooltip>
                 </Space>
@@ -2587,13 +3067,40 @@ const AnalysisWizard: React.FC = () => {
                     valueStyle={{ color: '#0891b2', fontSize: 20 }}
                   />
                 </Col>
-                <Col xs={12} sm={6}>
-                  <Statistic 
-                    title={<Space><AppstoreOutlined /> Gadgets Selected</Space>}
-                    value={estimatedMetrics.gadgetCount}
-                    valueStyle={{ color: '#4d9f7c', fontSize: 20 }}
-                  />
-                </Col>
+                {analysisLevel === 'l7' ? (
+                  <Col xs={12} sm={6}>
+                    <Statistic
+                      title={<Space><AppstoreOutlined /> Protocols Selected</Space>}
+                      value={estimatedMetrics.protocolCount}
+                      valueStyle={{ color: '#4d9f7c', fontSize: 20 }}
+                    />
+                  </Col>
+                ) : analysisLevel === 'both' ? (
+                  <>
+                    <Col xs={12} sm={3}>
+                      <Statistic
+                        title={<Space><AppstoreOutlined /> Gadgets</Space>}
+                        value={estimatedMetrics.gadgetCount}
+                        valueStyle={{ color: '#4d9f7c', fontSize: 18 }}
+                      />
+                    </Col>
+                    <Col xs={12} sm={3}>
+                      <Statistic
+                        title={<Space><ApiOutlined /> Protocols</Space>}
+                        value={estimatedMetrics.protocolCount}
+                        valueStyle={{ color: '#4d9f7c', fontSize: 18 }}
+                      />
+                    </Col>
+                  </>
+                ) : (
+                  <Col xs={12} sm={6}>
+                    <Statistic 
+                      title={<Space><AppstoreOutlined /> Gadgets Selected</Space>}
+                      value={estimatedMetrics.gadgetCount}
+                      valueStyle={{ color: '#4d9f7c', fontSize: 20 }}
+                    />
+                  </Col>
+                )}
                 <Col xs={12} sm={6}>
                   <Statistic 
                     title="Events / Hour"
@@ -2637,6 +3144,21 @@ const AnalysisWizard: React.FC = () => {
                     <span>
                       With <strong>{estimatedMetrics.mbPerHour} MB/hour</strong>, consider using 
                       <strong> Stop on Limit</strong> or <strong>Rolling Window</strong> to manage storage.
+                    </span>
+                  }
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 12 }}
+                />
+              )}
+
+              {(analysisLevel === 'l7' || analysisLevel === 'both') && (
+                <Alert
+                  message="L7 data volume"
+                  description={
+                    <span>
+                      Application-level capture can produce much higher event volume than L4 eBPF collection alone.
+                      Prefer <strong>fixed duration</strong>, <strong>data size limits</strong>, lower <strong>sampling</strong>, and tighter <strong>scope</strong> on busy clusters.
                     </span>
                   }
                   type="warning"
@@ -2999,8 +3521,8 @@ const AnalysisWizard: React.FC = () => {
         <Title level={2}>
           <ExperimentOutlined /> New Analysis
         </Title>
-        <Paragraph>
-          Create a new analysis to discover application communications and dependencies using Inspector Gadget
+        <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          Set scope, capture (L4 eBPF and/or L7 Beyla), and timing for dependency and traffic analysis.
         </Paragraph>
       </div>
       
@@ -3012,6 +3534,7 @@ const AnalysisWizard: React.FC = () => {
           layout="vertical"
           style={{ minHeight: 400 }}
           onValuesChange={handleFormValuesChange}
+          preserve
         >
           {renderStepContent()}
         </Form>

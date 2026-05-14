@@ -29,7 +29,11 @@ import {
   Statistic,
   Alert,
   Empty,
-  Spin
+  Spin,
+  DatePicker,
+  Drawer,
+  Descriptions,
+  Pagination,
 } from 'antd';
 import {
   UserOutlined,
@@ -182,9 +186,25 @@ interface ActivityLog {
   action: string;
   resource_type: string;
   resource_id: string | null;
+  resource_name?: string | null;
   details: Record<string, any>;
   ip_address: string;
+  user_agent?: string | null;
+  status?: string;
+  error_message?: string | null;
   timestamp: string;
+}
+
+// Plan v3 Akış F m.10 — match the backend filter set 1:1 so the visible
+// list and the CSV export always agree. `[Dayjs, Dayjs]` is converted to
+// ISO strings before being sent to the API.
+type DateRange = [import('dayjs').Dayjs | null, import('dayjs').Dayjs | null] | null;
+interface ActivityFilters {
+  action: string;
+  resourceType: string;
+  username: string;
+  status: string;
+  dateRange: DateRange;
 }
 
 // ================== MAIN COMPONENT ==================
@@ -223,15 +243,44 @@ const UserManagement: React.FC = () => {
   // Activity logs
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [activitiesLoading, setActivitiesLoading] = useState(false);
-  
+  const [activityTotal, setActivityTotal] = useState(0);
+  const [activityPage, setActivityPage] = useState(1);
+  const [activityPageSize, setActivityPageSize] = useState(20);
+  const [activityFilters, setActivityFilters] = useState<ActivityFilters>({
+    action: '',
+    resourceType: '',
+    username: '',
+    status: '',
+    dateRange: null,
+  });
+  // Detail drawer state — drives the dedicated `<ActivityLogDetailDrawer>`
+  // which renders the enriched JSONB `details` payload (client browser/OS,
+  // ip address, optional error message) so operators don't have to read
+  // truncated tooltip JSON.
+  const [activityDrawerVisible, setActivityDrawerVisible] = useState(false);
+  const [activityDrawerRecord, setActivityDrawerRecord] = useState<ActivityLog | null>(null);
+  const [activityExporting, setActivityExporting] = useState(false);
+  // Some installations don't yet have rows in `activity_logs`; the backend
+  // falls back to `users.last_login_at` and marks every result with
+  // `details.synthetic = true`. We disable deep-link / detail buttons on
+  // those rows because their `id` (= row ordinal) isn't a stable key.
+  const isSyntheticActivity = (a: ActivityLog | null | undefined) =>
+    Boolean(a && a.details && (a.details as any).synthetic === true);
+
   // ================== EFFECTS ==================
-  
+
   useEffect(() => {
     checkAdminRole();
     fetchUsers();
     fetchRoles();
     fetchActivityLogs();
   }, []);
+
+  // Re-fetch when paging or filters change.
+  useEffect(() => {
+    fetchActivityLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityPage, activityPageSize, activityFilters]);
   
   useEffect(() => {
     setFilteredUsers(users);
@@ -301,22 +350,109 @@ const UserManagement: React.FC = () => {
     }
   };
   
+  const buildActivityQuery = (
+    extraOverrides: Record<string, string | number | undefined> = {},
+    includePagination = true,
+  ) => {
+    const params = new URLSearchParams();
+    if (includePagination) {
+      params.set('limit', String(activityPageSize));
+      params.set('offset', String((activityPage - 1) * activityPageSize));
+    }
+    if (activityFilters.action) params.set('action', activityFilters.action);
+    if (activityFilters.resourceType) params.set('resource_type', activityFilters.resourceType);
+    if (activityFilters.username) params.set('username', activityFilters.username);
+    if (activityFilters.status) params.set('status', activityFilters.status);
+    if (activityFilters.dateRange?.[0]) {
+      params.set('start_time', activityFilters.dateRange[0].toISOString());
+    }
+    if (activityFilters.dateRange?.[1]) {
+      params.set('end_time', activityFilters.dateRange[1].toISOString());
+    }
+    Object.entries(extraOverrides).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+    });
+    return params.toString();
+  };
+
   const fetchActivityLogs = async () => {
     setActivitiesLoading(true);
     try {
-      const response = await fetch('/api/v1/user-activity?limit=100', {
-        headers: { 'Authorization': `Bearer ${getToken()}` }
+      const response = await fetch(`/api/v1/user-activity?${buildActivityQuery()}`, {
+        headers: { 'Authorization': `Bearer ${getToken()}` },
       });
-      
+
       if (response.ok) {
         const data = await response.json();
         setActivities(data.activities || []);
+        // Backend now returns a `total` field; keep a safe fallback for
+        // legacy responses (and the synthetic fallback path which already
+        // computes total = activities.length).
+        setActivityTotal(
+          typeof data.total === 'number'
+            ? data.total
+            : (data.activities || []).length,
+        );
       }
     } catch (error) {
       console.error('Failed to fetch activity logs:', error);
     } finally {
       setActivitiesLoading(false);
     }
+  };
+
+  // Plan v3 Akış F m.10 (B1.6 fix): the backend `/user-activity/export`
+  // endpoint streams a CSV that already neutralises formula-injection
+  // payloads. Here we just download the blob with the same filter set the
+  // operator is currently viewing — never duplicating the filter state so
+  // visible rows == exported rows.
+  const handleExportActivityCsv = async () => {
+    setActivityExporting(true);
+    try {
+      const qs = buildActivityQuery({}, /*includePagination*/ false);
+      const response = await fetch(`/api/v1/user-activity/export?${qs}`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      if (!response.ok) {
+        message.error('Failed to export activity logs');
+        return;
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Try to honour the server-provided filename, fall back to a sensible
+      // local default. CD parsing is intentionally minimal to avoid pulling
+      // in a dependency.
+      const cd = response.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename="?([^";]+)"?/i);
+      a.download = m?.[1] || `activity-logs-${dayjs().format('YYYYMMDD-HHmmss')}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      const truncated = response.headers.get('X-Truncated') === 'true';
+      if (truncated) {
+        message.warning('Export truncated to the maximum row limit. Narrow your filters for the full set.');
+      } else {
+        message.success('Activity log CSV downloaded');
+      }
+    } catch (err) {
+      console.error('Failed to export activity logs:', err);
+      message.error('Failed to export activity logs');
+    } finally {
+      setActivityExporting(false);
+    }
+  };
+
+  const openActivityDetail = (record: ActivityLog) => {
+    if (isSyntheticActivity(record)) {
+      // B2.4 — synthetic rows have no stable identity; we still let the
+      // user open the drawer for read-only inspection but disable any
+      // deep-link affordance there.
+    }
+    setActivityDrawerRecord(record);
+    setActivityDrawerVisible(true);
   };
   
   // ================== SEARCH HANDLERS ==================
@@ -882,106 +1018,409 @@ const UserManagement: React.FC = () => {
           
           {/* Activity Logs Tab */}
           <TabPane tab={<span><HistoryOutlined /> Activity Logs</span>} key="activity">
-            <Card 
+            <Card
               bordered={false}
               extra={
                 <Space>
-                  <Button icon={<ReloadOutlined />} onClick={fetchActivityLogs}>Refresh</Button>
-                  <Button icon={<DownloadOutlined />}>Export CSV</Button>
+                  <Button
+                    icon={<ReloadOutlined />}
+                    onClick={fetchActivityLogs}
+                    loading={activitiesLoading}
+                  >
+                    Refresh
+                  </Button>
+                  <Button
+                    icon={<DownloadOutlined />}
+                    onClick={handleExportActivityCsv}
+                    loading={activityExporting}
+                    disabled={activityTotal === 0}
+                  >
+                    Export CSV
+                  </Button>
                 </Space>
               }
             >
+              {/* Filter bar — every input here matches a backend filter
+                  parameter so the table view and the CSV export stay
+                  consistent. Changing any input resets `activityPage` to 1
+                  via the useEffect dependency on activityFilters. */}
+              <Row gutter={[12, 12]} style={{ marginBottom: 16 }} align="middle">
+                <Col>
+                  <Select
+                    placeholder="Action"
+                    value={activityFilters.action || undefined}
+                    onChange={(v) => {
+                      setActivityPage(1);
+                      setActivityFilters((f) => ({ ...f, action: v || '' }));
+                    }}
+                    allowClear
+                    style={{ width: 140 }}
+                    options={[
+                      { value: 'login', label: 'login' },
+                      { value: 'logout', label: 'logout' },
+                      { value: 'create', label: 'create' },
+                      { value: 'update', label: 'update' },
+                      { value: 'delete', label: 'delete' },
+                      { value: 'start', label: 'start' },
+                      { value: 'stop', label: 'stop' },
+                      { value: 'export', label: 'export' },
+                      { value: 'generate', label: 'generate' },
+                      { value: 'schedule', label: 'schedule' },
+                    ]}
+                  />
+                </Col>
+                <Col>
+                  <Select
+                    placeholder="Resource Type"
+                    value={activityFilters.resourceType || undefined}
+                    onChange={(v) => {
+                      setActivityPage(1);
+                      setActivityFilters((f) => ({ ...f, resourceType: v || '' }));
+                    }}
+                    allowClear
+                    style={{ width: 160 }}
+                    options={[
+                      { value: 'analysis', label: 'analysis' },
+                      { value: 'cluster', label: 'cluster' },
+                      { value: 'user', label: 'user' },
+                      { value: 'role', label: 'role' },
+                      { value: 'report', label: 'report' },
+                      { value: 'schedule', label: 'schedule' },
+                      { value: 'session', label: 'session' },
+                      { value: 'settings', label: 'settings' },
+                    ]}
+                  />
+                </Col>
+                <Col>
+                  <Input
+                    placeholder="Username contains"
+                    value={activityFilters.username}
+                    onChange={(e) => {
+                      setActivityPage(1);
+                      setActivityFilters((f) => ({ ...f, username: e.target.value }));
+                    }}
+                    allowClear
+                    style={{ width: 200 }}
+                    prefix={<SearchOutlined />}
+                  />
+                </Col>
+                <Col>
+                  <Select
+                    placeholder="Status"
+                    value={activityFilters.status || undefined}
+                    onChange={(v) => {
+                      setActivityPage(1);
+                      setActivityFilters((f) => ({ ...f, status: v || '' }));
+                    }}
+                    allowClear
+                    style={{ width: 130 }}
+                    options={[
+                      { value: 'success', label: 'success' },
+                      { value: 'failed', label: 'failed' },
+                    ]}
+                  />
+                </Col>
+                <Col>
+                  <DatePicker.RangePicker
+                    showTime
+                    value={activityFilters.dateRange as any}
+                    onChange={(v) => {
+                      setActivityPage(1);
+                      setActivityFilters((f) => ({ ...f, dateRange: v as DateRange }));
+                    }}
+                    style={{ width: 320 }}
+                  />
+                </Col>
+              </Row>
+
               {activities.length === 0 ? (
-                <Empty description="No activity logs available. Activities will appear here as users perform actions." />
+                <Empty description="No activity logs match your filters." />
               ) : (
-                <Table
-                  dataSource={activities}
-                  rowKey="id"
-                  loading={activitiesLoading}
-                  pagination={{ pageSize: 20 }}
-                  columns={[
-                    { title: 'User', dataIndex: 'username', key: 'username', width: 120 },
-                    { 
-                      title: 'Action', 
-                      dataIndex: 'action', 
-                      key: 'action',
-                      width: 100,
-                      render: (a: string) => {
-                        const colors: Record<string, string> = {
-                          'login': 'green',
-                          'logout': 'default',
-                          'create': 'blue',
-                          'update': 'orange',
-                          'delete': 'red',
-                          'start': 'cyan',
-                          'stop': 'volcano',
-                          'export': 'purple',
-                          'generate': 'geekblue'
-                        };
-                        return <Tag color={colors[a] || 'default'}>{a}</Tag>;
-                      }
-                    },
-                    { 
-                      title: 'Resource', 
-                      key: 'resource',
-                      width: 200,
-                      render: (_: any, record: any) => (
-                        <Space direction="vertical" size={0}>
-                          <Tag>{record.resource_type}</Tag>
-                          {record.resource_name && (
-                            <Text type="secondary" style={{ fontSize: 11 }}>{record.resource_name}</Text>
-                          )}
-                        </Space>
-                      )
-                    },
-                    { 
-                      title: 'Details', 
-                      dataIndex: 'details', 
-                      key: 'details',
-                      width: 200,
-                      render: (d: any) => {
-                        if (!d || Object.keys(d).length === 0) return '-';
-                        return (
-                          <Tooltip title={JSON.stringify(d, null, 2)}>
-                            <Text type="secondary" style={{ fontSize: 11 }}>
-                              {Object.entries(d).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(', ')}
-                              {Object.keys(d).length > 2 && '...'}
-                            </Text>
-                          </Tooltip>
-                        );
-                      }
-                    },
-                    { 
-                      title: 'Status', 
-                      dataIndex: 'status', 
-                      key: 'status',
-                      width: 80,
-                      render: (s: string) => (
-                        <Tag color={s === 'success' ? 'green' : 'red'}>{s}</Tag>
-                      )
-                    },
-                    { 
-                      title: 'Time', 
-                      dataIndex: 'timestamp', 
-                      key: 'timestamp',
-                      width: 150,
-                      render: (t: string) => dayjs(t).format('YYYY-MM-DD HH:mm:ss') 
-                    },
-                    { 
-                      title: 'IP', 
-                      dataIndex: 'ip_address', 
-                      key: 'ip_address',
-                      width: 120
-                    },
-                  ]}
-                  scroll={{ x: 1000 }}
-                />
+                <>
+                  <Table<ActivityLog>
+                    dataSource={activities}
+                    rowKey="id"
+                    loading={activitiesLoading}
+                    pagination={false}
+                    columns={[
+                      { title: 'User', dataIndex: 'username', key: 'username', width: 140 },
+                      {
+                        title: 'Action',
+                        dataIndex: 'action',
+                        key: 'action',
+                        width: 100,
+                        render: (a: string) => {
+                          const colors: Record<string, string> = {
+                            'login': 'green',
+                            'logout': 'default',
+                            'create': 'blue',
+                            'update': 'orange',
+                            'delete': 'red',
+                            'start': 'cyan',
+                            'stop': 'volcano',
+                            'export': 'purple',
+                            'generate': 'geekblue',
+                            'schedule': 'gold',
+                          };
+                          return <Tag color={colors[a] || 'default'}>{a}</Tag>;
+                        },
+                      },
+                      {
+                        title: 'Resource',
+                        key: 'resource',
+                        width: 220,
+                        render: (_: any, record: ActivityLog) => (
+                          <Space direction="vertical" size={0}>
+                            <Tag>{record.resource_type}</Tag>
+                            {record.resource_name && (
+                              <Text type="secondary" style={{ fontSize: 11 }}>{record.resource_name}</Text>
+                            )}
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: 'Details',
+                        dataIndex: 'details',
+                        key: 'details',
+                        render: (d: Record<string, any>, record: ActivityLog) => {
+                          // Build a short "summary chip" line using the
+                          // most informative keys; anything else lives in
+                          // the detail drawer. We deliberately filter out
+                          // the enriched `client` block here because it'd
+                          // dominate the line.
+                          const safe = d && typeof d === 'object' ? d : {};
+                          const display = Object.entries(safe).filter(
+                            ([k]) => k !== 'client' && k !== 'synthetic',
+                          );
+                          const summary = display.length === 0
+                            ? <Text type="secondary">-</Text>
+                            : (
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {display.slice(0, 2)
+                                    .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+                                    .join(' · ')}
+                                  {display.length > 2 && ` · +${display.length - 2}`}
+                                </Text>
+                              );
+                          const synthetic = isSyntheticActivity(record);
+                          return (
+                            <Space>
+                              {summary}
+                              <Tooltip
+                                title={
+                                  synthetic
+                                    ? 'Detailed view unavailable for legacy login records'
+                                    : 'Open detail drawer'
+                                }
+                              >
+                                <Button
+                                  type="link"
+                                  size="small"
+                                  onClick={() => openActivityDetail(record)}
+                                  disabled={synthetic}
+                                >
+                                  View
+                                </Button>
+                              </Tooltip>
+                            </Space>
+                          );
+                        },
+                      },
+                      {
+                        title: 'Status',
+                        dataIndex: 'status',
+                        key: 'status',
+                        width: 90,
+                        render: (s: string) => (
+                          <Tag color={s === 'success' ? 'green' : 'red'}>{s || 'success'}</Tag>
+                        ),
+                      },
+                      {
+                        title: 'Time',
+                        dataIndex: 'timestamp',
+                        key: 'timestamp',
+                        width: 170,
+                        render: (t: string) => dayjs(t).format('YYYY-MM-DD HH:mm:ss'),
+                      },
+                      {
+                        title: 'IP',
+                        dataIndex: 'ip_address',
+                        key: 'ip_address',
+                        width: 130,
+                      },
+                    ]}
+                    scroll={{ x: 1000 }}
+                  />
+                  <div style={{ marginTop: 16, textAlign: 'right' }}>
+                    <Pagination
+                      current={activityPage}
+                      pageSize={activityPageSize}
+                      total={activityTotal}
+                      showSizeChanger
+                      pageSizeOptions={['10', '20', '50', '100', '200']}
+                      onChange={(p, ps) => {
+                        setActivityPage(p);
+                        setActivityPageSize(ps);
+                      }}
+                      showTotal={(t) => `${t} activity records`}
+                    />
+                  </div>
+                </>
               )}
             </Card>
           </TabPane>
         </Tabs>
       </Space>
-      
+
+      {/* Activity Log Detail Drawer (Plan v3 Akış F m.10) — renders the
+          enriched JSONB `details` payload. The backend writes a structured
+          `client` block (browser, OS, device, IP, raw user agent) plus any
+          domain-specific fields the call site provided (e.g. `cluster_id`,
+          `run_id`). We split the drawer into "Activity", "Client", and
+          "Raw details JSON" sections so operators can drill from the
+          summary to the raw payload without leaving the page. */}
+      <Drawer
+        width={520}
+        open={activityDrawerVisible}
+        onClose={() => {
+          setActivityDrawerVisible(false);
+          setActivityDrawerRecord(null);
+        }}
+        title={
+          activityDrawerRecord ? (
+            <Space>
+              <Tag>{activityDrawerRecord.action}</Tag>
+              <Text>{activityDrawerRecord.resource_type}</Text>
+              {activityDrawerRecord.resource_name && (
+                <Text type="secondary">/ {activityDrawerRecord.resource_name}</Text>
+              )}
+            </Space>
+          ) : (
+            'Activity Detail'
+          )
+        }
+        destroyOnClose
+      >
+        {activityDrawerRecord ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={16}>
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="ID">
+                {isSyntheticActivity(activityDrawerRecord)
+                  ? <Text type="secondary">(legacy login record)</Text>
+                  : activityDrawerRecord.id}
+              </Descriptions.Item>
+              <Descriptions.Item label="User">
+                {activityDrawerRecord.username || '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="Action">
+                {activityDrawerRecord.action}
+              </Descriptions.Item>
+              <Descriptions.Item label="Resource">
+                <Space direction="vertical" size={0}>
+                  <Tag>{activityDrawerRecord.resource_type}</Tag>
+                  {activityDrawerRecord.resource_name && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {activityDrawerRecord.resource_name}
+                    </Text>
+                  )}
+                  {activityDrawerRecord.resource_id && (
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                      ID: {activityDrawerRecord.resource_id}
+                    </Text>
+                  )}
+                </Space>
+              </Descriptions.Item>
+              <Descriptions.Item label="Status">
+                <Tag color={activityDrawerRecord.status === 'failed' ? 'red' : 'green'}>
+                  {activityDrawerRecord.status || 'success'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="Time">
+                {activityDrawerRecord.timestamp
+                  ? dayjs(activityDrawerRecord.timestamp).format('YYYY-MM-DD HH:mm:ss')
+                  : '-'}
+              </Descriptions.Item>
+              {activityDrawerRecord.error_message && (
+                <Descriptions.Item label="Error">
+                  <Text type="danger">{activityDrawerRecord.error_message}</Text>
+                </Descriptions.Item>
+              )}
+            </Descriptions>
+
+            {/* Client metadata — sourced from `details.client` (parsed by
+                the backend) with the IP/User-Agent header as a forensic
+                fallback. */}
+            {(() => {
+              const detail = activityDrawerRecord.details || {};
+              const client: any = (detail as any).client || {};
+              const hasClient =
+                client.browser ||
+                client.os ||
+                client.device ||
+                client.ip_address ||
+                activityDrawerRecord.ip_address ||
+                activityDrawerRecord.user_agent;
+              if (!hasClient) return null;
+              return (
+                <Descriptions size="small" column={1} bordered title="Client">
+                  {client.browser && (
+                    <Descriptions.Item label="Browser">{client.browser}</Descriptions.Item>
+                  )}
+                  {client.os && (
+                    <Descriptions.Item label="OS">{client.os}</Descriptions.Item>
+                  )}
+                  {client.device && (
+                    <Descriptions.Item label="Device">{client.device}</Descriptions.Item>
+                  )}
+                  {(client.ip_address || activityDrawerRecord.ip_address) && (
+                    <Descriptions.Item label="IP">
+                      {client.ip_address || activityDrawerRecord.ip_address}
+                    </Descriptions.Item>
+                  )}
+                  {(client.user_agent_raw || activityDrawerRecord.user_agent) && (
+                    <Descriptions.Item label="User-Agent (raw)">
+                      <Text style={{ fontSize: 11, wordBreak: 'break-all' }}>
+                        {client.user_agent_raw || activityDrawerRecord.user_agent}
+                      </Text>
+                    </Descriptions.Item>
+                  )}
+                </Descriptions>
+              );
+            })()}
+
+            {/* Raw details JSON — last-resort dump for fields we don't
+                explicitly surface above. We strip the `client` block (it
+                already has its own section) and `synthetic` flag. */}
+            {(() => {
+              const detail = { ...(activityDrawerRecord.details || {}) } as Record<string, any>;
+              delete detail.client;
+              delete detail.synthetic;
+              if (Object.keys(detail).length === 0) return null;
+              return (
+                <Card
+                  size="small"
+                  title="Details"
+                  bodyStyle={{ padding: 12 }}
+                >
+                  <pre
+                    style={{
+                      fontSize: 12,
+                      margin: 0,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {JSON.stringify(detail, null, 2)}
+                  </pre>
+                </Card>
+              );
+            })()}
+          </Space>
+        ) : (
+          <Empty description="Select an activity to view details" />
+        )}
+      </Drawer>
+
       {/* User Modal */}
       <Modal
         title={editingUser ? 'Edit User' : 'Create User'}

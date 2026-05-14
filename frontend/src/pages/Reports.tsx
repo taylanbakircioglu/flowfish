@@ -83,6 +83,7 @@ import { useGetEventStatsQuery, useGetSecurityEventsQuery } from '../store/api/e
 import { useGetCommunicationStatsQuery } from '../store/api/communicationApi';
 import { useGetWorkloadStatsQuery, useGetWorkloadsQuery } from '../store/api/workloadApi';
 import { Analysis } from '../types';
+import { useL4Analyses, useL4AnalysisGuard } from '../utils/analysisFilters';
 
 const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
@@ -94,7 +95,7 @@ const reportTypes = [
   {
     key: 'dependency',
     title: 'Dependency Report',
-    description: 'Complete dependency map with all service connections, protocols, and data flow volumes.',
+    description: 'Complete network map with all service connections, protocols, and data flow volumes.',
     icon: <ApiOutlined style={{ fontSize: 24, color: '#0891b2' }} />,
     formats: ['JSON', 'PDF'],
     endpoint: '/api/v1/export/graph/json',
@@ -396,9 +397,12 @@ const Reports: React.FC = () => {
   // Fetch ALL analyses (no cluster filter) - user selects analysis first
   const { data: analyses = [], isLoading: isAnalysesLoading } = useGetAnalysesQuery({});
   
-  const availableAnalyses = Array.isArray(analyses) 
-    ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
-    : [];
+  const availableAnalyses = useL4Analyses(
+    Array.isArray(analyses)
+      ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
+      : [],
+  );
+  useL4AnalysisGuard(selectedAnalysisId, setSelectedAnalysisId, availableAnalyses);
 
   // Handle analysis change - set analysis ID and clear cluster (useEffect will set correct cluster)
   const handleAnalysisChange = useCallback((analysisId: number | undefined) => {

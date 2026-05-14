@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: timeseries-writer
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: timeseries-writer
     component: writer
@@ -23,7 +23,7 @@ spec:
       serviceAccountName: flowfish
       containers:
         - name: timeseries-writer
-          image: taylanbakircioglu/flowfish:timeseries-writer-latest
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-timeseries-writer:{{IMAGE_TAG}}
           imagePullPolicy: Always
           env:
             - name: SERVICE_NAME
@@ -85,6 +85,18 @@ spec:
               value: "true"
             # Workload sync writes workload metadata to PostgreSQL (for queries)
             - name: WORKLOAD_SYNC_ENABLED
+              value: "true"
+            - name: L7_ENABLED
+              value: "true"
+            - name: L7_TRACING_ENABLED
+              # When "true" the writer persists trace_id / span_id / parent_span_id
+              # / span_kind columns into ClickHouse l7_http_flows / l7_grpc_flows
+              # so the Trace Explorer waterfall can resolve them. With "false"
+              # those columns are written as empty (existing pipeline behaviour).
+              # Safe to enable any time — schema columns are already migrated and
+              # the writer skips trace fields if absent. Beyla must have
+              # `ebpf.track_request_headers: true` for spans to actually carry
+              # trace_id; otherwise the columns will simply stay empty.
               value: "true"
           resources:
             requests:

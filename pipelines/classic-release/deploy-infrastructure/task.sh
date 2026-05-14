@@ -82,11 +82,11 @@ apply_configmap_safe() {
   local file=$1
   local cm_names=$2  # Can be comma-separated list or single name
   
-  echo "📦 Processing file: $file"
+  echo "[INFO] Processing file: $file"
   
   # Check if file exists
   if [ ! -f "$file" ]; then
-    echo "   ❌ File not found: $file"
+    echo "   [ERROR] File not found: $file"
     return 1
   fi
   
@@ -96,58 +96,58 @@ apply_configmap_safe() {
   fi
   
   if [ -z "$cm_names" ]; then
-    echo "   ⚠️  No ConfigMap names found, applying file as-is..."
+    echo "   [WARN] No ConfigMap names found, applying file as-is..."
     oc apply -f "$file" -n ${OPENSHIFT_NAMESPACE}
     return $?
   fi
   
   # Backup existing ConfigMaps
-  echo "   📋 ConfigMaps in file: $cm_names"
+  echo "   [INFO] ConfigMaps in file: $cm_names"
   IFS=',' read -ra CM_ARRAY <<< "$cm_names"
   
   for cm_name in "${CM_ARRAY[@]}"; do
     cm_name=$(echo "$cm_name" | xargs)  # Trim whitespace
     if oc get configmap "$cm_name" -n ${OPENSHIFT_NAMESPACE} &>/dev/null; then
-      echo "   💾 Backing up: $cm_name"
+      echo "   [BACKUP] Backing up: $cm_name"
       oc get configmap "$cm_name" -n ${OPENSHIFT_NAMESPACE} -o yaml > "$CONFIGMAP_BACKUP_DIR/${cm_name}.yaml"
     else
-      echo "   📝 New ConfigMap: $cm_name (no backup needed)"
+      echo "   [NOTE] New ConfigMap: $cm_name (no backup needed)"
     fi
   done
   
   # Apply the file
-  echo "   🔄 Applying ConfigMap(s)..."
+  echo "   [RESTART] Applying ConfigMap(s)..."
   if oc apply -f "$file" -n ${OPENSHIFT_NAMESPACE}; then
-    echo "   ✅ ConfigMap(s) applied successfully"
+    echo "   [OK] ConfigMap(s) applied successfully"
     
     # Verify each ConfigMap exists
     local all_verified=true
     for cm_name in "${CM_ARRAY[@]}"; do
       cm_name=$(echo "$cm_name" | xargs)
       if oc get configmap "$cm_name" -n ${OPENSHIFT_NAMESPACE} &>/dev/null; then
-        echo "   ✅ Verified: $cm_name"
+        echo "   [OK] Verified: $cm_name"
       else
-        echo "   ❌ Verification failed: $cm_name"
+        echo "   [ERROR] Verification failed: $cm_name"
         all_verified=false
       fi
     done
     
     if [ "$all_verified" = true ]; then
-      echo "   ✅ All ConfigMaps verified"
+      echo "   [OK] All ConfigMaps verified"
       return 0
     else
-      echo "   ⚠️  Some ConfigMaps failed verification"
+      echo "   [WARN] Some ConfigMaps failed verification"
       return 1
     fi
   else
-    echo "   ❌ Failed to apply ConfigMap(s), restoring backups..."
+    echo "   [ERROR] Failed to apply ConfigMap(s), restoring backups..."
     
     # Restore backups
     for cm_name in "${CM_ARRAY[@]}"; do
       cm_name=$(echo "$cm_name" | xargs)
       if [ -f "$CONFIGMAP_BACKUP_DIR/${cm_name}.yaml" ]; then
-        echo "   🔄 Restoring: $cm_name"
-        oc apply -f "$CONFIGMAP_BACKUP_DIR/${cm_name}.yaml" -n ${OPENSHIFT_NAMESPACE} || echo "   ❌ Failed to restore $cm_name"
+        echo "   [RESTART] Restoring: $cm_name"
+        oc apply -f "$CONFIGMAP_BACKUP_DIR/${cm_name}.yaml" -n ${OPENSHIFT_NAMESPACE} || echo "   [ERROR] Failed to restore $cm_name"
       fi
     done
     
@@ -178,7 +178,7 @@ echo "Applying main ConfigMaps (03-configmaps.yaml)..."
 BACKEND_CONFIG_OLD=$(get_configmap_data_checksum "backend-config")
 FRONTEND_CONFIG_OLD=$(get_configmap_data_checksum "frontend-config")
 
-apply_configmap_safe "03-configmaps.yaml" "backend-config,frontend-config" || echo "⚠️  Warning: Some main ConfigMaps may have issues"
+apply_configmap_safe "03-configmaps.yaml" "backend-config,frontend-config" || echo "[WARN] Warning: Some main ConfigMaps may have issues"
 
 # Get checksums after applying (only .data field)
 BACKEND_CONFIG_NEW=$(get_configmap_data_checksum "backend-config")
@@ -186,7 +186,7 @@ FRONTEND_CONFIG_NEW=$(get_configmap_data_checksum "frontend-config")
 
 # Mark deployments for restart if ConfigMap changed
 if [ "$BACKEND_CONFIG_OLD" != "$BACKEND_CONFIG_NEW" ]; then
-  echo "  📝 backend-config changed"
+  echo "  [NOTE] backend-config changed"
   RESTART_DEPLOYMENTS["backend"]=1
   RESTART_DEPLOYMENTS["api-gateway"]=1
   RESTART_DEPLOYMENTS["analysis-orchestrator"]=1
@@ -196,14 +196,14 @@ if [ "$BACKEND_CONFIG_OLD" != "$BACKEND_CONFIG_NEW" ]; then
   RESTART_DEPLOYMENTS["graph-writer"]=1
   RESTART_DEPLOYMENTS["graph-query"]=1
 else
-  echo "  ✅ backend-config unchanged"
+  echo "  [OK] backend-config unchanged"
 fi
 
 if [ "$FRONTEND_CONFIG_OLD" != "$FRONTEND_CONFIG_NEW" ]; then
-  echo "  📝 frontend-config changed"
+  echo "  [NOTE] frontend-config changed"
   RESTART_DEPLOYMENTS["frontend"]=1
 else
-  echo "  ✅ frontend-config unchanged"
+  echo "  [OK] frontend-config unchanged"
 fi
 echo ""
 
@@ -213,19 +213,19 @@ GADGET_CONFIG_CHANGED=false
 if [ -f "09-inspektor-gadget-config.yaml" ]; then
   GADGET_CONFIG_OLD=$(get_configmap_data_checksum "inspektor-gadget-config")
   
-  apply_configmap_safe "09-inspektor-gadget-config.yaml" "inspektor-gadget-config" || echo "⚠️  Warning: Inspektor Gadget ConfigMap may have issues"
+  apply_configmap_safe "09-inspektor-gadget-config.yaml" "inspektor-gadget-config" || echo "[WARN] Warning: Inspektor Gadget ConfigMap may have issues"
   
   GADGET_CONFIG_NEW=$(get_configmap_data_checksum "inspektor-gadget-config")
   
   if [ "$GADGET_CONFIG_OLD" != "$GADGET_CONFIG_NEW" ]; then
-    echo "  📝 inspektor-gadget-config changed"
+    echo "  [NOTE] inspektor-gadget-config changed"
     GADGET_CONFIG_CHANGED=true
     RESTART_DAEMONSETS["inspektor-gadget"]=1
   else
-    echo "  ✅ inspektor-gadget-config unchanged"
+    echo "  [OK] inspektor-gadget-config unchanged"
   fi
 else
-  echo "⚠️  09-inspektor-gadget-config.yaml not found, skipping Inspektor Gadget ConfigMap"
+  echo "[WARN] 09-inspektor-gadget-config.yaml not found, skipping Inspektor Gadget ConfigMap"
 fi
 echo ""
 
@@ -235,7 +235,7 @@ echo "Backup location: $CONFIGMAP_BACKUP_DIR"
 # Show which resources will be restarted
 if [ ${#RESTART_DEPLOYMENTS[@]} -gt 0 ] || [ ${#RESTART_DAEMONSETS[@]} -gt 0 ]; then
   echo ""
-  echo "📋 Resources marked for restart due to ConfigMap changes:"
+  echo "[INFO] Resources marked for restart due to ConfigMap changes:"
   for dep in "${!RESTART_DEPLOYMENTS[@]}"; do
     echo "   - Deployment: $dep"
   done
@@ -427,13 +427,13 @@ sleep 5
 
 echo "  Waiting for migration job to complete..."
 if oc wait --for=condition=complete job/flowfish-migrations -n ${OPENSHIFT_NAMESPACE} --timeout=10m; then
-  echo "  ✅ Database migrations completed successfully"
+  echo "  [OK] Database migrations completed successfully"
   
   # Show migration logs
   echo "  Migration logs:"
   oc logs job/flowfish-migrations -c postgres-migrations -n ${OPENSHIFT_NAMESPACE} --tail=20 || true
 else
-  echo "  ⚠️  Migration job may have issues, checking logs..."
+  echo "  [WARN] Migration job may have issues, checking logs..."
   oc logs job/flowfish-migrations -c postgres-migrations -n ${OPENSHIFT_NAMESPACE} --tail=50 || true
 fi
 
@@ -446,7 +446,7 @@ echo "================================================"
 # They must be applied manually by cluster admin before first deployment
 # See: deployment/manual-rbac/README.md
 
-echo "ℹ️  Skipping cluster-scoped resources (applied manually by cluster admin):"
+echo "[INFO] Skipping cluster-scoped resources (applied manually by cluster admin):"
 echo "   - CRDs (09-inspektor-gadget-crds.yaml)"
 echo "   - ClusterRole/ClusterRoleBinding (10-inspektor-gadget-rbac-cluster.yaml)"
 echo "   - ClusterRole/ClusterRoleBinding (flowfish-gadget-reader)"
@@ -470,28 +470,88 @@ echo "  Target image: $NEW_IMAGE"
 
 # Check if image changed or ConfigMap changed
 if [ "$CURRENT_IMAGE" != "$NEW_IMAGE" ] || [ -z "$CURRENT_IMAGE" ]; then
-  echo "  🔄 Image changed, waiting for rollout..."
+  echo "  [RESTART] Image changed, waiting for rollout..."
   oc rollout status daemonset/inspektor-gadget -n ${OPENSHIFT_NAMESPACE} --timeout=5m || true
 elif [ "${RESTART_DAEMONSETS[inspektor-gadget]:-0}" = "1" ]; then
-  echo "  🔄 ConfigMap changed, restarting DaemonSet to pick up new config..."
+  echo "  [RESTART] ConfigMap changed, restarting DaemonSet to pick up new config..."
   oc rollout restart daemonset/inspektor-gadget -n ${OPENSHIFT_NAMESPACE}
   oc rollout status daemonset/inspektor-gadget -n ${OPENSHIFT_NAMESPACE} --timeout=5m || true
 else
-  echo "  ✅ Image and ConfigMap unchanged, checking pod health..."
+  echo "  [OK] Image and ConfigMap unchanged, checking pod health..."
   
   DESIRED=$(oc get daemonset inspektor-gadget -n ${OPENSHIFT_NAMESPACE} -o jsonpath='{.status.desiredNumberScheduled}')
   READY=$(oc get daemonset inspektor-gadget -n ${OPENSHIFT_NAMESPACE} -o jsonpath='{.status.numberReady}')
   
   if [ "$READY" = "$DESIRED" ] && [ "$READY" != "0" ]; then
-    echo "  ✅ All $READY/$DESIRED pods ready"
+    echo "  [OK] All $READY/$DESIRED pods ready"
   else
-    echo "  ⚠️  Only $READY/$DESIRED pods ready, waiting..."
+    echo "  [WARN] Only $READY/$DESIRED pods ready, waiting..."
     oc rollout status daemonset/inspektor-gadget -n ${OPENSHIFT_NAMESPACE} --timeout=3m || true
   fi
 fi
 
 echo "  Inspektor Gadget pods:"
 oc get pods -n ${OPENSHIFT_NAMESPACE} -l app=inspektor-gadget -o wide
+
+echo ""
+echo "================================================"
+echo "Beyla eBPF L7 Agent"
+echo "================================================"
+echo "  [INFO] Initial Beyla install is done per-cluster via the UI agent script."
+echo "  [INFO] Once installed, the pipeline keeps its ConfigMap and DaemonSet up to date."
+
+if oc get daemonset beyla -n ${OPENSHIFT_NAMESPACE} &>/dev/null; then
+  DESIRED=$(oc get daemonset beyla -n ${OPENSHIFT_NAMESPACE} -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
+  READY=$(oc get daemonset beyla -n ${OPENSHIFT_NAMESPACE} -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
+  BEYLA_IMG=$(oc get daemonset beyla -n ${OPENSHIFT_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "unknown")
+  echo "  [OK] Beyla DaemonSet found: $READY/$DESIRED ready, image: $BEYLA_IMG"
+
+  BEYLA_NEEDS_RESTART=false
+
+  # --- ConfigMap change detection ---
+  if [ -f "20-beyla.yaml" ]; then
+    BEYLA_CONFIG_OLD=$(get_configmap_data_checksum "beyla-config")
+
+    echo "  [INFO] Applying Beyla manifest (ConfigMap + DaemonSet)..."
+    # Apply the full manifest; SCC/ClusterRole may fail on non-admin — that's fine
+    oc apply -f 20-beyla.yaml -n ${OPENSHIFT_NAMESPACE} 2>&1 | while read -r line; do
+      case "$line" in
+        *"forbidden"*|*"Forbidden"*|*"cluster-scoped"*) echo "  [SKIP] $line" ;;
+        *) echo "  $line" ;;
+      esac
+    done
+
+    BEYLA_CONFIG_NEW=$(get_configmap_data_checksum "beyla-config")
+    if [ "$BEYLA_CONFIG_OLD" != "$BEYLA_CONFIG_NEW" ]; then
+      echo "  [NOTE] beyla-config ConfigMap changed — DaemonSet restart required"
+      BEYLA_NEEDS_RESTART=true
+    else
+      echo "  [OK] beyla-config ConfigMap unchanged"
+    fi
+
+    # Check if DaemonSet pod template changed (env vars, resources, image)
+    NEW_DS_GEN=$(oc get daemonset beyla -n ${OPENSHIFT_NAMESPACE} -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "0")
+    OBSERVED_GEN=$(oc get daemonset beyla -n ${OPENSHIFT_NAMESPACE} -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo "0")
+    if [ "$NEW_DS_GEN" != "$OBSERVED_GEN" ]; then
+      echo "  [NOTE] Beyla DaemonSet spec changed (generation $OBSERVED_GEN -> $NEW_DS_GEN)"
+      BEYLA_NEEDS_RESTART=true
+    fi
+  fi
+
+  # --- Perform restart if needed ---
+  if [ "$BEYLA_NEEDS_RESTART" = "true" ]; then
+    echo "  [RESTART] Rolling restart of Beyla DaemonSet..."
+    oc rollout restart daemonset/beyla -n ${OPENSHIFT_NAMESPACE}
+    oc rollout status daemonset/beyla -n ${OPENSHIFT_NAMESPACE} --timeout=5m || true
+  else
+    echo "  [OK] No changes detected, Beyla pods kept as-is"
+  fi
+
+  echo "  Beyla pods after pipeline:"
+  oc get pods -n ${OPENSHIFT_NAMESPACE} -l app=beyla -o wide 2>/dev/null || true
+else
+  echo "  [INFO] No Beyla DaemonSet in ${OPENSHIFT_NAMESPACE} (install via UI when needed)"
+fi
 
 echo ""
 echo "================================================"
@@ -513,6 +573,14 @@ oc get daemonset -n ${OPENSHIFT_NAMESPACE} inspektor-gadget || echo "  Inspektor
 echo ""
 echo "Inspektor Gadget Pods:"
 oc get pods -n ${OPENSHIFT_NAMESPACE} -l app=inspektor-gadget || echo "  No Inspektor Gadget pods found"
+
+echo ""
+echo "Beyla DaemonSet:"
+oc get daemonset -n ${OPENSHIFT_NAMESPACE} beyla 2>/dev/null || echo "  Beyla not found"
+
+echo ""
+echo "Beyla Pods:"
+oc get pods -n ${OPENSHIFT_NAMESPACE} -l app=beyla 2>/dev/null || echo "  No Beyla pods found"
 
 echo "================================================"
 

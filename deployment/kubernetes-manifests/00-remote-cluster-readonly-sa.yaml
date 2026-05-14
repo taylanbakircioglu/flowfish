@@ -17,7 +17,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: flowfish-remote-reader
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app.kubernetes.io/name: flowfish
     app.kubernetes.io/component: remote-reader
@@ -40,6 +40,9 @@ rules:
       - namespaces
       - services
       - events
+      - endpoints
+      - configmaps
+      - secrets
     verbs: ["get", "list", "watch"]
   
   # Apps kaynakları - SADECE OKUMA
@@ -51,8 +54,21 @@ rules:
       - statefulsets
     verbs: ["get", "list", "watch"]
   
+  # Batch kaynakları - SADECE OKUMA
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  
+  # Network kaynakları - SADECE OKUMA
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+      - ingresses
+    verbs: ["get", "list", "watch"]
+  
   # Inspector Gadget traces - SADECE OKUMA
-  # (Event'leri okumak için yeterli)
   - apiGroups: ["gadget.kinvolk.io"]
     resources:
       - traces
@@ -73,5 +89,5 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: flowfish-remote-reader
-    namespace: flowfish
+    namespace: {{OPENSHIFT_NAMESPACE}}
 

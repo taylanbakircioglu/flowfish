@@ -14,32 +14,60 @@ BUILD_INFO_LOADED=false
 # Note: Artifact alias is "_Flowfish-CI-Pilot" in Release Pipeline
 POSSIBLE_BUILD_INFO_PATHS=(
     "$BUILD_INFO_FILE"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Internal/build-info/build-info.env"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Internal/drop/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Pilot/build-info/build-info.env"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Pilot/drop/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/Flowfish-CI-Pilot/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI/build-info/build-info.env"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI/drop/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/Flowfish-CI/build-info/build-info.env"
+    "${SYSTEM_DEFAULTWORKINGDIRECTORY}/_Flowfish-CI-Internal/build-info/build-info.env"
+    "${SYSTEM_DEFAULTWORKINGDIRECTORY}/_Flowfish-CI-Internal/drop/build-info/build-info.env"
     "${SYSTEM_DEFAULTWORKINGDIRECTORY}/_Flowfish-CI-Pilot/build-info/build-info.env"
+    "${SYSTEM_DEFAULTWORKINGDIRECTORY}/_Flowfish-CI-Pilot/drop/build-info/build-info.env"
     "${SYSTEM_DEFAULTWORKINGDIRECTORY}/Flowfish-CI-Pilot/build-info/build-info.env"
     "${SYSTEM_DEFAULTWORKINGDIRECTORY}/_Flowfish-CI/build-info/build-info.env"
+    "${SYSTEM_DEFAULTWORKINGDIRECTORY}/_Flowfish-CI/drop/build-info/build-info.env"
     "${SYSTEM_DEFAULTWORKINGDIRECTORY}/Flowfish-CI/build-info/build-info.env"
 )
 
 for path in "${POSSIBLE_BUILD_INFO_PATHS[@]}"; do
     if [ -n "$path" ] && [ -f "$path" ]; then
-        echo "📦 Loading build info from: $path"
+        echo "[INFO] Loading build info from: $path"
         source "$path"
         BUILD_INFO_LOADED=true
-    echo "✅ Build info loaded successfully"
-    echo ""
-    echo "📋 Build Info Contents:"
+        echo "[OK] Build info loaded successfully"
+        echo ""
+        echo "[INFO] Build Info Contents:"
         cat "$path"
-    echo ""
+        echo ""
         break
     fi
 done
 
+# Fallback: search recursively under artifact and working directories
 if [ "$BUILD_INFO_LOADED" != "true" ]; then
-    echo "⚠️  BUILD_INFO_FILE not found in any expected location"
+    for search_dir in "${SYSTEM_ARTIFACTSDIRECTORY:-}" "${SYSTEM_DEFAULTWORKINGDIRECTORY:-}"; do
+        if [ -n "$search_dir" ] && [ -d "$search_dir" ]; then
+            FOUND_FILE=$(find "$search_dir" -name "build-info.env" -type f 2>/dev/null | head -1)
+            if [ -n "$FOUND_FILE" ]; then
+                echo "[INFO] Found build info via search: $FOUND_FILE"
+                source "$FOUND_FILE"
+                BUILD_INFO_LOADED=true
+                echo "[OK] Build info loaded successfully"
+                echo ""
+                echo "[INFO] Build Info Contents:"
+                cat "$FOUND_FILE"
+                echo ""
+                break
+            fi
+        fi
+    done
+fi
+
+if [ "$BUILD_INFO_LOADED" != "true" ]; then
+    echo "[WARN] BUILD_INFO_FILE not found in any expected location"
     echo "    Tried paths:"
     for path in "${POSSIBLE_BUILD_INFO_PATHS[@]}"; do
         echo "      - ${path:-'(empty)'}"
@@ -50,16 +78,16 @@ fi
 # Get commit hash - prefer BUILD_COMMIT from build-info.env
 if [ -n "$BUILD_COMMIT" ]; then
     cmtHashShort="$BUILD_COMMIT"
-    echo "📌 Using Build Commit from artifact: $cmtHashShort"
+    echo "[INFO] Using Build Commit from artifact: $cmtHashShort"
 elif [ -n "$RELEASE_ARTIFACTS__FLOWFISH_CI_SOURCEVERSION" ]; then
     cmtHashShort=$(echo $RELEASE_ARTIFACTS__FLOWFISH_CI_SOURCEVERSION | cut -c1-7)
-    echo "📌 Using Release Artifact Source Version: $cmtHashShort"
+    echo "[INFO] Using Release Artifact Source Version: $cmtHashShort"
 elif [ -n "$BUILD_SOURCEVERSION" ]; then
     cmtHashShort=$(echo $BUILD_SOURCEVERSION | cut -c1-7)
-    echo "📌 Using BUILD_SOURCEVERSION: $cmtHashShort"
+    echo "[INFO] Using BUILD_SOURCEVERSION: $cmtHashShort"
 else
     cmtHashShort="unknown"
-    echo "⚠️  No commit hash available"
+    echo "[WARN] No commit hash available"
 fi
 
 HARBOR_PROJECT="flowfish"
@@ -76,21 +104,21 @@ echo "Harbor Project: $HARBOR_PROJECT"
 OC_LOGIN_SUCCESS=false
 
 echo ""
-echo "🔐 Attempting OpenShift login..."
+echo "[AUTH] Attempting OpenShift login..."
 
 if [ -n "${OPENSHIFT_API_URL}" ] && [ -n "${OPENSHIFT_USER}" ] && [ -n "${OPENSHIFT_PASSWORD}" ]; then
     if oc login "${OPENSHIFT_API_URL}" -u "${OPENSHIFT_USER}" -p "${OPENSHIFT_PASSWORD}" --insecure-skip-tls-verify=true 2>&1; then
         if oc project "${OPENSHIFT_NAMESPACE}" 2>&1; then
             OC_LOGIN_SUCCESS=true
-            echo "✅ OpenShift login successful"
+            echo "[OK] OpenShift login successful"
         else
-            echo "⚠️  Failed to switch to project ${OPENSHIFT_NAMESPACE}"
+            echo "[WARN] Failed to switch to project ${OPENSHIFT_NAMESPACE}"
         fi
     else
-        echo "⚠️  OpenShift login failed"
+        echo "[WARN] OpenShift login failed"
     fi
 else
-    echo "⚠️  OpenShift credentials not configured"
+    echo "[WARN] OpenShift credentials not configured"
 fi
 
 # Create working directory for manifests
@@ -131,21 +159,27 @@ done
 # ==============================================================================
 
 # Get current image tag from cluster deployment
+# Tries specific container name, falls back to first container
 get_current_cluster_tag() {
     local deployment_name="$1"
     local container_name="$2"
     
     if [ "$OC_LOGIN_SUCCESS" != "true" ]; then
-echo ""
+        echo ""
         return 1
     fi
     
     local current_image=$(oc get deployment "$deployment_name" -n "${OPENSHIFT_NAMESPACE}" \
         -o jsonpath="{.spec.template.spec.containers[?(@.name=='$container_name')].image}" 2>/dev/null || echo "")
     
+    # Fallback: get first container's image if specific name didn't match
+    if [ -z "$current_image" ]; then
+        current_image=$(oc get deployment "$deployment_name" -n "${OPENSHIFT_NAMESPACE}" \
+            -o jsonpath="{.spec.template.spec.containers[0].image}" 2>/dev/null || echo "")
+    fi
+    
     if [ -n "$current_image" ]; then
         local tag="${current_image##*:}"
-        # Ensure tag is valid (not empty, not 'latest', not a placeholder)
         if [ -n "$tag" ] && [ "$tag" != "latest" ] && [[ ! "$tag" =~ ^NOT_ ]] && [[ ! "$tag" =~ ^\{\{ ]]; then
             echo "$tag"
             return 0
@@ -174,7 +208,7 @@ set_service_image_tag() {
     # Priority 1: Service was built in this pipeline run - use the new tag
     if [ "${built_flag}" = "true" ] && [ -n "$service_tag" ] && [ "$service_tag" != "false" ]; then
         final_tag="$service_tag"
-        tag_source="new build ✅"
+        tag_source="new build [OK]"
     fi
     
     # Priority 2: Service NOT built - MUST get current tag from cluster
@@ -183,24 +217,28 @@ set_service_image_tag() {
         local cluster_tag=$(get_current_cluster_tag "$deployment_name" "$container_name")
         if [ -n "$cluster_tag" ]; then
             final_tag="$cluster_tag"
-            tag_source="cluster (keeping existing) ✅"
+            tag_source="cluster (keeping existing) [OK]"
         else
             # Mark as needing fix by deploy-application
             final_tag="NEEDS_CLUSTER_TAG"
-            tag_source="⚠️ NEEDS FIX - deploy-application will resolve"
+            tag_source="[WARN] NEEDS FIX - deploy-application will resolve"
         fi
     fi
     
-    # Priority 3: Only use commit hash if we have NO other option AND service was supposedly built
+    # Priority 3: Use commit hash as fallback
     if [ -z "$final_tag" ] || [ "$final_tag" = "NEEDS_CLUSTER_TAG" ]; then
         if [ "${built_flag}" = "true" ]; then
             final_tag="$cmtHashShort"
             tag_source="commit hash (built but no tag provided)"
+        elif [ "${RELEASE_ALL:-false}" = "true" ] && [ "$BUILD_INFO_LOADED" != "true" ] && [ "$cmtHashShort" != "unknown" ]; then
+            # build-info was not loaded, but RELEASE_ALL is set -- the image may already exist in registry
+            final_tag="$cmtHashShort"
+            tag_source="commit hash (RELEASE_ALL + build-info missing, first-time deploy)"
         fi
         # If still NEEDS_CLUSTER_TAG, leave it - deploy-application will fix
     fi
     
-    echo "  📌 $manifest_file → $final_tag ($tag_source)"
+    echo "  [INFO] $manifest_file -> $final_tag ($tag_source)"
     
     # Replace placeholder with final tag
     sed -i -e "s|{{IMAGE_TAG}}|${final_tag}|g" "$manifest_file"
@@ -227,18 +265,25 @@ set_service_image_tag "16-graph-query.yaml" "${GRAPH_QUERY_BUILT:-false}" "${GRA
 set_service_image_tag "17-timeseries-query.yaml" "${TIMESERIES_QUERY_BUILT:-false}" "${TIMESERIES_QUERY_TAG}" "timeseries-query" "timeseries-query"
 set_service_image_tag "18-change-detection-worker.yaml" "${CHANGE_WORKER_BUILT:-false}" "${CHANGE_WORKER_TAG}" "change-detection-worker" "change-detection-worker"
 
+# L7 Services
+set_service_image_tag "22-l7-ingestion-service.yaml" "${L7_INGESTION_SERVICE_BUILT:-false}" "${L7_INGESTION_SERVICE_TAG}" "l7-ingestion-service" "l7-ingestion-service"
+set_service_image_tag "21-flowfish-l7-collector.yaml" "${L7_COLLECTOR_BUILT:-false}" "${L7_COLLECTOR_TAG}" "flowfish-l7-collector" "l7-collector"
+
 # Replace any remaining {{IMAGE_TAG}} placeholders
 for manifest in *.yaml; do
     if grep -q "{{IMAGE_TAG}}" "$manifest" 2>/dev/null; then
-        # Try to get from cluster first
         dep_name=$(basename "$manifest" .yaml | sed 's/^[0-9]*-//')
+        # Handle filename-to-deployment name mismatches (if any)
+        case "$dep_name" in
+            *) ;; # no mismatches currently
+        esac
         cluster_tag=$(get_current_cluster_tag "$dep_name" "$dep_name" 2>/dev/null || echo "")
         if [ -n "$cluster_tag" ]; then
             sed -i -e "s|{{IMAGE_TAG}}|${cluster_tag}|g" "$manifest"
-            echo "  📌 $manifest → ${cluster_tag} (from cluster)"
+            echo "  [INFO] $manifest -> ${cluster_tag} (from cluster)"
         else
             sed -i -e "s|{{IMAGE_TAG}}|${cmtHashShort}|g" "$manifest"
-            echo "  📌 $manifest → ${cmtHashShort} (default)"
+            echo "  [INFO] $manifest -> ${cmtHashShort} (default)"
         fi
     fi
 done
@@ -297,7 +342,7 @@ if [ -z "${FLOWFISH_ENCRYPTION_KEY}" ]; then
     if [ -z "${FLOWFISH_ENCRYPTION_KEY}" ]; then
         echo "Generating new FLOWFISH_ENCRYPTION_KEY..."
         FLOWFISH_ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || openssl rand -base64 32)
-        echo "⚠️  New key generated - save this for future releases!"
+        echo "[WARN] New key generated - save this for future releases!"
     fi
 fi
 sed -i -e "s|{{FLOWFISH_ENCRYPTION_KEY}}|${FLOWFISH_ENCRYPTION_KEY}|g" 04-secrets.yaml

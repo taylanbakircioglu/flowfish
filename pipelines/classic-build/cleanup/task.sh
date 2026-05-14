@@ -7,7 +7,7 @@
 # ==============================================================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🧹 FLOWFISH IMAGE CLEANUP"
+echo "[CLEAN] FLOWFISH IMAGE CLEANUP"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ==============================================================================
@@ -58,12 +58,12 @@ if [ "${BUILD_ALL:-false}" = "true" ]; then
 fi
 
 if [ "$VARS_RECEIVED" -eq 1 ] && [ "$ANY_CHANGES" -eq 0 ]; then
-    echo "⏭️  No code changes detected - skipping cleanup"
+    echo "[SKIP] No code changes detected - skipping cleanup"
     exit 0
 fi
 
 if [ "$VARS_RECEIVED" -eq 0 ]; then
-    echo "⚠️  Change detection variables not received - running cleanup as safety fallback"
+    echo "[WARN] Change detection variables not received - running cleanup as safety fallback"
     echo "   Cleanup job'unun Environment Variables ayarlarını kontrol edin."
 fi
 
@@ -73,9 +73,9 @@ REGISTRY=${HARBOR_REGISTRY}
 HARBOR_PROJECT="flowfish"
 KEEP_COUNT=${CLEANUP_KEEP_COUNT:-3}  # Son kaç tag korunacak (latest hariç), default 3
 
-echo "📦 Registry: $REGISTRY"
-echo "📁 Project: $HARBOR_PROJECT"
-echo "🔢 Keeping last $KEEP_COUNT tags + latest"
+echo "[INFO] Registry: $REGISTRY"
+echo "Project: $HARBOR_PROJECT"
+echo "Keeping last $KEEP_COUNT tags + latest"
 echo ""
 
 SERVICES=(
@@ -100,12 +100,12 @@ HARBOR_DELETED=0
 # PART 1: Local Image Cleanup (Build Agent)
 # ==============================================================================
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🖥️  LOCAL IMAGE CLEANUP"
+echo "LOCAL IMAGE CLEANUP"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 for service in "${SERVICES[@]}"; do
     echo ""
-    echo "📋 Cleaning local: $service"
+    echo "[INFO] Cleaning local: $service"
     
     # List current images (exclude latest, keep last 3)
     images=$(podman images --format "{{.Repository}}:{{.Tag}}" \
@@ -122,9 +122,9 @@ for service in "${SERVICES[@]}"; do
     while IFS= read -r image; do
         count=$((count + 1))
         if [ $count -le $KEEP_COUNT ]; then
-            echo "   ✅ Keep: $image"
+            echo "   [OK] Keep: $image"
         else
-            echo "   🗑️  Remove: $image"
+            echo "   Remove: $image"
             podman rmi "$image" 2>/dev/null && LOCAL_DELETED=$((LOCAL_DELETED + 1)) || true
         fi
     done <<< "$images"
@@ -135,25 +135,25 @@ done
 # ==============================================================================
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🌐 HARBOR REGISTRY CLEANUP"
+echo "[NET] HARBOR REGISTRY CLEANUP"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Harbor credentials check
 if [ -z "${HARBOR_USER}" ] || [ -z "${HARBOR_PASSWORD}" ]; then
-    echo "⚠️  Harbor credentials not set, skipping registry cleanup"
+    echo "[WARN] Harbor credentials not set, skipping registry cleanup"
     echo "   Set HARBOR_USER and HARBOR_PASSWORD to enable"
 else
     HARBOR_API="https://${REGISTRY}/api/v2.0"
     # Use printf for consistent base64 encoding (echo -n can be inconsistent)
     AUTH=$(printf '%s:%s' "${HARBOR_USER}" "${HARBOR_PASSWORD}" | base64 | tr -d '\n')
     
-    echo "🔐 Testing Harbor API connection..."
+    echo "[AUTH] Testing Harbor API connection..."
     echo "   User: ${HARBOR_USER}"
     echo "   API: ${HARBOR_API}"
     
     for service in "${SERVICES[@]}"; do
         echo ""
-        echo "📋 Cleaning Harbor: $service"
+        echo "[INFO] Cleaning Harbor: $service"
         
         # Get all artifacts (tags) for this repository
         # Harbor API: /projects/{project}/repositories/{repo}/artifacts
@@ -198,9 +198,9 @@ else
             
             count=$((count + 1))
             if [ $count -le $KEEP_COUNT ]; then
-                echo "   ✅ Keep: $tag"
+                echo "   [OK] Keep: $tag"
             else
-                echo "   🗑️  Delete from Harbor: $tag"
+                echo "   Delete from Harbor: $tag"
                 
                 # URL-encode the digest (sha256: contains colon)
                 encoded_digest=$(echo "$digest" | sed 's/:/%3A/g')
@@ -216,16 +216,16 @@ else
                     "$delete_url" 2>/dev/null)
                 
                 if [ "$delete_response" = "200" ] || [ "$delete_response" = "202" ] || [ "$delete_response" = "204" ]; then
-                    echo "      ✅ Deleted successfully"
+                    echo "      [OK] Deleted successfully"
                     HARBOR_DELETED=$((HARBOR_DELETED + 1))
                 elif [ "$delete_response" = "401" ]; then
-                    echo "      ❌ Auth failed (401) - Check user permissions in Harbor"
+                    echo "      [ERROR] Auth failed (401) - Check user permissions in Harbor"
                 elif [ "$delete_response" = "403" ]; then
-                    echo "      ❌ Forbidden (403) - User lacks delete permission"
+                    echo "      [ERROR] Forbidden (403) - User lacks delete permission"
                 elif [ "$delete_response" = "404" ]; then
-                    echo "      ⚠️  Not found (404) - Already deleted or doesn't exist"
+                    echo "      [WARN] Not found (404) - Already deleted or doesn't exist"
                 else
-                    echo "      ⚠️  Failed (HTTP $delete_response)"
+                    echo "      [WARN] Failed (HTTP $delete_response)"
                 fi
             fi
         done <<< "$artifacts"
@@ -237,7 +237,7 @@ fi
 # ==============================================================================
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🧹 CLEANING FLOWFISH UNTAGGED IMAGES"
+echo "[CLEAN] CLEANING FLOWFISH UNTAGGED IMAGES"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Only remove untagged images that belong to Flowfish project
@@ -255,7 +255,7 @@ for service in "${SERVICES[@]}"; do
     if [ -n "$dangling" ]; then
         while IFS= read -r image_id; do
             if [ -n "$image_id" ]; then
-                echo "   🗑️  Removing untagged: $service ($image_id)"
+                echo "   Removing untagged: $service ($image_id)"
                 podman rmi "$image_id" 2>/dev/null && FLOWFISH_DANGLING=$((FLOWFISH_DANGLING + 1)) || true
             fi
         done <<< "$dangling"
@@ -271,24 +271,24 @@ other_flowfish=$(podman images --format "{{.ID}} {{.Repository}}:{{.Tag}}" 2>/de
 if [ -n "$other_flowfish" ]; then
     while IFS= read -r image_id; do
         if [ -n "$image_id" ]; then
-            echo "   🗑️  Removing untagged flowfish image: $image_id"
+            echo "   Removing untagged flowfish image: $image_id"
             podman rmi "$image_id" 2>/dev/null && FLOWFISH_DANGLING=$((FLOWFISH_DANGLING + 1)) || true
         fi
     done <<< "$other_flowfish"
 fi
 
-echo "   ✅ Removed $FLOWFISH_DANGLING untagged Flowfish images"
+echo "   [OK] Removed $FLOWFISH_DANGLING untagged Flowfish images"
 
 # ==============================================================================
 # Summary
 # ==============================================================================
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📊 CLEANUP SUMMARY"
+echo "[SUMMARY] CLEANUP SUMMARY"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🖥️  Local tagged images deleted: $LOCAL_DELETED"
-echo "🖥️  Local untagged images deleted: $FLOWFISH_DANGLING"
-echo "🌐 Harbor images deleted: $HARBOR_DELETED"
+echo "Local tagged images deleted: $LOCAL_DELETED"
+echo "Local untagged images deleted: $FLOWFISH_DANGLING"
+echo "[NET] Harbor images deleted: $HARBOR_DELETED"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "✅ Cleanup complete (only Flowfish images affected)"
+echo "[OK] Cleanup complete (only Flowfish images affected)"

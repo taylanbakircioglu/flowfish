@@ -2,17 +2,51 @@
 Users router - User management endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+import csv
+import io
 from datetime import datetime
+from typing import Optional, List, Any
+
 import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr
 
 from database.postgresql import database
 from utils.jwt_utils import get_current_user, require_permissions
 
 logger = structlog.get_logger()
+
+
+# Plan v3 Akış F m.10 (B1.6 fix — CSV Injection): when fields begin with
+# `=`, `+`, `-`, `@`, tab, CR or LF, Microsoft Excel and LibreOffice Calc
+# will interpret them as formulas. Activity logs include free-form fields
+# (resource names, error messages) that an attacker could trivially seed
+# via a malicious analysis name; we prefix the unsafe leading byte with a
+# single quote so the formula engine treats it as a string. Mirrors OWASP
+# guidance for CSV-injection mitigation.
+_CSV_INJECTION_PREFIX = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+
+def _csv_safe(value: Any) -> str:
+    """Return a CSV-safe string for ``value``, neutralising formula leaders."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        s = value.isoformat()
+    else:
+        s = str(value)
+    if s and s[0] in _CSV_INJECTION_PREFIX:
+        return "'" + s
+    return s
+
+
+# Hard cap on rows the export endpoint will stream. Activity logs are
+# typically small but a malicious admin pulling millions of rows would
+# stall the worker; the limit matches the pagination ceiling so we never
+# diverge from the visible UI behaviour.
+MAX_EXPORT_ROWS = 50_000
 
 router = APIRouter()
 
@@ -554,14 +588,70 @@ async def update_user_roles(
 # User Activity Logs Endpoint
 # ============================================
 
+def _build_activity_filters(
+    action: Optional[str],
+    resource_type: Optional[str],
+    username: Optional[str],
+    status_filter: Optional[str],
+    start_time: Optional[str],
+    end_time: Optional[str],
+) -> tuple[str, dict]:
+    """Compose WHERE clause + params shared by GET and the CSV export.
+
+    Centralised so the export endpoint can never drift from the table
+    visible in the UI — the same filter set produces the same row set.
+    All values are bound parameters; no string interpolation.
+    """
+    clauses: List[str] = []
+    params: dict = {}
+    if action:
+        clauses.append("al.action = :action")
+        params["action"] = action
+    if resource_type:
+        clauses.append("al.resource_type = :resource_type")
+        params["resource_type"] = resource_type
+    if username:
+        # ILIKE matches the pattern UI shows ("contains" search, case-
+        # insensitive). Username column is bounded to ~64 chars so the
+        # pattern can't blow up.
+        clauses.append("al.username ILIKE :username_pattern")
+        params["username_pattern"] = f"%{username}%"
+    if status_filter:
+        clauses.append("al.status = :status")
+        params["status"] = status_filter
+    if start_time:
+        clauses.append("al.created_at >= :start_time")
+        params["start_time"] = start_time
+    if end_time:
+        clauses.append("al.created_at <= :end_time")
+        params["end_time"] = end_time
+    where = (" AND " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
 @router.get("/user-activity")
 async def get_user_activity(
-    limit: int = 100,
-    action: Optional[str] = None,
-    resource_type: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    action: Optional[str] = Query(None, max_length=64),
+    resource_type: Optional[str] = Query(None, max_length=64),
+    username: Optional[str] = Query(None, max_length=64),
+    status_filter: Optional[str] = Query(None, alias="status", max_length=16),
+    start_time: Optional[str] = Query(None, description="ISO 8601 timestamp"),
+    end_time: Optional[str] = Query(None, description="ISO 8601 timestamp"),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get user activity logs - comprehensive audit trail of all user actions"""
+    """Get user activity logs - comprehensive audit trail of all user actions.
+
+    Plan v3 Akış F m.10 (B4.6 + B1.6): adds server-side pagination
+    (limit/offset), additional filters (username, status, date range) and
+    returns the full enriched ``details`` JSON so the UI detail drawer can
+    render structured client/browser/OS info written by
+    ``activity_service.log_activity``. The fallback path (no rows in
+    ``activity_logs``) preserves the legacy synthetic IDs but no longer
+    advertises them as deep-linkable (B2.4): the frontend disables the
+    "view details" affordance when ``details.synthetic == true``.
+    """
     try:
         # First try activity_logs table (new comprehensive system)
         # Fall back to login history if activity_logs is empty
@@ -572,9 +662,16 @@ async def get_user_activity(
         has_activity_logs = check_result and check_result['cnt'] > 0
         
         if has_activity_logs:
-            # Use comprehensive activity_logs table
-            query = """
-            SELECT 
+            where, params = _build_activity_filters(
+                action, resource_type, username, status_filter, start_time, end_time
+            )
+
+            count_query = f"SELECT COUNT(*) AS cnt FROM activity_logs al WHERE 1=1{where}"
+            total_row = await database.fetch_one(count_query, params)
+            total = int(total_row["cnt"]) if total_row else 0
+
+            query = f"""
+            SELECT
                 al.id,
                 al.user_id,
                 al.username,
@@ -584,27 +681,18 @@ async def get_user_activity(
                 al.resource_name,
                 al.details,
                 al.ip_address,
+                al.user_agent,
                 al.status,
                 al.error_message,
                 al.created_at as timestamp
             FROM activity_logs al
-            WHERE 1=1
+            WHERE 1=1{where}
+            ORDER BY al.created_at DESC
+            LIMIT :limit OFFSET :offset
             """
-            params = {}
-            
-            if action:
-                query += " AND al.action = :action"
-                params["action"] = action
-            
-            if resource_type:
-                query += " AND al.resource_type = :resource_type"
-                params["resource_type"] = resource_type
-            
-            query += " ORDER BY al.created_at DESC LIMIT :limit"
-            params["limit"] = limit
-            
-            activities = await database.fetch_all(query, params)
-            
+            page_params = dict(params, limit=limit, offset=offset)
+            activities = await database.fetch_all(query, page_params)
+
             result = []
             for activity in activities:
                 result.append({
@@ -617,15 +705,24 @@ async def get_user_activity(
                     "resource_name": activity["resource_name"],
                     "details": activity["details"] or {},
                     "ip_address": activity["ip_address"],
+                    "user_agent": activity["user_agent"],
                     "status": activity["status"],
                     "error_message": activity["error_message"],
                     "timestamp": activity["timestamp"].isoformat() if activity["timestamp"] else None
                 })
-            
-            return {"activities": result}
+
+            return {
+                "activities": result,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
         
         else:
-            # Fall back to login history from users table
+            # Fall back to login history from users table.
+            # B2.4 fix: synthetic IDs (`i + 1`) are unstable across pages, so
+            # we mark each row as `details.synthetic = True` and disable
+            # deep-linking on the frontend.
             query = """
             SELECT 
                 u.id as user_id,
@@ -639,32 +736,131 @@ async def get_user_activity(
             FROM users u
             WHERE u.last_login_at IS NOT NULL
             ORDER BY u.last_login_at DESC
-            LIMIT :limit
+            LIMIT :limit OFFSET :offset
             """
-            
-            activities = await database.fetch_all(query, {"limit": limit})
-            
+
+            activities = await database.fetch_all(query, {"limit": limit, "offset": offset})
+
             result = []
             for i, activity in enumerate(activities):
                 if activity["timestamp"]:
+                    base_details = activity["details"] or {}
+                    if isinstance(base_details, dict):
+                        # Mark synthetic so the UI can hide the deep-link CTA.
+                        base_details = {**base_details, "synthetic": True}
                     result.append({
-                        "id": i + 1,
+                        "id": offset + i + 1,
                         "user_id": activity["user_id"],
                         "username": activity["username"],
                         "action": activity["action"],
                         "resource_type": activity["resource_type"],
                         "resource_id": activity["resource_id"],
                         "resource_name": None,
-                        "details": activity["details"] or {},
+                        "details": base_details,
                         "ip_address": activity["ip_address"],
+                        "user_agent": None,
                         "status": "success",
                         "error_message": None,
                         "timestamp": activity["timestamp"].isoformat() if activity["timestamp"] else None
                     })
-            
-            return {"activities": result}
+
+            return {
+                "activities": result,
+                "total": len(result),
+                "limit": limit,
+                "offset": offset,
+                "fallback": True,
+            }
         
     except Exception as e:
         logger.error("Get user activity failed", error=str(e))
         # Return empty list on error instead of failing
-        return {"activities": []}
+        return {"activities": [], "total": 0, "limit": limit, "offset": offset}
+
+
+@router.get("/user-activity/export")
+async def export_user_activity(
+    action: Optional[str] = Query(None, max_length=64),
+    resource_type: Optional[str] = Query(None, max_length=64),
+    username: Optional[str] = Query(None, max_length=64),
+    status_filter: Optional[str] = Query(None, alias="status", max_length=16),
+    start_time: Optional[str] = Query(None, description="ISO 8601 timestamp"),
+    end_time: Optional[str] = Query(None, description="ISO 8601 timestamp"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Stream the activity log as CSV.
+
+    Plan v3 Akış F m.10 (B1.6 fix): every text cell is run through
+    ``_csv_safe`` so an attacker who can write a free-form field (analysis
+    name, error message) cannot smuggle a formula into the operator's
+    spreadsheet. ``MAX_EXPORT_ROWS`` caps payload size; the same filter set
+    as ``GET /user-activity`` keeps the visible/exported rows in lockstep.
+    """
+    where, params = _build_activity_filters(
+        action, resource_type, username, status_filter, start_time, end_time
+    )
+
+    query = f"""
+    SELECT
+        al.id, al.user_id, al.username, al.action, al.resource_type,
+        al.resource_id, al.resource_name, al.details, al.ip_address,
+        al.user_agent, al.status, al.error_message, al.created_at
+    FROM activity_logs al
+    WHERE 1=1{where}
+    ORDER BY al.created_at DESC
+    LIMIT :limit
+    """
+    rows = await database.fetch_all(query, dict(params, limit=MAX_EXPORT_ROWS))
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL)
+    writer.writerow([
+        "id", "timestamp", "user_id", "username", "action", "resource_type",
+        "resource_id", "resource_name", "status", "error_message",
+        "ip_address", "user_agent", "browser", "os", "device", "details_json",
+    ])
+
+    import json as _json
+    for row in rows:
+        details = row["details"] or {}
+        # When the JSONB column comes back as a string (driver-dependent)
+        # parse it so we can read the enriched client metadata; otherwise
+        # leave as-is for the JSON dump column.
+        if isinstance(details, str):
+            try:
+                details = _json.loads(details)
+            except Exception:
+                details = {"raw": details}
+        client = (details.get("client") if isinstance(details, dict) else None) or {}
+        writer.writerow([
+            _csv_safe(row["id"]),
+            _csv_safe(row["created_at"].isoformat() if row["created_at"] else None),
+            _csv_safe(row["user_id"]),
+            _csv_safe(row["username"]),
+            _csv_safe(row["action"]),
+            _csv_safe(row["resource_type"]),
+            _csv_safe(row["resource_id"]),
+            _csv_safe(row["resource_name"]),
+            _csv_safe(row["status"]),
+            _csv_safe(row["error_message"]),
+            _csv_safe(row["ip_address"]),
+            _csv_safe(row["user_agent"]),
+            _csv_safe(client.get("browser")),
+            _csv_safe(client.get("os")),
+            _csv_safe(client.get("device")),
+            _csv_safe(_json.dumps(details, default=str)) if details else "",
+        ])
+
+    csv_text = buffer.getvalue()
+    buffer.close()
+
+    filename = f"activity-logs-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+    return StreamingResponse(
+        io.StringIO(csv_text),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Total-Rows": str(len(rows)),
+            "X-Truncated": "true" if len(rows) >= MAX_EXPORT_ROWS else "false",
+        },
+    )

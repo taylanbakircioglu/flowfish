@@ -58,6 +58,7 @@ import {
   UnifiedEvent
 } from '../store/api/eventsApi';
 import { Analysis } from '../types';
+import { useL4Analyses, useL4AnalysisGuard } from '../utils/analysisFilters';
 import { ClusterBadge } from '../components/Common';
 import { useTheme } from '../contexts/ThemeContext';
 
@@ -182,9 +183,12 @@ const EventsTimeline: React.FC = () => {
   // Fetch ALL analyses (no cluster filter) - user selects analysis first
   const { data: analyses = [], isLoading: isAnalysesLoading } = useGetAnalysesQuery({});
   
-  const availableAnalyses = Array.isArray(analyses) 
-    ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
-    : [];
+  const availableAnalyses = useL4Analyses(
+    Array.isArray(analyses)
+      ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
+      : [],
+  );
+  useL4AnalysisGuard(selectedAnalysisId, setSelectedAnalysisId, availableAnalyses);
 
   // Get selected analysis details
   const selectedAnalysis = useMemo(() => {

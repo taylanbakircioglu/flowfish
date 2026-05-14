@@ -1,0 +1,237 @@
+# Beyla eBPF DaemonSet for L7 traffic capture.
+# Uses {{OPENSHIFT_NAMESPACE}} for Azure DevOps sed-based substitution.
+# For remote cluster installs, the backend generates scripts that substitute ${BEYLA_NAMESPACE}.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: beyla-config
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: beyla
+data:
+  beyla-config.yml: |
+    log_level: info
+    ebpf:
+      # =====================================================================
+      # PASSIVE-READ DISTRIBUTED TRACING (read-only, no header injection)
+      # =====================================================================
+      # `track_request_headers: true` makes Beyla READ the W3C `traceparent`
+      # header from HTTP/gRPC requests it already observes via eBPF probes.
+      # The traffic itself is NEVER modified — Beyla does not write into the
+      # syscall path, does not rewrite payloads and does not inject any
+      # header. The producing service still controls everything that goes on
+      # the wire.
+      #
+      # WHAT THIS MEANS FOR PRODUCTION:
+      #   * No measurable latency impact on observed services
+      #     (kprobe/uprobe read paths only, microsecond-scale at most).
+      #   * No request mutation — services that already propagate
+      #     traceparent (Spring/OTel SDKs, Envoy, Apisix etc.) keep working
+      #     unchanged; services that don't propagate simply yield spans
+      #     without trace_id and that's harmless.
+      #   * No new privileges beyond existing CAP_BPF / hostPID.
+      #   * Requires Beyla >= 3.0.
+      #
+      # DO NOT ADD THE FOLLOWING — they would turn Beyla active:
+      #   * routes.* with inject options
+      #   * `request_inject` / `request_rewrite`
+      # The Flowfish backend deliberately runs Beyla read-only; active
+      # injection would require additional kernel attach points and would
+      # touch production payloads.
+      track_request_headers: true
+    attributes:
+      kubernetes:
+        enable: true
+      # =====================================================================
+      # PHASE 4 — PID-temporal correlation
+      # =====================================================================
+      # The PID-temporal correlator in `services/timeseries-writer` stitches
+      # consecutive single-hop spans (services with no W3C trace_id
+      # propagation) into a "virtual trace" by hashing
+      # (cluster_id, src_pod, src_container_id, src_pid, time_window).
+      #
+      # Beyla 3.x emits `process.pid` on trace spans automatically when
+      # `hostPID: true` is set on the DaemonSet (see spec.template.spec
+      # below), so NO `attributes.select` block is required here — and
+      # adding one with the wrong shape would either be a silent no-op or,
+      # worse, a startup-time validation error. The
+      # `attributes.select` schema is `<metric_name>: { include: [...] }`,
+      # NOT a bare list under `process:` (verified against Beyla
+      # docs/configure/metrics-traces-attributes).
+      #
+      # To verify PID is reaching the collector, tail the
+      # flowfish-l7-collector pod after rollout:
+      #   kubectl logs -n {{OPENSHIFT_NAMESPACE}} -l app=flowfish-l7-collector \
+      #     | grep 'process.pid'
+      # An emit rate near 1:1 with HTTP/gRPC events confirms Phase 4
+      # readiness; 0 emits means the Beyla build doesn't auto-attach PID
+      # and Phase 4 should stay disabled (L7_PID_CORRELATION_ENABLED=false).
+      # See docs/architecture/L7_DISTRIBUTED_TRACING_MIGRATION.md.
+    discovery:
+      instrument:
+        - k8s_namespace: "*"
+          containers_only: true
+      exclude_instrument:
+        - k8s_namespace: "openshift-*"
+        - k8s_namespace: "kube-*"
+        - k8s_namespace: "default"
+        - k8s_namespace: "ibm-*"
+        - k8s_namespace: "ibmblockstorage"
+        - k8s_namespace: "external-secrets"
+        - k8s_namespace: "calico-*"
+        - k8s_namespace: "tigera-*"
+        # Self-monitoring exclusion: Flowfish's own pods are excluded so Beyla
+        # does not surface long-running gadget gRPC streams (kubectl-gadget →
+        # IG worker) as "single multi-minute requests" in Service Map metrics.
+        # Without this, aggregate L7 latency is heavily skewed by Flowfish
+        # internal traffic (per-connection durations measured in seconds to
+        # minutes). The flowfish-l7-collector and timeseries-writer also drop
+        # `loopback` events as a defense; this is the upstream root-cause fix.
+        - k8s_namespace: "{{OPENSHIFT_NAMESPACE}}"
+        - k8s_namespace: "gadget"
+    otel_traces_export:
+      endpoint: http://flowfish-l7-collector.{{OPENSHIFT_NAMESPACE}}:4318
+      protocol: http/protobuf
+    otel_metrics_export:
+      endpoint: http://flowfish-l7-collector.{{OPENSHIFT_NAMESPACE}}:4318
+      protocol: http/protobuf
+      features: ["application", "application_service_graph"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: beyla
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: beyla
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: beyla-scc
+  labels:
+    app: beyla
+allowPrivilegedContainer: true
+allowHostPID: true
+allowHostNetwork: false
+allowHostDirVolumePlugin: true
+allowHostPorts: false
+allowHostIPC: false
+allowedCapabilities: []
+defaultAddCapabilities: []
+requiredDropCapabilities: []
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+volumes:
+  - configMap
+  - emptyDir
+  - hostPath
+  - projected
+  - secret
+  - downwardAPI
+users:
+  - system:serviceaccount:{{OPENSHIFT_NAMESPACE}}:beyla
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: beyla
+  labels:
+    app: beyla
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch", "get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch", "get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch", "get"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments", "statefulsets", "daemonsets"]
+    verbs: ["list", "watch", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: beyla
+  labels:
+    app: beyla
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: beyla
+subjects:
+  - kind: ServiceAccount
+    name: beyla
+    namespace: {{OPENSHIFT_NAMESPACE}}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: beyla
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: beyla
+spec:
+  selector:
+    matchLabels:
+      app: beyla
+  template:
+    metadata:
+      labels:
+        app: beyla
+    spec:
+      hostPID: true
+      serviceAccountName: beyla
+      containers:
+        - name: beyla
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/beyla:3.9.5
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 6Gi
+          env:
+            - name: BEYLA_CONFIG_PATH
+              value: /config/beyla-config.yml
+            - name: OTEL_EBPF_KUBE_CLUSTER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OTEL_EXPORTER_OTLP_TRACES_TIMEOUT
+              value: "30000"
+            - name: OTEL_EXPORTER_OTLP_METRICS_TIMEOUT
+              value: "30000"
+          volumeMounts:
+            - name: beyla-config
+              mountPath: /config
+              readOnly: true
+            - name: var-run-beyla
+              mountPath: /var/run/beyla
+            - name: bpffs
+              mountPath: /sys/fs/bpf
+      volumes:
+        - name: beyla-config
+          configMap:
+            name: beyla-config
+        - name: var-run-beyla
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: bpffs
+          hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate

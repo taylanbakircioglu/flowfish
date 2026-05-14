@@ -4,6 +4,7 @@ Main entry point
 """
 
 import logging
+import os
 import signal
 import sys
 import asyncio
@@ -14,6 +15,13 @@ from app.rabbitmq_consumer import consumer
 from app.graph_client import graph_client
 from app.graph_builder import GraphBuilder
 from app.deleted_analysis_cache import deleted_analysis_cache
+from app.l7_graph_builder import (
+    handle_l7_http_flow,
+    handle_l7_grpc_flow,
+    handle_l7_dns_flow,
+    l7_edge_buffer,
+)
+from app.l7_same_workload import run_same_workload_periodic
 
 # Configure logging
 logging.basicConfig(
@@ -179,11 +187,123 @@ async def handle_sni_event(data: dict):
         logger.error(f"Failed to handle SNI event: {e}")
 
 
+async def handle_l7_http_flow_message(data: dict):
+    """L7 HTTP flow — L7Workload nodes and L7_COMMUNICATES_WITH in Neo4j."""
+    handle_l7_http_flow(data, graph_client)
+
+
+async def handle_l7_grpc_flow_message(data: dict):
+    """L7 gRPC flow — L7Workload nodes and L7_COMMUNICATES_WITH in Neo4j."""
+    handle_l7_grpc_flow(data, graph_client)
+
+
+async def handle_l7_dns_flow_message(data: dict):
+    """L7 DNS flow — L7Workload nodes and L7_COMMUNICATES_WITH in Neo4j."""
+    try:
+        handle_l7_dns_flow(data, graph_client, graph_builder)
+    except Exception as e:
+        logger.error(f"Failed to handle L7 DNS flow: {e}", exc_info=True)
+
+
 async def periodic_flush():
-    """Periodically flush buffers"""
+    """Periodically flush buffers.
+
+    Each iteration is wrapped in try/except so a transient Neo4j or executor
+    error does not terminate the entire periodic loop. The SAME_WORKLOAD task
+    runs sequentially after the L4/L7 dedup pass to avoid lock contention on
+    the same L7Workload nodes.
+    """
+    same_workload_counter = 0
     while True:
         await asyncio.sleep(settings.flush_interval)
-        await flush_buffers()
+        try:
+            await flush_buffers()
+            await asyncio.get_event_loop().run_in_executor(
+                None, l7_edge_buffer.flush_if_needed, graph_client
+            )
+            # SAME_WORKLOAD periodic — runs every N flush cycles when tracing
+            # is enabled. Sequential (not parallel) so it never contends with
+            # the L7 dedup pass that may be writing to the same nodes.
+            if getattr(settings, "l7_tracing_enabled", False):
+                same_workload_counter += 1
+                cycles = max(1, settings.same_workload_interval // max(1, settings.flush_interval))
+                if same_workload_counter >= cycles:
+                    same_workload_counter = 0
+                    # Thread-safe snapshot — `_flush()` in the executor thread
+                    # may mutate `_seen_analysis_ids` concurrently.
+                    aids = l7_edge_buffer.snapshot_seen_analysis_ids()
+                    if aids:
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, run_same_workload_periodic, graph_client, aids
+                        )
+        except Exception:
+            logger.error("periodic_flush iteration failed", exc_info=True)
+
+
+def _parse_resolv_conf() -> list:
+    """Read /etc/resolv.conf and extract search domains.
+
+    Per POSIX, if multiple 'search' directives exist, the LAST one wins.
+    """
+    search_domains: list = []
+    try:
+        with open('/etc/resolv.conf', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('search '):
+                    search_domains = line.split()[1:]
+    except (FileNotFoundError, PermissionError):
+        pass
+    return search_domains
+
+
+async def refresh_dns_config():
+    """Fetch DNS config from backend API and merge with resolv.conf.
+
+    Domain sources (merged):
+    1. API: Only enabled, NON-default custom domains (K8s defaults handled by hardcoded logic)
+    2. resolv.conf: All search domains from the pod's /etc/resolv.conf
+    3. Env var: DNS_SEARCH_DOMAINS (backward compatibility fallback)
+    """
+    import aiohttp
+    backend_url = f"http://{settings.backend_service_host}:{settings.backend_service_port}"
+
+    api_domains: list = []
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with session.get(f"{backend_url}/api/v1/settings/dns-config/defaults") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    api_domains = [
+                        d['domain'] for d in data.get('search_domains', [])
+                        if d.get('enabled', True) and not d.get('is_default', False)
+                    ]
+    except Exception as e:
+        logger.warning(f"Failed to fetch DNS config from backend: {e}")
+
+    resolv_domains = _parse_resolv_conf()
+    all_domains = set(api_domains) | set(resolv_domains)
+
+    env_raw = os.environ.get('DNS_SEARCH_DOMAINS', '')
+    if env_raw:
+        all_domains |= set(d.strip() for d in env_raw.split(',') if d.strip())
+
+    graph_builder.update_search_domains(list(all_domains))
+
+    if all_domains:
+        logger.info(f"DNS search domains updated ({len(all_domains)} domains): {sorted(all_domains)}")
+    else:
+        logger.warning("DNS search domains list is empty — custom domain normalization will rely on env var fallback")
+
+
+async def periodic_dns_config_refresh():
+    """Periodically refresh DNS search domain config."""
+    while True:
+        try:
+            await refresh_dns_config()
+        except Exception as e:
+            logger.error(f"DNS config refresh failed: {e}")
+        await asyncio.sleep(60)
 
 
 async def main():
@@ -208,7 +328,30 @@ async def main():
     consumer.register_handler(settings.queue_bind_events, handle_bind_event)
     consumer.register_handler(settings.queue_sni_events, handle_sni_event)
     
-    logger.info(f"Queues registered: {settings.queue_network_flows}, {settings.queue_dns_queries}, {settings.queue_tcp_connections}, {settings.queue_bind_events}, {settings.queue_sni_events}")
+    if settings.l7_enabled:
+        consumer.register_handler(settings.queue_l7_http_flows, handle_l7_http_flow_message)
+        consumer.register_handler(settings.queue_l7_grpc_flows, handle_l7_grpc_flow_message)
+        consumer.register_handler(settings.queue_l7_dns_flows, handle_l7_dns_flow_message)
+        logger.info(
+            "L7 graph consumers ENABLED: %s, %s, %s",
+            settings.queue_l7_http_flows,
+            settings.queue_l7_grpc_flows,
+            settings.queue_l7_dns_flows,
+        )
+    
+    logger.info(
+        f"Queues registered: {settings.queue_network_flows}, {settings.queue_dns_queries}, "
+        f"{settings.queue_tcp_connections}, {settings.queue_bind_events}, {settings.queue_sni_events}"
+        + (
+            f", {settings.queue_l7_http_flows}, {settings.queue_l7_grpc_flows}, {settings.queue_l7_dns_flows}"
+            if settings.l7_enabled
+            else ""
+        )
+    )
+    
+    # Refresh DNS search domains at startup, then periodically
+    await refresh_dns_config()
+    dns_refresh_task = asyncio.create_task(periodic_dns_config_refresh())
     
     # Start periodic flush task
     flush_task = asyncio.create_task(periodic_flush())
@@ -220,14 +363,27 @@ async def main():
         logger.info("Interrupted by user")
     finally:
         flush_task.cancel()
+        dns_refresh_task.cancel()
+        logger.info("Flushing remaining buffers before shutdown...")
+        try:
+            await flush_buffers()
+        except Exception as e:
+            logger.error("L4 shutdown flush failed: %s", e)
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, l7_edge_buffer.force_flush, graph_client
+            )
+        except Exception as e:
+            logger.error("L7 shutdown flush failed: %s", e)
         await consumer.close()
         graph_client.close()
 
 
 def signal_handler(sig, frame):
-    """Handle shutdown signals"""
-    logger.info("Shutting down gracefully...")
-    sys.exit(0)
+    """Handle shutdown signals — raise KeyboardInterrupt so the main loop's
+    finally block runs (flush L7 buffer, close connections)."""
+    logger.info("Shutting down gracefully (signal %s)...", sig)
+    raise KeyboardInterrupt
 
 
 if __name__ == '__main__':

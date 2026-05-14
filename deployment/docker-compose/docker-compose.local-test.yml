@@ -76,6 +76,19 @@ services:
       - clickhouse_data:/var/lib/clickhouse
       - ../../schemas/clickhouse-events-schema.sql:/docker-entrypoint-initdb.d/01-events-schema.sql:ro
       - ../../schemas/clickhouse-change-events.sql:/docker-entrypoint-initdb.d/02-change-events.sql:ro
+      - ../../schemas/clickhouse-l7-schema.sql:/docker-entrypoint-initdb.d/03-l7-schema.sql:ro
+      # Production migrations are also applied to local-test so the dev
+      # environment matches what the Azure DevOps job builds in OpenShift.
+      # Without these, local APM endpoints return 404 (no RED MVs) and
+      # the PID-temporal correlator silently drops events (no
+      # virtual_trace_id column on l7_http_flows / l7_grpc_flows). See
+      # deployment/kubernetes-manifests/03-migrations-job.yaml for the
+      # production-side counterparts. ClickHouse runs each /docker-
+      # entrypoint-initdb.d/*.sql alphabetically on first boot only.
+      - ../../schemas/migrations/clickhouse_004_add_analysis_id.sql:/docker-entrypoint-initdb.d/04-add-analysis-id.sql:ro
+      - ../../schemas/migrations/clickhouse_005_add_apm_red_mvs.sql:/docker-entrypoint-initdb.d/05-add-apm-red-mvs.sql:ro
+      - ../../schemas/migrations/clickhouse_006_add_apm_indexes.sql:/docker-entrypoint-initdb.d/06-add-apm-indexes.sql:ro
+      - ../../schemas/migrations/clickhouse_007_add_l7_pid.sql:/docker-entrypoint-initdb.d/07-add-l7-pid.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8123/ping"]
@@ -140,6 +153,8 @@ services:
       CORS_ORIGINS: http://localhost:3000
       LOG_LEVEL: DEBUG
       
+      # Build metadata
+      IMAGE_TAG: ${IMAGE_TAG:-latest}
       # Cluster Manager gRPC endpoint
       CLUSTER_MANAGER_GRPC: cluster-manager:5001
       
@@ -231,6 +246,185 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - flowfish-network
+
+  rabbitmq-l7-init:
+    image: curlimages/curl:latest
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Creating L7 exchanges..."
+        for EX in flowfish.l7.http_flows flowfish.l7.grpc_flows flowfish.l7.dns_flows flowfish.l7.dlx; do
+          curl -s -u flowfish:flowfish123 -X PUT \
+            "http://rabbitmq:15672/api/exchanges/%2F/$${EX}" \
+            -H 'content-type: application/json' \
+            -d '{"type":"topic","durable":true}'
+        done
+        echo "Creating L7 queues..."
+        for Q in flowfish.queue.l7_http_flows.graph flowfish.queue.l7_grpc_flows.graph flowfish.queue.l7_dns_flows.graph \
+                 flowfish.queue.l7_http_flows.timeseries flowfish.queue.l7_grpc_flows.timeseries flowfish.queue.l7_dns_flows.timeseries; do
+          curl -s -u flowfish:flowfish123 -X PUT \
+            "http://rabbitmq:15672/api/queues/%2F/$${Q}" \
+            -H 'content-type: application/json' \
+            -d "{\"durable\":true,\"arguments\":{\"x-dead-letter-exchange\":\"flowfish.l7.dlx\",\"x-message-ttl\":86400000,\"x-max-length\":1000000}}"
+        done
+        echo "Creating L7 DLQ..."
+        curl -s -u flowfish:flowfish123 -X PUT \
+          "http://rabbitmq:15672/api/queues/%2F/flowfish.queue.l7.dlq" \
+          -H 'content-type: application/json' \
+          -d "{\"durable\":true,\"arguments\":{\"x-message-ttl\":604800000,\"x-max-length\":100000}}"
+        curl -s -u flowfish:flowfish123 -X POST \
+          "http://rabbitmq:15672/api/bindings/%2F/e/flowfish.l7.dlx/q/flowfish.queue.l7.dlq" \
+          -H 'content-type: application/json' \
+          -d '{"routing_key":"#"}'
+        echo "Binding L7 queues to exchanges..."
+        for PROTO in http grpc dns; do
+          for SUFFIX in graph timeseries; do
+            curl -s -u flowfish:flowfish123 -X POST \
+              "http://rabbitmq:15672/api/bindings/%2F/e/flowfish.l7.$${PROTO}_flows/q/flowfish.queue.l7_$${PROTO}_flows.$${SUFFIX}" \
+              -H 'content-type: application/json' \
+              -d '{"routing_key":"#"}'
+          done
+        done
+        echo "L7 RabbitMQ topology ready."
+    networks:
+      - flowfish-network
+
+  flowfish-l7-collector:
+    build:
+      context: ../../services/flowfish-l7-collector
+    environment:
+      - MOCK_MODE=true
+      - BUFFER_MAX_SIZE=100000
+      - LOG_LEVEL=INFO
+    ports:
+      - "4318:8080"
+      - "18080:8080"
+    networks:
+      - flowfish-network
+
+  l7-ingestion-service:
+    build:
+      context: ../../
+      dockerfile: services/l7-ingestion-service/Dockerfile
+    environment:
+      - GRPC_PORT=5006
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=flowfish
+      - RABBITMQ_PASSWORD=flowfish123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis123
+      - FLOWFISH_ENCRYPTION_KEY=Zo6CfvKB6y4IIPMAUJermGJ7UQm8wgjnvuehRGKY-sA=
+      - SAMPLING_RATE=1.0
+      - MAX_EVENTS_PER_SECOND=5000
+      - COLLECTOR_POLL_INTERVAL=2
+    depends_on:
+      - rabbitmq
+      - redis
+    ports:
+      - "5006:5006"
+    networks:
+      - flowfish-network
+
+  graph-writer:
+    image: taylanbakircioglu/flowfish:graph-writer-latest
+    environment:
+      - L7_ENABLED=true
+      - SERVICE_NAME=graph-writer
+      - LOG_LEVEL=INFO
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=flowfish
+      - RABBITMQ_PASSWORD=flowfish123
+      - RABBITMQ_VHOST=/
+      - NEO4J_BOLT_URI=bolt://neo4j:7687
+      - NEO4J_HTTP_URI=http://neo4j:7474
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=flowfish123
+      - NEO4J_DATABASE=neo4j
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis123
+      - REDIS_URL=redis://:redis123@redis:6379/0
+    depends_on:
+      - rabbitmq
+      - redis
+      - neo4j
+    networks:
+      - flowfish-network
+
+  timeseries-writer:
+    image: taylanbakircioglu/flowfish:timeseries-writer-latest
+    environment:
+      - L7_ENABLED=true
+      - SERVICE_NAME=timeseries-writer
+      - LOG_LEVEL=INFO
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=flowfish
+      - RABBITMQ_PASSWORD=flowfish123
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_USER=flowfish
+      - CLICKHOUSE_PASSWORD=flowfish123
+      - CLICKHOUSE_DATABASE=flowfish
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis123
+      - REDIS_URL=redis://:redis123@redis:6379/0
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=flowfish
+      - POSTGRES_PASSWORD=flowfish123
+      - POSTGRES_DATABASE=flowfish
+    depends_on:
+      - rabbitmq
+      - redis
+      - clickhouse
+      - postgres
+    networks:
+      - flowfish-network
+
+  analysis-orchestrator:
+    image: taylanbakircioglu/flowfish:analysis-orchestrator-latest
+    environment:
+      - SERVICE_NAME=analysis-orchestrator
+      - GRPC_PORT=5002
+      - LOG_LEVEL=INFO
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=flowfish
+      - POSTGRES_PASSWORD=flowfish123
+      - POSTGRES_DATABASE=flowfish
+      - NEO4J_BOLT_URI=bolt://neo4j:7687
+      - NEO4J_HTTP_URI=http://neo4j:7474
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=flowfish123
+      - NEO4J_DATABASE=neo4j
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_USER=flowfish
+      - CLICKHOUSE_PASSWORD=flowfish123
+      - CLICKHOUSE_DATABASE=flowfish
+      - CLUSTER_MANAGER_HOST=cluster-manager
+      - CLUSTER_MANAGER_PORT=5001
+      - L7_INGESTION_HOST=l7-ingestion-service
+      - L7_INGESTION_PORT=5006
+    depends_on:
+      - postgres
+      - neo4j
+      - clickhouse
+      - cluster-manager
+      - l7-ingestion-service
+    ports:
+      - "5002:5002"
     networks:
       - flowfish-network
 

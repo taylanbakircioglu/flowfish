@@ -1,13 +1,6 @@
 // Force rebuild - ReactFlowProvider key fix for namespace filtering (v1.0.1)
 import React, { useCallback, useState, useMemo, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
-
-// ============================================
-// PERFORMANCE: Debug logging only in development
-// Eliminates console.log overhead in production
-// ============================================
-const DEBUG = process.env.NODE_ENV === 'development';
-const debugLog = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
 import { 
   Typography, 
   Select, 
@@ -114,10 +107,14 @@ import { useGetEventStatsQuery, useGetSniEventsQuery, useGetNetworkFlowsQuery } 
 import { useGetErrorAnomalySummaryQuery } from '../store/api/changesApi';
 import { EventStatsPanel } from '../components/Graph/EventDetailPanel';
 import { Analysis } from '../types';
+import { useL4Analyses, useL4AnalysisGuard } from '../utils/analysisFilters';
 import { useNodeEnrichment, detectKnownService } from '../hooks/useNodeEnrichment';
 import { useAnimatedCounter } from '../hooks/useAnimatedCounter';
 import { Tabs, List } from 'antd';
 import { ClusterBadge } from '../components/Common';
+
+const DEBUG = process.env.NODE_ENV === 'development';
+const debugLog = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
 
 // Type for aggregated node metadata
 interface AggregatedNodeMetadata {
@@ -2055,9 +2052,12 @@ const MapInner: React.FC = () => {
   // Fetch ALL analyses (no cluster filter) - user selects analysis first, cluster is derived from it
   const { data: analyses = [], isLoading: isAnalysesLoading } = useGetAnalysesQuery({});
   
-  const availableAnalyses = Array.isArray(analyses) 
-    ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
-    : [];
+  const availableAnalyses = useL4Analyses(
+    Array.isArray(analyses)
+      ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
+      : [],
+  );
+  useL4AnalysisGuard(selectedAnalysisId, setSelectedAnalysisId, availableAnalyses);
 
   // Get selected analysis details
   const selectedAnalysis = useMemo(() => {
@@ -5299,7 +5299,7 @@ const MapInner: React.FC = () => {
           {/* Left side - Title (fixed width, no shrink) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, whiteSpace: 'nowrap' }}>
             <GlobalOutlined style={{ color: '#1890ff', fontSize: 18 }} />
-            <Title level={5} style={{ margin: 0, fontWeight: 600 }}>Map</Title>
+            <Title level={5} style={{ margin: 0, fontWeight: 600 }}>Network Map</Title>
             {/* Show status badge based on analysis state */}
             {statusBadgeInfo && (
               <Tooltip title={statusBadgeInfo.tooltip} mouseEnterDelay={0.5}>

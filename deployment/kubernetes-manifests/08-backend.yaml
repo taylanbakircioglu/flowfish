@@ -104,6 +104,8 @@ spec:
             secretKeyRef:
               name: flowfish-secrets
               key: clickhouse-password
+        - name: IMAGE_TAG
+          value: "{{IMAGE_TAG}}"
         # Encryption key for sensitive data (Fernet key for encrypting tokens, kubeconfigs)
         - name: FLOWFISH_ENCRYPTION_KEY
           valueFrom:
@@ -142,7 +144,8 @@ spec:
           mountPath: /tmp
       volumes:
       - name: tmp
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 128Mi
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

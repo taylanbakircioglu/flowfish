@@ -150,13 +150,24 @@ async def get_event_stats(
         - analysis_id (optional): Filter by analysis (auto-resolves cluster_ids)
     """
     try:
-        # Resolve cluster IDs for multi-cluster support
-        resolved_ids = await resolve_cluster_ids(cluster_id, cluster_ids, analysis_id)
-        primary_cluster = resolved_ids[0] if resolved_ids else cluster_id
-        
-        # For now, use primary cluster for stats (can be enhanced for aggregation)
+        # Multi-cluster aware resolution. If the caller explicitly pinned a
+        # cluster_id we honour it. Otherwise we pass None so the underlying
+        # query relies solely on `analysis_id LIKE '<id>-%'`, which already
+        # covers every cluster of a multi-cluster analysis. The previous
+        # implementation silently truncated to `resolved_ids[0]` and hid
+        # half of the events on multi-cluster analyses (e.g. analysis 46
+        # only returned cluster 15 totals).
+        if cluster_id is not None:
+            effective_cluster: Optional[int] = cluster_id
+        else:
+            # Validate analysis_id maps to known clusters (keeps RBAC parity
+            # with the previous resolve step); we discard the value so the
+            # query stays cluster-agnostic.
+            await resolve_cluster_ids(cluster_id, cluster_ids, analysis_id)
+            effective_cluster = None
+
         stats = await service.get_event_stats(
-            cluster_id=primary_cluster,
+            cluster_id=effective_cluster,
             analysis_id=analysis_id
         )
         return stats
@@ -381,6 +392,7 @@ async def get_file_events(
 )
 async def get_security_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster via analysis_id)"),
+    cluster_ids: Optional[str] = Query(None, description="Comma-separated cluster IDs for multi-cluster"),
     analysis_id: Optional[int] = Query(None, description="Filter by analysis", gt=0),
     namespace: Optional[str] = Query(None, description="Filter by namespace", max_length=253),
     search: Optional[str] = Query(None, description="Full-text search across relevant fields", max_length=500),
@@ -391,10 +403,28 @@ async def get_security_events(
     current_user: dict = Depends(get_current_user),
     service: EventService = Depends(get_service)
 ) -> SecurityEventsResponse:
-    """Get security events endpoint"""
+    """Get security events endpoint.
+
+    Multi-cluster handling (Plan v3 Akış E — m.9, B1.10 fix):
+    if the caller does not pin a cluster_id we resolve cluster_ids from
+    `analysis_id` for RBAC validation, then pass cluster_id=None to the
+    repository so the underlying query relies solely on the
+    `analysis_id LIKE '<id>-%'` pattern (which already spans every cluster
+    of a multi-cluster analysis). Mirrors `/events/stats` exactly.
+    """
     try:
+        if cluster_id is not None:
+            effective_cluster: Optional[int] = cluster_id
+        else:
+            # RBAC-safe path: resolve to validate the analysis exists for
+            # this caller's allowed clusters; we discard the value because
+            # the analysis_id LIKE pattern in `_build_where_clause` already
+            # covers the full cluster set.
+            await resolve_cluster_ids(cluster_id, cluster_ids, analysis_id)
+            effective_cluster = None
+
         return await service.get_security_events(
-            cluster_id=cluster_id,
+            cluster_id=effective_cluster,
             analysis_id=analysis_id,
             namespace=namespace,
             search=search,
@@ -419,6 +449,7 @@ async def get_security_events(
 )
 async def get_oom_events(
     cluster_id: Optional[int] = Query(None, description="Cluster ID (optional for multi-cluster via analysis_id)"),
+    cluster_ids: Optional[str] = Query(None, description="Comma-separated cluster IDs for multi-cluster"),
     analysis_id: Optional[int] = Query(None, description="Filter by analysis", gt=0),
     namespace: Optional[str] = Query(None, description="Filter by namespace", max_length=253),
     search: Optional[str] = Query(None, description="Full-text search across relevant fields", max_length=500),
@@ -429,10 +460,22 @@ async def get_oom_events(
     current_user: dict = Depends(get_current_user),
     service: EventService = Depends(get_service)
 ) -> OomEventsResponse:
-    """Get OOM events endpoint"""
+    """Get OOM events endpoint.
+
+    Multi-cluster handling (Plan v3 Akış E — m.9, B1.10 fix): same
+    `effective_cluster=None` pattern as `/events/stats` and `/events/security`
+    so multi-cluster analyses see every cluster's OOM kills instead of just
+    the primary one.
+    """
     try:
+        if cluster_id is not None:
+            effective_cluster: Optional[int] = cluster_id
+        else:
+            await resolve_cluster_ids(cluster_id, cluster_ids, analysis_id)
+            effective_cluster = None
+
         return await service.get_oom_events(
-            cluster_id=cluster_id,
+            cluster_id=effective_cluster,
             analysis_id=analysis_id,
             namespace=namespace,
             search=search,

@@ -35,6 +35,10 @@ jobs:
             dockerfile: services/graph-query/Dockerfile
           - service: analysis-orchestrator
             dockerfile: services/analysis-orchestrator/Dockerfile
+          - service: l7-ingestion-service
+            dockerfile: services/l7-ingestion-service/Dockerfile
+          - service: flowfish-l7-collector
+            dockerfile: services/flowfish-l7-collector/Dockerfile
           - service: change-worker
             dockerfile: backend/Dockerfile.worker
 

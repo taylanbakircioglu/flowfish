@@ -59,6 +59,12 @@ const { useToken } = theme;
 interface OverviewTabProps {
   clusterId?: number;
   analysisId?: number;
+  // Plan v3 Akış E (B1.5): security + OOM queries on Overview need to be
+  // multi-cluster aware so the security score in the executive summary
+  // reflects every cluster of a multi-cluster analysis. Other queries
+  // (workloads, communications, etc.) keep using `clusterId`.
+  securityClusterId?: number;
+  isMultiClusterAnalysis?: boolean;
 }
 
 // Insight card component with optional drill-down link
@@ -138,7 +144,19 @@ const InsightCard: React.FC<{
   );
 };
 
-const OverviewTab: React.FC<OverviewTabProps> = ({ clusterId, analysisId }) => {
+const OverviewTab: React.FC<OverviewTabProps> = ({
+  clusterId,
+  analysisId,
+  securityClusterId,
+  isMultiClusterAnalysis,
+}) => {
+  // Multi-cluster aware cluster id for security/OOM queries only — other
+  // panels (workloads, communications, change feed, etc.) still need a
+  // concrete cluster scope so they continue to use `clusterId`.
+  const securityEffectiveClusterId =
+    securityClusterId !== undefined ? securityClusterId : clusterId;
+  const securitySkip =
+    !analysisId || (!isMultiClusterAnalysis && !securityEffectiveClusterId);
   const { token } = useToken();
   const { isDark } = useTheme();
   const navigate = useNavigate();
@@ -155,8 +173,8 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ clusterId, analysisId }) => {
   );
 
   const { data: eventStats, isLoading: eventsLoading } = useGetEventStatsQuery(
-    { cluster_id: clusterId!, analysis_id: analysisId },
-    { skip: !clusterId }
+    { cluster_id: securityEffectiveClusterId, analysis_id: analysisId },
+    { skip: securitySkip }
   );
 
   const { data: commStats, isLoading: commLoading } = useGetCommunicationStatsQuery(
@@ -197,13 +215,13 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ clusterId, analysisId }) => {
   );
 
   const { data: securityData, isLoading: securityLoading } = useGetSecurityEventsQuery(
-    { cluster_id: clusterId!, analysis_id: analysisId, limit: SECURITY_EVENTS_LIMIT },
-    { skip: !clusterId || !analysisId }
+    { cluster_id: securityEffectiveClusterId, analysis_id: analysisId, limit: SECURITY_EVENTS_LIMIT },
+    { skip: securitySkip }
   );
 
   const { data: oomData, isLoading: oomLoading } = useGetOomEventsQuery(
-    { cluster_id: clusterId!, analysis_id: analysisId, limit: OOM_EVENTS_LIMIT },
-    { skip: !clusterId || !analysisId }
+    { cluster_id: securityEffectiveClusterId, analysis_id: analysisId, limit: OOM_EVENTS_LIMIT },
+    { skip: securitySkip }
   );
 
   const { data: changesData, isLoading: changesLoading } = useGetChangesQuery(
@@ -253,9 +271,13 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ clusterId, analysisId }) => {
       }));
   }, [securityData?.events]);
 
-  // Security score calculation - using shared utility (single source of truth)
+  // Security score calculation - using shared utility (single source of truth).
+  // Multi-cluster analyses skip the cluster gate (Plan v3 Akış E B1.5).
   const securityScoreData = useMemo(() => {
-    if (!analysisId || !clusterId) {
+    if (!analysisId) {
+      return { score: null, status: 'no_selection' as const };
+    }
+    if (!isMultiClusterAnalysis && !securityEffectiveClusterId) {
       return { score: null, status: 'no_selection' as const };
     }
     
@@ -269,8 +291,8 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ clusterId, analysisId }) => {
       violations: processedViolations,
       capabilities: capabilities,
     });
-  }, [analysisId, clusterId, securityLoading, oomLoading, securityData?.total, oomData?.total, 
-      processedViolations, capabilities]);
+  }, [analysisId, securityEffectiveClusterId, isMultiClusterAnalysis, securityLoading, oomLoading,
+      securityData?.total, oomData?.total, processedViolations, capabilities]);
 
   const securityScore = securityScoreData.score;
   const securityStatus = securityScoreData.status;

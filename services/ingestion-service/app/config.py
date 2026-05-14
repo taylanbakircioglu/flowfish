@@ -54,6 +54,69 @@ class Settings(BaseSettings):
     gadget_image_version: str = GADGET_DEFAULT_VERSION  # from constants.py, overridable via env
     gadget_registry: str = ""  # OCI registry for gadget images (e.g., "harbor.example.com/flowfish")
     gadget_image_prefix: str = "gadget-"  # prefix for gadget images (e.g., gadget-trace_network)
+    # Time we wait after `kubectl gadget run` before deciding a gadget failed
+    # to start. The default 8s covers the cold-start path: first-run OCI image
+    # pull from ghcr.io into the IG DaemonSet's local store + gRPC dial from
+    # the kubectl-gadget client to the IG DS endpoint. With a 2s window we
+    # were observing transient false-positives where the second analysis
+    # attempt always succeeded because the image had been cached.
+    gadget_startup_wait_seconds: float = 8.0
+    # Number of transparent retries for transient cold-start failures.
+    # The 8s startup wait covers most cases, but on freshly (re)started
+    # clusters the IG DaemonSet warm-up race can still kill 1-3 gadgets
+    # (typically the kprobe-heavy ones: trace_tcp, trace_open,
+    # trace_capabilities, trace_bind). A second invocation succeeds
+    # because the OCI artifact store and gRPC dial pool are now warm,
+    # and the kernel kprobe table is no longer contended.
+    #
+    # Default 2 attempts (was 1 — bumped after observing 4-gadget burst
+    # failures on heavy-load clusters where IG container OOMs/restarts
+    # mid-startup, so the first retry hits a NEW cold pod). The retry is
+    # implemented in `TraceManager._retry_failed_gadgets` and uses
+    # progressive backoff: each attempt's pre-wait is multiplied by 1.5,
+    # so attempt 1 waits gadget_retry_pre_wait_seconds, attempt 2 waits
+    # 1.5x that, etc. Setting this to 0 disables retry and reproduces
+    # the legacy behaviour where a transient cold-start surfaces an
+    # alert that clears on operator-initiated restart.
+    gadget_startup_retry_attempts: int = 2
+
+    # Multiplier applied to gadget_retry_pre_wait_seconds on each retry
+    # attempt past the first. With default 1.5x and base 12s the wait
+    # progression is: 12s, 18s, 27s, ... Acts as exponential backoff so
+    # repeated retries don't all hit the same hot moment in the IG pod
+    # restart cycle. Set to 1.0 for constant backoff (legacy behaviour).
+    gadget_retry_backoff_multiplier: float = 1.5
+
+    # Stagger interval between consecutive `kubectl gadget run` launches
+    # at session start. Field observation: launching ~11 gadgets within a
+    # 2-second burst floods the IG DaemonSet's perf-event ring buffers
+    # ("getting lost samples: bad file descriptor", "lost N samples"),
+    # corrupts internal state, and trips the kubelet liveness probe →
+    # IG container is SIGKILL'd (exit 137). Restarted IG pods are then
+    # cold and our retry loop hits another race. Spacing launches by
+    # ~1.0s gives the IG worker time to register each eBPF program,
+    # attach perf maps, and drain the buffers before the next one lands.
+    #
+    # Default bumped 0.5s → 1.0s after observing kprobe-heavy gadgets
+    # (trace_tcp / trace_open / trace_capabilities / trace_bind) racing
+    # for kernel kprobe attach slots on a single IG worker — 0.5s left
+    # the kprobe register path under-served on busy clusters. The new
+    # 1.0s default adds ~5.5s to overall analysis startup for an
+    # 11-gadget set, well under the UX budget. Set to 0 to disable
+    # staggering (only safe on clusters with confirmed IG headroom).
+    gadget_startup_stagger_seconds: float = 1.0
+
+    # Extra wait inserted before the *retry* attempt (only when there are
+    # failed gadgets) on top of the warm-path window in
+    # check_startup_errors. We add this because, in the IG-overload
+    # scenario above, the original IG pod is being SIGKILL'd while we
+    # retry; the retry then hits a freshly-restarting IG pod that has
+    # not yet attached its eBPF programs. 12s covers the typical
+    # IG container restart + bootstrap path on OpenShift / RKE / EKS
+    # nodes; bump if your IG image lives in a remote registry. Note:
+    # this is the *base* wait — actual wait grows by
+    # gadget_retry_backoff_multiplier on each attempt past the first.
+    gadget_retry_pre_wait_seconds: float = 12.0
     kubeconfig_path: str = ""  # empty = use in-cluster config
     kubectl_context: str = ""  # empty = use current context
     

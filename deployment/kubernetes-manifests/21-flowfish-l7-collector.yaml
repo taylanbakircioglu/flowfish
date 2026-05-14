@@ -1,0 +1,106 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flowfish-l7-collector
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish-l7-collector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flowfish-l7-collector
+  labels:
+    app: flowfish-l7-collector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "services"]
+    verbs: ["list", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flowfish-l7-collector
+  labels:
+    app: flowfish-l7-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flowfish-l7-collector
+subjects:
+  - kind: ServiceAccount
+    name: flowfish-l7-collector
+    namespace: {{OPENSHIFT_NAMESPACE}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flowfish-l7-collector
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish-l7-collector
+    tier: microservices
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowfish-l7-collector
+  template:
+    metadata:
+      labels:
+        app: flowfish-l7-collector
+        tier: microservices
+    spec:
+      serviceAccountName: flowfish-l7-collector
+      containers:
+        - name: l7-collector
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-l7-collector:{{IMAGE_TAG}}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: API_PORT
+              value: "8080"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flowfish-l7-collector
+  namespace: {{OPENSHIFT_NAMESPACE}}
+  labels:
+    app: flowfish-l7-collector
+spec:
+  selector:
+    app: flowfish-l7-collector
+  ports:
+    - name: otlp
+      port: 4318
+      targetPort: 8080
+      protocol: TCP
+    - name: api
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP

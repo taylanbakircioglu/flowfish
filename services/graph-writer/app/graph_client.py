@@ -14,6 +14,17 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _kind_for_namespace(ns: str) -> str:
+    """Infer proper node kind from namespace."""
+    if ns == 'external':
+        return 'External'
+    if ns in ('sdn-infrastructure', 'cluster-network', 'service-network'):
+        return 'Infrastructure'
+    if ns in ('internal-network', 'datacenter'):
+        return 'DataCenter'
+    return 'Pod'
+
+
 class GraphClient:
     """Neo4j graph database client for dependency graph operations"""
     
@@ -70,7 +81,8 @@ class GraphClient:
                 constraints = [
                     "CREATE CONSTRAINT workload_id IF NOT EXISTS FOR (w:Workload) REQUIRE w.id IS UNIQUE",
                     "CREATE CONSTRAINT namespace_name IF NOT EXISTS FOR (n:Namespace) REQUIRE (n.name, n.cluster) IS UNIQUE",
-                    "CREATE CONSTRAINT cluster_id IF NOT EXISTS FOR (c:Cluster) REQUIRE c.id IS UNIQUE"
+                    "CREATE CONSTRAINT cluster_id IF NOT EXISTS FOR (c:Cluster) REQUIRE c.id IS UNIQUE",
+                    "CREATE CONSTRAINT l7_workload_id IF NOT EXISTS FOR (w:L7Workload) REQUIRE w.id IS UNIQUE",
                 ]
                 
                 for constraint in constraints:
@@ -86,7 +98,15 @@ class GraphClient:
                     "CREATE INDEX workload_namespace IF NOT EXISTS FOR (w:Workload) ON (w.namespace)",
                     "CREATE INDEX workload_kind IF NOT EXISTS FOR (w:Workload) ON (w.kind)",
                     "CREATE INDEX workload_cluster IF NOT EXISTS FOR (w:Workload) ON (w.cluster)",
-                    "CREATE INDEX namespace_cluster IF NOT EXISTS FOR (n:Namespace) ON (n.cluster)"
+                    "CREATE INDEX namespace_cluster IF NOT EXISTS FOR (n:Namespace) ON (n.cluster)",
+                    "CREATE INDEX l7_workload_name IF NOT EXISTS FOR (w:L7Workload) ON (w.name)",
+                    "CREATE INDEX l7_workload_namespace IF NOT EXISTS FOR (w:L7Workload) ON (w.namespace)",
+                    "CREATE INDEX l7_workload_cluster IF NOT EXISTS FOR (w:L7Workload) ON (w.cluster)",
+                    "CREATE INDEX l7_workload_analysis IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id)",
+                    "CREATE INDEX l7_workload_owner_kind IF NOT EXISTS FOR (w:L7Workload) ON (w.owner_kind)",
+                    "CREATE INDEX l7_workload_network_type IF NOT EXISTS FOR (w:L7Workload) ON (w.network_type)",
+                    "CREATE INDEX l7_comm_analysis IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.analysis_id)",
+                    "CREATE INDEX l7_comm_protocol IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.protocol)",
                 ]
                 
                 for index in indexes:
@@ -308,35 +328,46 @@ class GraphClient:
         # Extract analysis_id from properties for node tracking
         analysis_id = safe_props.get('analysis_id', '')
         
+        src_kind = _kind_for_namespace(src_ns)
+        dst_kind = _kind_for_namespace(dst_ns)
+
         # NOTE: Use :Workload label in MERGE to match the constraint
         # This ensures consistent node creation/matching with the unique constraint
         # IP and host_ip are set from enrichment data (not parsed from vertex ID)
         query = f"""
         MERGE (src:Workload {{id: $src_vid}})
-        ON CREATE SET src.created_at = timestamp(), src.kind = 'Pod', src.status = 'active',
+        ON CREATE SET src.created_at = timestamp(), src.kind = $src_kind, src.status = 'active',
                       src.name = $src_name, src.namespace = $src_ns, src.cluster_id = $src_cluster,
                       src.ip = $src_ip, src.host_ip = $src_host_ip, 
                       src.labels = $src_labels, src.annotations = $src_annotations,
+                      src.owner_kind = $src_owner_kind, src.owner_name = $src_owner_name,
                       src.analysis_id = $analysis_id
-        ON MATCH SET src.analysis_id = coalesce(src.analysis_id, $analysis_id),
+        ON MATCH SET src.kind = $src_kind,
+                     src.analysis_id = coalesce(src.analysis_id, $analysis_id),
                      src.cluster_id = coalesce(src.cluster_id, $src_cluster),
                      src.ip = CASE WHEN $src_ip <> '' THEN $src_ip ELSE coalesce(src.ip, '') END,
                      src.host_ip = CASE WHEN $src_host_ip <> '' THEN $src_host_ip ELSE coalesce(src.host_ip, '') END,
                      src.labels = CASE WHEN $src_labels <> '{{}}' THEN $src_labels ELSE coalesce(src.labels, '{{}}') END,
-                     src.annotations = CASE WHEN $src_annotations <> '{{}}' THEN $src_annotations ELSE coalesce(src.annotations, '{{}}') END
+                     src.annotations = CASE WHEN $src_annotations <> '{{}}' THEN $src_annotations ELSE coalesce(src.annotations, '{{}}') END,
+                     src.owner_kind = CASE WHEN $src_owner_kind <> '' THEN $src_owner_kind ELSE coalesce(src.owner_kind, '') END,
+                     src.owner_name = CASE WHEN $src_owner_name <> '' THEN $src_owner_name ELSE coalesce(src.owner_name, '') END
         WITH src
         MERGE (dst:Workload {{id: $dst_vid}})
-        ON CREATE SET dst.created_at = timestamp(), dst.kind = 'Pod', dst.status = 'active',
+        ON CREATE SET dst.created_at = timestamp(), dst.kind = $dst_kind, dst.status = 'active',
                       dst.name = $dst_name, dst.namespace = $dst_ns, dst.cluster_id = $dst_cluster,
                       dst.ip = $dst_ip, dst.host_ip = $dst_host_ip,
                       dst.labels = $dst_labels, dst.annotations = $dst_annotations,
+                      dst.owner_kind = $dst_owner_kind, dst.owner_name = $dst_owner_name,
                       dst.analysis_id = $analysis_id
-        ON MATCH SET dst.analysis_id = coalesce(dst.analysis_id, $analysis_id),
+        ON MATCH SET dst.kind = $dst_kind,
+                     dst.analysis_id = coalesce(dst.analysis_id, $analysis_id),
                      dst.cluster_id = coalesce(dst.cluster_id, $dst_cluster),
                      dst.ip = CASE WHEN $dst_ip <> '' THEN $dst_ip ELSE coalesce(dst.ip, '') END,
                      dst.host_ip = CASE WHEN $dst_host_ip <> '' THEN $dst_host_ip ELSE coalesce(dst.host_ip, '') END,
                      dst.labels = CASE WHEN $dst_labels <> '{{}}' THEN $dst_labels ELSE coalesce(dst.labels, '{{}}') END,
-                     dst.annotations = CASE WHEN $dst_annotations <> '{{}}' THEN $dst_annotations ELSE coalesce(dst.annotations, '{{}}') END
+                     dst.annotations = CASE WHEN $dst_annotations <> '{{}}' THEN $dst_annotations ELSE coalesce(dst.annotations, '{{}}') END,
+                     dst.owner_kind = CASE WHEN $dst_owner_kind <> '' THEN $dst_owner_kind ELSE coalesce(dst.owner_kind, '') END,
+                     dst.owner_name = CASE WHEN $dst_owner_name <> '' THEN $dst_owner_name ELSE coalesce(dst.owner_name, '') END
         WITH src, dst
         MERGE (src)-[r:{edge_type}]->(dst)
         SET {set_clause}, 
@@ -353,6 +384,7 @@ class GraphClient:
             "src_name": src_name,
             "src_ns": src_ns,
             "src_cluster": src_cluster,
+            "src_kind": src_kind,
             "src_ip": src_ip or '',  # Pod IP from enrichment
             "src_host_ip": src_host_ip or '',  # Node/Host IP from enrichment
             "src_labels": src_labels or '{}',
@@ -367,6 +399,7 @@ class GraphClient:
             "dst_name": dst_name,
             "dst_ns": dst_ns,
             "dst_cluster": dst_cluster,
+            "dst_kind": dst_kind,
             "dst_ip": dst_ip or '',  # Pod IP from enrichment
             "dst_host_ip": dst_host_ip or '',  # Node/Host IP from enrichment
             "dst_labels": dst_labels or '{}',
@@ -458,22 +491,28 @@ class GraphClient:
                 props = self._sanitize_properties(edge.get('properties', {}))
                 src_cluster, src_ns, src_name, _ = self._parse_vertex_id(edge['src_vid'])
                 dst_cluster, dst_ns, dst_name, _ = self._parse_vertex_id(edge['dst_vid'])
-                
+
                 batch_data.append({
                     'src_vid': edge['src_vid'],
                     'dst_vid': edge['dst_vid'],
                     'src_name': src_name,
                     'src_ns': src_ns,
                     'src_cluster': src_cluster,
+                    'src_kind': _kind_for_namespace(src_ns),
                     'dst_name': dst_name,
                     'dst_ns': dst_ns,
                     'dst_cluster': dst_cluster,
+                    'dst_kind': _kind_for_namespace(dst_ns),
                     'src_ip': edge.get('src_ip', ''),
                     'dst_ip': edge.get('dst_ip', ''),
                     'src_labels': edge.get('src_labels', '{}'),
                     'dst_labels': edge.get('dst_labels', '{}'),
                     'src_annotations': edge.get('src_annotations', '{}'),
                     'dst_annotations': edge.get('dst_annotations', '{}'),
+                    'src_owner_kind': edge.get('src_owner_kind', ''),
+                    'src_owner_name': edge.get('src_owner_name', ''),
+                    'dst_owner_kind': edge.get('dst_owner_kind', ''),
+                    'dst_owner_name': edge.get('dst_owner_name', ''),
                     'props': props
                 })
             
@@ -484,17 +523,25 @@ class GraphClient:
             ON CREATE SET src.name = item.src_name, src.namespace = item.src_ns, 
                           src.cluster_id = item.src_cluster, src.ip = item.src_ip,
                           src.labels = item.src_labels, src.annotations = item.src_annotations,
-                          src.kind = 'Pod', src.status = 'active', src.created_at = timestamp()
-            ON MATCH SET src.labels = CASE WHEN item.src_labels <> '{}' THEN item.src_labels ELSE coalesce(src.labels, '{}') END,
-                         src.annotations = CASE WHEN item.src_annotations <> '{}' THEN item.src_annotations ELSE coalesce(src.annotations, '{}') END
+                          src.kind = item.src_kind, src.status = 'active', src.created_at = timestamp(),
+                          src.owner_kind = item.src_owner_kind, src.owner_name = item.src_owner_name
+            ON MATCH SET src.kind = item.src_kind,
+                         src.labels = CASE WHEN item.src_labels <> '{}' THEN item.src_labels ELSE coalesce(src.labels, '{}') END,
+                         src.annotations = CASE WHEN item.src_annotations <> '{}' THEN item.src_annotations ELSE coalesce(src.annotations, '{}') END,
+                         src.owner_kind = CASE WHEN item.src_owner_kind <> '' THEN item.src_owner_kind ELSE coalesce(src.owner_kind, '') END,
+                         src.owner_name = CASE WHEN item.src_owner_name <> '' THEN item.src_owner_name ELSE coalesce(src.owner_name, '') END
             WITH src, item
             MERGE (dst:Workload {id: item.dst_vid})
             ON CREATE SET dst.name = item.dst_name, dst.namespace = item.dst_ns,
                           dst.cluster_id = item.dst_cluster, dst.ip = item.dst_ip,
                           dst.labels = item.dst_labels, dst.annotations = item.dst_annotations,
-                          dst.kind = 'Pod', dst.status = 'active', dst.created_at = timestamp()
-            ON MATCH SET dst.labels = CASE WHEN item.dst_labels <> '{}' THEN item.dst_labels ELSE coalesce(dst.labels, '{}') END,
-                         dst.annotations = CASE WHEN item.dst_annotations <> '{}' THEN item.dst_annotations ELSE coalesce(dst.annotations, '{}') END
+                          dst.kind = item.dst_kind, dst.status = 'active', dst.created_at = timestamp(),
+                          dst.owner_kind = item.dst_owner_kind, dst.owner_name = item.dst_owner_name
+            ON MATCH SET dst.kind = item.dst_kind,
+                         dst.labels = CASE WHEN item.dst_labels <> '{}' THEN item.dst_labels ELSE coalesce(dst.labels, '{}') END,
+                         dst.annotations = CASE WHEN item.dst_annotations <> '{}' THEN item.dst_annotations ELSE coalesce(dst.annotations, '{}') END,
+                         dst.owner_kind = CASE WHEN item.dst_owner_kind <> '' THEN item.dst_owner_kind ELSE coalesce(dst.owner_kind, '') END,
+                         dst.owner_name = CASE WHEN item.dst_owner_name <> '' THEN item.dst_owner_name ELSE coalesce(dst.owner_name, '') END
             WITH src, dst, item
             MERGE (src)-[r:COMMUNICATES_WITH]->(dst)
             SET r += item.props,

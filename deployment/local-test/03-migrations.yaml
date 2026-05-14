@@ -107,7 +107,7 @@ spec:
                   gadget_auto_detect BOOLEAN DEFAULT TRUE,
                   gadget_version VARCHAR(50),
                   gadget_capabilities JSONB DEFAULT '[]',
-                  gadget_health_status VARCHAR(50) DEFAULT 'unknown',
+                  gadget_health_status VARCHAR(50) DEFAULT 'not_installed',
                   gadget_last_check TIMESTAMP WITH TIME ZONE,
                   status VARCHAR(50) DEFAULT 'active',
                   validation_status JSONB,
@@ -117,6 +117,11 @@ spec:
                   total_pods INTEGER DEFAULT 0,
                   total_nodes INTEGER DEFAULT 0,
                   k8s_version VARCHAR(50),
+                  beyla_namespace VARCHAR(255),
+                  beyla_health_status VARCHAR(50) DEFAULT 'not_installed',
+                  beyla_version VARCHAR(50),
+                  l7_collector_endpoint TEXT,
+                  beyla_last_check TIMESTAMP WITH TIME ZONE,
                   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                   created_by INTEGER,
@@ -841,6 +846,23 @@ spec:
               EOSQL
               echo "FK constraints fixed."
 
+              echo "Adding L7 Beyla columns..."
+              psql -h postgresql -U flowfish -d flowfish <<'EOSQL'
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_namespace VARCHAR(255);
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_health_status VARCHAR(50) DEFAULT 'not_installed';
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_version VARCHAR(50);
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS l7_collector_endpoint TEXT;
+              ALTER TABLE clusters ADD COLUMN IF NOT EXISTS beyla_last_check TIMESTAMP WITH TIME ZONE;
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS analysis_level VARCHAR(20) DEFAULT 'l4';
+              ALTER TABLE analyses ADD COLUMN IF NOT EXISTS l7_config JSONB;
+              INSERT INTO system_settings (key, value, description) VALUES
+              ('beyla_settings',
+               '{"default_protocols":["http","grpc"],"l7_sampling_rate":1.0,"l7_enabled":false,"beyla_version":"v3.9.5","max_events_per_second":5000,"default_beyla_mem_limit":"256Mi","default_collector_mem_limit":"256Mi","default_excluded_namespaces":["kube-system"]}',
+               'L7 Beyla configuration defaults')
+              ON CONFLICT (key) DO NOTHING;
+              EOSQL
+              echo "L7 Beyla columns migration complete."
+
               echo "PostgreSQL migrations completed!"
 
         # --- ClickHouse Migrations (separate container with clickhouse-client) ---
@@ -1073,6 +1095,93 @@ spec:
               ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_target_namespace target_namespace TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
               ch --database flowfish --query "ALTER TABLE change_events ADD INDEX IF NOT EXISTS idx_ce_cluster_id cluster_id TYPE minmax GRANULARITY 4" 2>/dev/null || true
 
+              # --- L7 Application Level Tables (Beyla eBPF) ---
+              echo "Creating L7 tables..."
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS l7_http_flows (
+                  timestamp DateTime64(3) DEFAULT now64(3),
+                  event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  src_namespace String, src_workload String, src_pod String, src_ip String, src_port UInt16,
+                  dst_namespace String, dst_workload String, dst_pod String, dst_ip String, dst_port UInt16, dst_service String,
+                  http_method String, http_path String, http_host String, http_status_code UInt16, http_version String, content_type String,
+                  request_size UInt64, response_size UInt64, latency_ms Float64,
+                  src_labels String DEFAULT '{}', dst_labels String DEFAULT '{}', request_headers String DEFAULT '{}',
+                  trace_id String DEFAULT '', span_id String DEFAULT '', parent_span_id String DEFAULT '',
+                  span_name String DEFAULT '', span_kind UInt8 DEFAULT 0,
+                  event_data_json String,
+                  INDEX idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (analysis_id, cluster_id, timestamp, src_namespace, dst_namespace) TTL toDateTime(timestamp) + INTERVAL 30 DAY"
+
+              # L7 trace columns (idempotent ALTER for existing tables)
+              ch --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS trace_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS span_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS parent_span_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS span_name String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_http_flows ADD COLUMN IF NOT EXISTS span_kind UInt8 DEFAULT 0" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_http_flows ADD INDEX IF NOT EXISTS idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS l7_grpc_flows (
+                  timestamp DateTime64(3) DEFAULT now64(3),
+                  event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  src_namespace String, src_workload String, src_pod String, src_ip String, src_port UInt16,
+                  dst_namespace String, dst_workload String, dst_pod String, dst_ip String, dst_port UInt16, dst_service String,
+                  grpc_service String, grpc_method String, grpc_status_code Int32, grpc_status_message String,
+                  request_size UInt64, response_size UInt64, latency_ms Float64,
+                  src_labels String DEFAULT '{}', dst_labels String DEFAULT '{}',
+                  trace_id String DEFAULT '', span_id String DEFAULT '', parent_span_id String DEFAULT '',
+                  span_name String DEFAULT '', span_kind UInt8 DEFAULT 0,
+                  event_data_json String,
+                  INDEX idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (analysis_id, cluster_id, timestamp, src_namespace, dst_namespace) TTL toDateTime(timestamp) + INTERVAL 30 DAY"
+
+              ch --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS trace_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS span_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS parent_span_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS span_name String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_grpc_flows ADD COLUMN IF NOT EXISTS span_kind UInt8 DEFAULT 0" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_grpc_flows ADD INDEX IF NOT EXISTS idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+
+              ch --database flowfish --query "
+              CREATE TABLE IF NOT EXISTS l7_dns_flows (
+                  timestamp DateTime64(3) DEFAULT now64(3),
+                  event_id String DEFAULT generateUUIDv4(),
+                  cluster_id String, cluster_name String, analysis_id String,
+                  src_namespace String, src_workload String, src_pod String, src_ip String, src_port UInt16,
+                  dst_namespace String, dst_workload String, dst_pod String, dst_ip String, dst_port UInt16,
+                  query_name String, query_type String, response_code Int32, response_ips String DEFAULT '[]',
+                  latency_ms Float64,
+                  src_labels String DEFAULT '{}', dst_labels String DEFAULT '{}',
+                  trace_id String DEFAULT '', span_id String DEFAULT '', parent_span_id String DEFAULT '',
+                  span_name String DEFAULT '', span_kind UInt8 DEFAULT 0,
+                  event_data_json String,
+                  INDEX idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4
+              ) ENGINE = MergeTree() PARTITION BY toYYYYMMDD(timestamp)
+              ORDER BY (analysis_id, cluster_id, timestamp, src_namespace, query_name) TTL toDateTime(timestamp) + INTERVAL 30 DAY"
+
+              ch --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS trace_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS span_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS parent_span_id String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS span_name String DEFAULT ''" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_dns_flows ADD COLUMN IF NOT EXISTS span_kind UInt8 DEFAULT 0" 2>/dev/null || true
+              ch --database flowfish --query "ALTER TABLE l7_dns_flows ADD INDEX IF NOT EXISTS idx_trace_id trace_id TYPE bloom_filter GRANULARITY 4" 2>/dev/null || true
+
+              ch --database flowfish --query "
+              CREATE MATERIALIZED VIEW IF NOT EXISTS l7_http_flows_5min_mv
+              ENGINE = SummingMergeTree() PARTITION BY toYYYYMMDD(timestamp_5min)
+              ORDER BY (analysis_id, timestamp_5min, cluster_id, src_workload, dst_workload, http_method, http_path)
+              AS SELECT analysis_id, toStartOfFiveMinutes(timestamp) AS timestamp_5min, cluster_id,
+                  src_workload, dst_workload, http_method, http_path,
+                  count() AS request_count, countIf(http_status_code >= 400) AS error_count,
+                  sum(latency_ms) AS total_latency_ms, sum(request_size) AS total_request_size, sum(response_size) AS total_response_size
+              FROM l7_http_flows
+              GROUP BY analysis_id, timestamp_5min, cluster_id, src_workload, dst_workload, http_method, http_path"
+              echo "L7 tables created!"
+
               echo "========================================="
               echo "ClickHouse Migrations Complete!"
               echo "========================================="
@@ -1119,6 +1228,12 @@ spec:
               CREATE INDEX workload_ip IF NOT EXISTS FOR (w:Workload) ON (w.ip);
               CREATE INDEX namespace_cluster IF NOT EXISTS FOR (n:Namespace) ON (n.cluster);
               CREATE INDEX external_name IF NOT EXISTS FOR (e:ExternalEndpoint) ON (e.name);
+              // L7 Workload constraints and indexes
+              CREATE CONSTRAINT l7_workload_id IF NOT EXISTS FOR (w:L7Workload) REQUIRE w.id IS UNIQUE;
+              CREATE INDEX l7_workload_name IF NOT EXISTS FOR (w:L7Workload) ON (w.name);
+              CREATE INDEX l7_workload_namespace IF NOT EXISTS FOR (w:L7Workload) ON (w.namespace);
+              CREATE INDEX l7_workload_cluster IF NOT EXISTS FOR (w:L7Workload) ON (w.cluster);
+              CREATE INDEX l7_workload_analysis IF NOT EXISTS FOR (w:L7Workload) ON (w.analysis_id);
               CYPHER
 
               echo "========================================="
@@ -1179,6 +1294,43 @@ spec:
               for TYPE in network_flows dns_queries tcp_connections bind_events sni_events; do
                 bind "flowfish.${TYPE}" "flowfish.queue.${TYPE}.graph"
               done
+
+              # L7 Exchanges
+              echo "Creating L7 exchanges..."
+              for EX in flowfish.l7.http_flows flowfish.l7.grpc_flows flowfish.l7.dns_flows flowfish.l7.dlx; do
+                curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                  http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/exchanges/%2F/${EX} \
+                  -H "content-type:application/json" \
+                  -d '{"type":"topic","durable":true}' && echo "  exchange: ${EX}" || echo "  WARN: ${EX} failed"
+              done
+
+              # L7 Queues
+              L7_QUEUE_ARGS='{"durable":true,"arguments":{"x-max-length":1000000,"x-message-ttl":86400000,"x-dead-letter-exchange":"flowfish.l7.dlx"}}'
+              for Q in flowfish.queue.l7_http_flows.timeseries flowfish.queue.l7_http_flows.graph \
+                       flowfish.queue.l7_grpc_flows.timeseries flowfish.queue.l7_grpc_flows.graph \
+                       flowfish.queue.l7_dns_flows.timeseries flowfish.queue.l7_dns_flows.graph; do
+                curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                  http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/${Q} \
+                  -H "content-type:application/json" \
+                  -d "$L7_QUEUE_ARGS" && echo "  queue: ${Q}" || echo "  WARN: ${Q} failed"
+              done
+
+              # L7 Dead Letter Queue
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X PUT \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/queues/%2F/flowfish.queue.l7.dlq \
+                -H "content-type:application/json" \
+                -d '{"durable":true,"arguments":{"x-message-ttl":604800000,"x-max-length":100000}}' && echo "  queue: flowfish.queue.l7.dlq" || echo "  WARN: l7.dlq failed"
+              curl -sf -u ${RABBITMQ_USER}:${RABBITMQ_PASS} -X POST \
+                http://${RABBITMQ_HOST}:${RABBITMQ_PORT}/api/bindings/%2F/e/flowfish.l7.dlx/q/flowfish.queue.l7.dlq \
+                -H "content-type:application/json" -d '{"routing_key":"#"}' && echo "  bind: dlx -> dlq" || echo "  WARN: dlx bind failed"
+
+              # L7 Bindings
+              bind "flowfish.l7.http_flows" "flowfish.queue.l7_http_flows.timeseries"
+              bind "flowfish.l7.http_flows" "flowfish.queue.l7_http_flows.graph"
+              bind "flowfish.l7.grpc_flows" "flowfish.queue.l7_grpc_flows.timeseries"
+              bind "flowfish.l7.grpc_flows" "flowfish.queue.l7_grpc_flows.graph"
+              bind "flowfish.l7.dns_flows" "flowfish.queue.l7_dns_flows.timeseries"
+              bind "flowfish.l7.dns_flows" "flowfish.queue.l7_dns_flows.graph"
 
               echo "========================================="
               echo "RabbitMQ Init Complete!"

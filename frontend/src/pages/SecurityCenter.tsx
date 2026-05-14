@@ -48,6 +48,7 @@ import {
   OomEvent
 } from '../store/api/eventsApi';
 import { Analysis } from '../types';
+import { useL4Analyses, useL4AnalysisGuard } from '../utils/analysisFilters';
 import { ClusterBadge } from '../components/Common';
 
 // Import shared security score utilities - single source of truth
@@ -214,9 +215,12 @@ const SecurityCenter: React.FC = () => {
   // Fetch ALL analyses (no cluster filter) - user selects analysis first
   const { data: analyses = [], isLoading: isAnalysesLoading } = useGetAnalysesQuery({});
   
-  const availableAnalyses = Array.isArray(analyses) 
-    ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
-    : [];
+  const availableAnalyses = useL4Analyses(
+    Array.isArray(analyses)
+      ? analyses.filter((a: Analysis) => a.status === 'running' || a.status === 'completed' || a.status === 'stopped')
+      : [],
+  );
+  useL4AnalysisGuard(selectedAnalysisId, setSelectedAnalysisId, availableAnalyses);
 
   // Get selected analysis details
   const selectedAnalysis = useMemo(() => {
@@ -267,28 +271,83 @@ const SecurityCenter: React.FC = () => {
     }
   }, [selectedAnalysisId, analyses]);
 
-  const queryParams = useMemo(() => ({
-    cluster_id: selectedClusterId!,
-    analysis_id: selectedAnalysisId,
-    start_time: dateRange?.[0]?.toISOString(),
-    end_time: dateRange?.[1]?.toISOString(),
-    limit: pagination.pageSize,
-    offset: (pagination.current - 1) * pagination.pageSize,
-  }), [selectedClusterId, selectedAnalysisId, dateRange, pagination]);
+  // Plan v3 Akış E (m.9, B1.5/B1.10 fix): for multi-cluster analyses we
+  // intentionally send `cluster_id=undefined` so the backend returns the
+  // full multi-cluster aggregation (it now uses the same effective_cluster=
+  // None pattern that `/events/stats` uses). When the operator narrows to
+  // a strict subset via the cluster filter we forward `cluster_ids` as a
+  // CSV string (validated server-side via `resolve_cluster_ids` for RBAC).
+  // Single-cluster analyses keep the legacy `cluster_id=N` behaviour.
+  const isAllClustersSelected =
+    isMultiClusterAnalysis &&
+    analysisClusterIds.length > 0 &&
+    selectedClusterIds.length === analysisClusterIds.length;
+
+  const queryParams = useMemo(() => {
+    if (isMultiClusterAnalysis) {
+      const base: any = {
+        analysis_id: selectedAnalysisId,
+        start_time: dateRange?.[0]?.toISOString(),
+        end_time: dateRange?.[1]?.toISOString(),
+        limit: pagination.pageSize,
+        offset: (pagination.current - 1) * pagination.pageSize,
+      };
+      // "All clusters" — let the backend aggregate across the analysis's
+      // entire cluster set via the analysis_id LIKE pattern.
+      if (!isAllClustersSelected && selectedClusterIds.length > 0) {
+        base.cluster_ids = selectedClusterIds.join(',');
+      }
+      return base;
+    }
+    // Single-cluster: the auto-set selectedClusterId is the only valid
+    // option, so we always send cluster_id=N (preserves legacy behaviour).
+    return {
+      cluster_id: selectedClusterId!,
+      analysis_id: selectedAnalysisId,
+      start_time: dateRange?.[0]?.toISOString(),
+      end_time: dateRange?.[1]?.toISOString(),
+      limit: pagination.pageSize,
+      offset: (pagination.current - 1) * pagination.pageSize,
+    };
+  }, [
+    isMultiClusterAnalysis,
+    isAllClustersSelected,
+    selectedClusterId,
+    selectedClusterIds,
+    selectedAnalysisId,
+    dateRange,
+    pagination,
+  ]);
+
+  // Skip until we have an analysis. For single-cluster we additionally
+  // wait for the auto-set cluster_id to be populated by the effect above
+  // (otherwise we'd briefly query with `cluster_id=undefined` against a
+  // single-cluster analysis and the backend would return an unrelated
+  // wildcard result before the cluster snapped into place).
+  const skipQuery =
+    !selectedAnalysisId ||
+    (!isMultiClusterAnalysis && !selectedClusterId);
 
   const { data: eventStats, isLoading: isStatsLoading } = useGetEventStatsQuery(
-    { cluster_id: selectedClusterId!, analysis_id: selectedAnalysisId },
-    { skip: !selectedAnalysisId || !selectedClusterId }
+    isMultiClusterAnalysis
+      ? {
+          analysis_id: selectedAnalysisId,
+          ...(isAllClustersSelected || selectedClusterIds.length === 0
+            ? {}
+            : { cluster_ids: selectedClusterIds.join(',') }),
+        }
+      : { cluster_id: selectedClusterId!, analysis_id: selectedAnalysisId },
+    { skip: skipQuery }
   );
 
   const { data: securityData, isLoading: isSecurityLoading, refetch: refetchSecurity } = useGetSecurityEventsQuery(
     queryParams,
-    { skip: !selectedAnalysisId || !selectedClusterId }
+    { skip: skipQuery }
   );
 
   const { data: oomData, isLoading: isOomLoading, refetch: refetchOom } = useGetOomEventsQuery(
     queryParams,
-    { skip: !selectedAnalysisId || !selectedClusterId }
+    { skip: skipQuery }
   );
 
   // Process security events to extract capabilities
@@ -397,14 +456,19 @@ const SecurityCenter: React.FC = () => {
     return oomEvents.filter(o => oomMatchesSearch(o, searchTerm));
   }, [oomEvents, searchTerm, oomMatchesSearch]);
 
-  // Security Score calculation using shared utility function - single source of truth
+  // Security Score calculation using shared utility function - single source of truth.
+  // Plan v3 Akış E (B1.5 fix): the score must be calculable for multi-cluster
+  // analyses even before a single cluster is selected — `selectedClusterId` is
+  // only required for single-cluster analyses (the auto-set primary). For
+  // multi-cluster the score reflects the active cluster_ids filter.
   const securityScoreData = useMemo(() => {
-    // If no analysis selected, return null (will show "-")
-    if (!selectedAnalysisId || !selectedClusterId) {
+    if (!selectedAnalysisId) {
       return { score: null, breakdown: undefined, status: 'no_selection' as const };
     }
-    
-    // If data is still loading, return loading status
+    if (!isMultiClusterAnalysis && !selectedClusterId) {
+      return { score: null, breakdown: undefined, status: 'no_selection' as const };
+    }
+
     if (isSecurityLoading || isOomLoading) {
       return { score: null, breakdown: undefined, status: 'loading' as const };
     }
@@ -421,7 +485,7 @@ const SecurityCenter: React.FC = () => {
       ...result,
       totalChecks: securityData?.total || 0
     };
-  }, [selectedAnalysisId, selectedClusterId, isSecurityLoading, isOomLoading, 
+  }, [selectedAnalysisId, selectedClusterId, isMultiClusterAnalysis, isSecurityLoading, isOomLoading,
       securityData?.total, oomData?.total, violations, capabilities]);
 
   const securityScore = securityScoreData.score;
@@ -806,13 +870,38 @@ const SecurityCenter: React.FC = () => {
               >
                 Refresh
               </Button>
-              <Button icon={<DownloadOutlined />} disabled={!selectedClusterId}>
+              <Button
+                icon={<DownloadOutlined />}
+                disabled={!selectedAnalysisId || (!isMultiClusterAnalysis && !selectedClusterId)}
+              >
                 Export
               </Button>
             </Space>
           </Col>
         </Row>
       </Card>
+
+      {/* Multi-cluster awareness banner (Plan v3 Akış E — m.9): when an
+          operator picks a multi-cluster analysis we surface a small banner so
+          they understand the score and counters reflect every selected
+          cluster, and the "All Clusters" mode is the default. */}
+      {selectedAnalysisId && isMultiClusterAnalysis && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={
+            isAllClustersSelected
+              ? `Multi-cluster analysis · aggregating across all ${analysisClusterIds.length} clusters`
+              : `Multi-cluster analysis · scoped to ${selectedClusterIds.length}/${analysisClusterIds.length} cluster${selectedClusterIds.length === 1 ? '' : 's'}`
+          }
+          description={
+            isAllClustersSelected
+              ? 'Security score, capability checks, violations and OOM counts include every cluster of this analysis. Use the Cluster Filter to narrow to specific clusters.'
+              : 'Use the Cluster Filter to add or remove clusters. Selecting all clusters returns to the aggregated view.'
+          }
+        />
+      )}
 
       {/* Stats & Security Score */}
       <Row gutter={16} style={{ marginBottom: 16 }}>

@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: api-gateway
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: api-gateway
     component: api-gateway
@@ -24,7 +24,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-gateway
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: api-gateway
     component: api-gateway
@@ -44,7 +44,7 @@ spec:
       serviceAccountName: flowfish
       containers:
         - name: api-gateway
-          image: taylanbakircioglu/flowfish:api-gateway-latest
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-api-gateway:{{IMAGE_TAG}}
           imagePullPolicy: Always
           ports:
             - name: http

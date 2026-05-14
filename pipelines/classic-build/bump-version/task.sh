@@ -10,7 +10,7 @@
 set -e
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📦 VERSION BUMP"
+echo "[INFO] VERSION BUMP"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd ${BUILD_SOURCESDIRECTORY}
@@ -37,9 +37,9 @@ NEW_BUILD=$((CURRENT_BUILD + 1))
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 FULL_VERSION="${CURRENT_VERSION}-build.${NEW_BUILD}"
 
-echo "📌 Current: $CURRENT_VERSION (build $CURRENT_BUILD)"
-echo "📌 New: $CURRENT_VERSION (build $NEW_BUILD)"
-echo "📌 Full Version: $FULL_VERSION"
+echo "[INFO] Current: $CURRENT_VERSION (build $CURRENT_BUILD)"
+echo "[INFO] New: $CURRENT_VERSION (build $NEW_BUILD)"
+echo "[INFO] Full Version: $FULL_VERSION"
 echo ""
 
 # Update version.json
@@ -51,7 +51,7 @@ cat > "$VERSION_FILE" << EOF
   "lastUpdated": "$TIMESTAMP"
 }
 EOF
-echo "✅ Updated version.json"
+echo "[OK] Updated version.json"
 
 # Update backend version
 mkdir -p backend
@@ -64,13 +64,13 @@ __build__ = $NEW_BUILD
 __full_version__ = "$FULL_VERSION"
 __build_timestamp__ = "$TIMESTAMP"
 EOF
-echo "✅ Updated backend/__version__.py"
+echo "[OK] Updated backend/__version__.py"
 
 # Create build markers - these files change every build
 # This ensures detect-changes sees backend and frontend as "changed"
 echo "$FULL_VERSION - $TIMESTAMP - ${BUILD_BUILDID:-local}" > "backend/.build-marker"
 echo "$FULL_VERSION - $TIMESTAMP - ${BUILD_BUILDID:-local}" > "frontend/.build-marker"
-echo "✅ Created build markers"
+echo "[OK] Created build markers"
 
 # Set Azure DevOps variables for use in other tasks
 echo "##vso[task.setvariable variable=APP_VERSION]$CURRENT_VERSION"
@@ -79,11 +79,11 @@ echo "##vso[task.setvariable variable=FULL_VERSION]$FULL_VERSION"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📋 Version Info:"
+echo "[INFO] Version Info:"
 echo "   APP_VERSION: $CURRENT_VERSION"
 echo "   BUILD_NUMBER: $NEW_BUILD"  
 echo "   FULL_VERSION: $FULL_VERSION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "✅ Version bump complete!"
+echo "[OK] Version bump complete!"
 

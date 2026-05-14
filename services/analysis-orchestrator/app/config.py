@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     timeseries_query_url: str = "http://timeseries-query:8002"
     graph_query_url: str = "http://graph-query:8001"
     
+    # L7 Ingestion Service (gRPC)
+    l7_ingestion_host: str = "l7-ingestion-service"
+    l7_ingestion_port: int = 5006
+    
     # Cluster Manager gRPC
     cluster_manager_host: str = "cluster-manager"
     cluster_manager_port: int = 5001

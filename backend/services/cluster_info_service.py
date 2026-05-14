@@ -383,7 +383,7 @@ class ClusterInfoService:
             if not gadget_namespace:
                 logger.error("gadget_namespace is required but not provided")
                 return {
-                    "health_status": "unknown",
+                    "health_status": "not_installed",
                     "version": None,
                     "error": "gadget_namespace is required but not provided",
                     "pods_ready": 0,
@@ -568,7 +568,7 @@ class ClusterInfoService:
             
             if result["error"] and "not found" in result["error"].lower():
                 return {
-                    "health_status": "unknown",
+                    "health_status": "not_installed",
                     "version": None,
                     "error": result["error"],
                     "pods_ready": 0,
@@ -589,7 +589,7 @@ class ClusterInfoService:
             # Determine health status based on multiple factors
             # PRIORITY: If all pods are ready, gadget is HEALTHY (trust K8s readiness probes)
             if desired == 0:
-                health_status = "unknown"
+                health_status = "degraded"
             elif ready == desired and ready > 0:
                 # All pods ready = gadget is working
                 # Even if there are minor issues (RBAC warnings, signature warnings), it's functional

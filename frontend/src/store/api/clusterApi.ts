@@ -7,7 +7,11 @@ interface ClustersResponse {
   count: number;
   message?: string;
   supported_gadget_version?: string;
+  supported_beyla_version?: string;
 }
+
+/** Single-cluster GET/PATCH response — Beyla/L7 fields come from `Cluster` in types. */
+export type ClusterResponse = Cluster;
 
 // Fields that can be updated in a cluster
 export interface ClusterUpdateData {
@@ -18,6 +22,7 @@ export interface ClusterUpdateData {
   region?: string;
   api_server_url?: string;
   gadget_namespace?: string;
+  beyla_namespace?: string;
   status?: string;
   skip_tls_verify?: boolean;
   // Sensitive fields - only updated if non-empty value provided
@@ -76,8 +81,11 @@ export const clusterApi = createApi({
       status: 'completed' | 'partial'; 
       resources: { nodes: number; pods: number; namespaces: number } | null; 
       gadget_health: string;
+      beyla_health?: string;
+      beyla_version?: string;
       warning?: string;
       gadget_details?: { version?: string; error?: string; pods_ready?: number; pods_total?: number };
+      beyla_details?: { daemonset_ready?: number; daemonset_total?: number; collector_ready?: boolean; issues?: string[]; error?: string };
     }, number>({
       query: (id) => ({
         url: `/${id}/sync`,
@@ -98,16 +106,59 @@ export const clusterApi = createApi({
         body: data,
       }),
     }),
-    getGadgetInstallScript: builder.query<string, { provider: string; mode?: string; storageClass?: string }>({
-      query: ({ provider, mode = 'install', storageClass = '' }) => ({
-        url: `/gadget-install-script?provider=${provider}&mode=${mode}&storage_class=${encodeURIComponent(storageClass)}`,
-        responseHandler: 'text',
+    getGadgetInstallScript: builder.query<string, { provider: string; imageRegistry?: string }>({
+      query: ({ provider, imageRegistry = '' }) => {
+        let url = `/gadget-install-script?provider=${encodeURIComponent(provider)}&mode=install`;
+        if (imageRegistry) url += `&image_registry=${encodeURIComponent(imageRegistry)}`;
+        return { url, responseHandler: 'text' as const };
+      },
+    }),
+    getGadgetUninstallScript: builder.query<string, { provider: string }>({
+      query: ({ provider }) => ({
+        url: `/gadget-install-script?provider=${encodeURIComponent(provider)}&mode=uninstall`,
+        responseHandler: 'text' as const,
+      }),
+    }),
+    getGadgetFixStorageScript: builder.query<string, { provider: string }>({
+      query: ({ provider }) => ({
+        url: `/gadget-fix-storage-script?provider=${encodeURIComponent(provider)}`,
+        responseHandler: 'text' as const,
       }),
     }),
     getGadgetUpgradeScript: builder.query<string, { clusterId: number; targetVersion?: string; memoryLimit?: string }>({
       query: ({ clusterId, targetVersion = 'v0.50.1', memoryLimit = '6Gi' }) => ({
-        url: `/${clusterId}/gadget-upgrade-script?target_version=${targetVersion}&memory_limit=${memoryLimit}`,
-        responseHandler: 'text',
+        url: `/${clusterId}/gadget-upgrade-script?target_version=${encodeURIComponent(targetVersion)}&memory_limit=${encodeURIComponent(memoryLimit)}`,
+        responseHandler: 'text' as const,
+      }),
+    }),
+    getBeylaInstallScriptGeneral: builder.query<string, { provider: string; mode?: string; namespace?: string; beylaVersion?: string; imageRegistry?: string; collectorTag?: string }>({
+      query: ({ provider, mode = 'install', namespace = '', beylaVersion = 'v3.9.5', imageRegistry = '', collectorTag = '' }) => {
+        let url = `/beyla-install-script?provider=${encodeURIComponent(provider)}&mode=${encodeURIComponent(mode)}&beyla_version=${encodeURIComponent(beylaVersion)}`;
+        if (namespace) url += `&namespace=${encodeURIComponent(namespace)}`;
+        if (imageRegistry) url += `&image_registry=${encodeURIComponent(imageRegistry)}`;
+        if (collectorTag) url += `&collector_tag=${encodeURIComponent(collectorTag)}`;
+        return { url, responseHandler: 'text' as const };
+      },
+    }),
+    getBeylaInstallScript: builder.query<string, { clusterId: number; provider?: string; mode?: string; namespace?: string; beylaVersion?: string; imageRegistry?: string; collectorTag?: string }>({
+      query: ({ clusterId, provider = 'kubernetes', mode = 'install', namespace = '', beylaVersion = 'v3.9.5', imageRegistry = '', collectorTag = '' }) => {
+        let url = `/${clusterId}/beyla-install-script?provider=${encodeURIComponent(provider)}&mode=${encodeURIComponent(mode)}&beyla_version=${encodeURIComponent(beylaVersion)}`;
+        if (namespace) url += `&namespace=${encodeURIComponent(namespace)}`;
+        if (imageRegistry) url += `&image_registry=${encodeURIComponent(imageRegistry)}`;
+        if (collectorTag) url += `&collector_tag=${encodeURIComponent(collectorTag)}`;
+        return { url, responseHandler: 'text' as const };
+      },
+    }),
+    getBeylaUpgradeScript: builder.query<string, { clusterId: number; targetVersion?: string }>({
+      query: ({ clusterId, targetVersion = 'v3.9.5' }) => ({
+        url: `/${clusterId}/beyla-upgrade-script?target_version=${encodeURIComponent(targetVersion)}`,
+        responseHandler: 'text' as const,
+      }),
+    }),
+    getL7UninstallScript: builder.query<string, { provider: string }>({
+      query: ({ provider }) => ({
+        url: `/l7-uninstall-script?provider=${encodeURIComponent(provider)}`,
+        responseHandler: 'text' as const,
       }),
     }),
   }),
@@ -120,7 +171,8 @@ interface TestConnectionRequest {
   token?: string;
   ca_cert?: string;
   skip_tls_verify?: boolean;
-  gadget_namespace?: string;  // Namespace where gadget is deployed
+  gadget_namespace?: string;
+  cluster_id?: number;
 }
 
 interface TestConnectionResponse {
@@ -157,7 +209,12 @@ export const {
   useSyncClusterMutation,
   useGetClusterNamespacesQuery,
   useTestConnectionMutation,
-  useGetGadgetInstallScriptQuery,
   useLazyGetGadgetInstallScriptQuery,
+  useLazyGetGadgetUninstallScriptQuery,
   useLazyGetGadgetUpgradeScriptQuery,
+  useLazyGetGadgetFixStorageScriptQuery,
+  useLazyGetBeylaInstallScriptGeneralQuery,
+  useLazyGetBeylaInstallScriptQuery,
+  useLazyGetBeylaUpgradeScriptQuery,
+  useLazyGetL7UninstallScriptQuery,
 } = clusterApi;

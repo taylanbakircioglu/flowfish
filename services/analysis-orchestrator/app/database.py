@@ -69,6 +69,10 @@ class Analysis(Base):
     time_config: Mapped[Optional[dict]] = mapped_column(JSON, default={})
     output_config: Mapped[Optional[dict]] = mapped_column(JSON, default={})
     
+    # L7 (Beyla) — must match backend `analyses` table
+    analysis_level: Mapped[str] = mapped_column(String(20), default="l4", nullable=False)
+    l7_config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
+    
     # Status fields
     status: Mapped[str] = mapped_column(String(50), default="draft")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)  # From backend model
@@ -406,9 +410,9 @@ class DatabaseManager:
                 result = session.execute(
                     text("""
                         SELECT id, name, gadget_endpoint, connection_type, api_server_url,
-                               token_encrypted, ca_cert_encrypted, 
+                               token_encrypted, ca_cert_encrypted,
                                kubeconfig_encrypted, skip_tls_verify, gadget_namespace,
-                               gadget_version
+                               gadget_version, beyla_namespace, beyla_health_status
                         FROM clusters WHERE id = :id
                     """),
                     {"id": cluster_id}
@@ -426,7 +430,9 @@ class DatabaseManager:
                         "kubeconfig_encrypted": row[7],
                         "skip_tls_verify": row[8] or False,
                         "gadget_namespace": row[9],
-                        "gadget_version": row[10] or ''
+                        "gadget_version": row[10] or '',
+                        "beyla_namespace": row[11],
+                        "beyla_health_status": row[12],
                     }
                 return None
         except Exception as e:
@@ -442,7 +448,8 @@ class DatabaseManager:
                 text("""
                     SELECT id, name, gadget_endpoint, connection_type, api_server_url,
                            token_encrypted, ca_cert_encrypted,
-                           kubeconfig_encrypted, skip_tls_verify, gadget_namespace
+                           kubeconfig_encrypted, skip_tls_verify, gadget_namespace,
+                           beyla_namespace, beyla_health_status
                     FROM clusters WHERE id = :id
                 """),
                 {"id": cluster_id}
@@ -459,7 +466,9 @@ class DatabaseManager:
                     "ca_cert_encrypted": row[6],
                     "kubeconfig_encrypted": row[7],
                     "skip_tls_verify": row[8] or False,
-                    "gadget_namespace": row[9]  # From UI, no fallback
+                    "gadget_namespace": row[9],  # From UI, no fallback
+                    "beyla_namespace": row[10],
+                    "beyla_health_status": row[11],
                 }
             return None
     

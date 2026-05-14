@@ -217,6 +217,36 @@ class ClusterConnectionManager:
                 "error": str(e)
             }
     
+    async def check_beyla_health(self, cluster_id: int, beyla_namespace: str = "") -> Dict[str, Any]:
+        """Check Grafana Beyla + L7 Collector health."""
+        try:
+            connection = await self.get_connection(cluster_id)
+            if not beyla_namespace:
+                row = await database.fetch_one(
+                    "SELECT beyla_namespace, gadget_namespace FROM clusters WHERE id = :id",
+                    {"id": cluster_id},
+                )
+                beyla_namespace = (
+                    (row["beyla_namespace"] if row else "")
+                    or (row["gadget_namespace"] if row else "")
+                    or ""
+                )
+            if not beyla_namespace:
+                return {
+                    "health_status": "not_installed",
+                    "version": "",
+                    "daemonset_ready": 0,
+                    "daemonset_total": 0,
+                    "collector_ready": False,
+                    "issues": [],
+                    "error": "beyla_namespace not configured",
+                }
+            health = await connection.check_beyla_health(beyla_namespace)
+            return health.to_dict()
+        except Exception as e:
+            logger.error("Failed to check beyla health", cluster_id=cluster_id, error=str(e))
+            return {"health_status": "unknown", "error": str(e)}
+
     async def get_namespaces(self, cluster_id: int) -> List[Dict[str, Any]]:
         """Get list of namespaces"""
         try:
@@ -326,8 +356,7 @@ class ClusterConnectionManager:
         # Test cluster connection
         try:
             if normalized_type == "in-cluster":
-                # Use legacy client for in-cluster test
-                info = await self._legacy_cluster_manager.get_cluster_info(cluster_id="test")
+                info = await self._legacy_cluster_manager.get_cluster_info(cluster_id="default")
             elif normalized_type == "token":
                 info = await self._legacy_cluster_info.get_cluster_info(
                     connection_type="token",
@@ -366,7 +395,7 @@ class ClusterConnectionManager:
             try:
                 if normalized_type == "in-cluster":
                     health = await self._legacy_cluster_manager.check_gadget_health(
-                        cluster_id="test",
+                        cluster_id="default",
                         gadget_namespace=gadget_namespace
                     )
                     if health.get("health_status") == "healthy":

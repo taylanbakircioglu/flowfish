@@ -87,6 +87,10 @@ class Analysis(BaseModel):
     schedule_run_count = Column(Integer, default=0)
     max_scheduled_runs = Column(Integer, nullable=True)
     
+    # L7 Beyla configuration
+    analysis_level = Column(String(20), default="l4")  # 'l4', 'l7', 'both'
+    l7_config = Column(JSONB, nullable=True)
+    
     # Relationships
     cluster = relationship("Cluster", back_populates="analyses")
     creator = relationship("User")

@@ -63,6 +63,10 @@ spec:
               value: "true"
             - name: WORKLOAD_SYNC_ENABLED
               value: "true"
+            - name: L7_ENABLED
+              value: "true"
+            - name: L7_TRACING_ENABLED
+              value: "true"  # Local test: trace pipeline acik
           readinessProbe:
             exec:
               command:

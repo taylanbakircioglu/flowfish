@@ -956,6 +956,57 @@ class Neo4jService:
             "diagnostic": diagnostic
         }
     
+    def delete_l7_analysis_data(
+        self,
+        analysis_id: int,
+        batch_size: int = 10000
+    ) -> Dict[str, Any]:
+        """
+        Delete L7Workload nodes and L7_COMMUNICATES_WITH edges for an analysis.
+        Uses both exact and prefix matching on analysis_id to handle
+        multi-cluster formats (e.g. "42" and "42-cluster1").
+        """
+        import time
+        start_time = time.time()
+        total_nodes = 0
+        batches = 0
+
+        aid_str = str(analysis_id)
+        aid_prefix = f"{aid_str}-"
+
+        while True:
+            delete_query = """
+            MATCH (n:L7Workload)
+            WHERE n.analysis_id = $analysis_id OR n.analysis_id STARTS WITH $analysis_id_prefix
+            WITH n LIMIT $batch_size
+            DETACH DELETE n
+            """
+            try:
+                deleted = self._execute_delete(delete_query, {
+                    "analysis_id": aid_str,
+                    "analysis_id_prefix": aid_prefix,
+                    "batch_size": batch_size,
+                })
+                total_nodes += deleted
+                batches += 1
+                if deleted < batch_size:
+                    break
+            except Exception as e:
+                logger.warning("L7 node deletion batch failed", error=str(e))
+                break
+
+        duration_ms = int((time.time() - start_time) * 1000)
+        logger.info("L7 analysis data deleted",
+                    analysis_id=analysis_id,
+                    deleted_nodes=total_nodes,
+                    batches=batches,
+                    duration_ms=duration_ms)
+        return {
+            "deleted_nodes": total_nodes,
+            "batches": batches,
+            "duration_ms": duration_ms,
+        }
+
     def close(self):
         """Close Neo4j driver connection"""
         if self.driver:

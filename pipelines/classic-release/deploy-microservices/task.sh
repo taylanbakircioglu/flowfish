@@ -9,21 +9,27 @@ set -e
 # ==============================================================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🚀 MICROSERVICES INCREMENTAL DEPLOYMENT"
+echo "[DEPLOY] MICROSERVICES INCREMENTAL DEPLOYMENT"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ==============================================================================
 # Load build info from artifact
 # ==============================================================================
-echo "🔍 Searching for build-info.env..."
+echo "[CHECK] Searching for build-info.env..."
 
 # Try multiple possible paths for build-info.env
 POSSIBLE_BUILD_INFO_PATHS=(
     "$BUILD_INFO_FILE"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Internal/build-info/build-info.env"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Internal/drop/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Pilot/build-info/build-info.env"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI-Pilot/drop/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI/build-info/build-info.env"
+    "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish-CI/drop/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/Flowfish-CI/build-info/build-info.env"
     "${SYSTEM_ARTIFACTSDIRECTORY}/_Flowfish/build-info/build-info.env"
+    "${BUILD_ARTIFACTSTAGINGDIRECTORY}/_Flowfish-CI-Internal/build-info/build-info.env"
+    "${BUILD_ARTIFACTSTAGINGDIRECTORY}/_Flowfish-CI-Internal/drop/build-info/build-info.env"
     "${BUILD_ARTIFACTSTAGINGDIRECTORY}/_Flowfish-CI-Pilot/build-info/build-info.env"
     "${BUILD_ARTIFACTSTAGINGDIRECTORY}/_Flowfish-CI/build-info/build-info.env"
 )
@@ -36,12 +42,20 @@ for path in "${POSSIBLE_BUILD_INFO_PATHS[@]}"; do
     fi
 done
 
+# Fallback: search recursively under artifact directory
+if [ -z "$BUILD_INFO_FOUND" ] && [ -d "${SYSTEM_ARTIFACTSDIRECTORY:-}" ]; then
+    BUILD_INFO_FOUND=$(find "${SYSTEM_ARTIFACTSDIRECTORY}" -name "build-info.env" -type f 2>/dev/null | head -1)
+    if [ -n "$BUILD_INFO_FOUND" ]; then
+        echo "[INFO] Found build info via search: $BUILD_INFO_FOUND"
+    fi
+fi
+
 if [ -n "$BUILD_INFO_FOUND" ]; then
-    echo "📦 Found build info at: $BUILD_INFO_FOUND"
+    echo "[INFO] Found build info at: $BUILD_INFO_FOUND"
     source "$BUILD_INFO_FOUND"
-    echo "✅ Build info loaded successfully!"
+    echo "[OK] Build info loaded successfully!"
     echo ""
-    echo "📋 Service Build Status:"
+    echo "[INFO] Service Build Status:"
     echo "   API_GATEWAY_BUILT: ${API_GATEWAY_BUILT:-false} (Tag: ${API_GATEWAY_TAG:-none})"
     echo "   CLUSTER_MANAGER_BUILT: ${CLUSTER_MANAGER_BUILT:-false} (Tag: ${CLUSTER_MANAGER_TAG:-none})"
     echo "   ANALYSIS_ORCHESTRATOR_BUILT: ${ANALYSIS_ORCHESTRATOR_BUILT:-false} (Tag: ${ANALYSIS_ORCHESTRATOR_TAG:-none})"
@@ -50,9 +64,11 @@ if [ -n "$BUILD_INFO_FOUND" ]; then
     echo "   TIMESERIES_WRITER_BUILT: ${TIMESERIES_WRITER_BUILT:-false} (Tag: ${TIMESERIES_WRITER_TAG:-none})"
     echo "   TIMESERIES_QUERY_BUILT: ${TIMESERIES_QUERY_BUILT:-false} (Tag: ${TIMESERIES_QUERY_TAG:-none})"
     echo "   INGESTION_SERVICE_BUILT: ${INGESTION_SERVICE_BUILT:-false} (Tag: ${INGESTION_SERVICE_TAG:-none})"
+    echo "   L7_INGESTION_SERVICE_BUILT: ${L7_INGESTION_SERVICE_BUILT:-false} (Tag: ${L7_INGESTION_SERVICE_TAG:-none})"
+    echo "   L7_COLLECTOR_BUILT: ${L7_COLLECTOR_BUILT:-false} (Tag: ${L7_COLLECTOR_TAG:-none})"
     echo "   CHANGE_WORKER_BUILT: ${CHANGE_WORKER_BUILT:-false} (Tag: ${CHANGE_WORKER_TAG:-none})"
 else
-    echo "⚠️  BUILD_INFO_FILE not found in any expected location"
+    echo "[WARN] BUILD_INFO_FILE not found in any expected location"
     echo "    Searched paths:"
     for path in "${POSSIBLE_BUILD_INFO_PATHS[@]}"; do
         [ -n "$path" ] && echo "      - $path"
@@ -67,19 +83,19 @@ fi
 MANIFEST_DIR="${BUILD_ARTIFACTSTAGINGDIRECTORY}/manifests"
 
 if [ ! -d "$MANIFEST_DIR" ]; then
-    echo "❌ ERROR: Manifests directory not found: $MANIFEST_DIR"
+    echo "[ERROR] ERROR: Manifests directory not found: $MANIFEST_DIR"
     exit 1
 fi
 
 cd $MANIFEST_DIR
 
 # OpenShift'e login
-echo "🔐 Logging into OpenShift..."
+echo "[AUTH] Logging into OpenShift..."
 oc login ${OPENSHIFT_API_URL} -u ${OPENSHIFT_USER} -p ${OPENSHIFT_PASSWORD} --insecure-skip-tls-verify=true
 oc project ${OPENSHIFT_NAMESPACE}
 
 echo ""
-echo "📋 Deployment Configuration:"
+echo "[INFO] Deployment Configuration:"
 echo "   Namespace: ${OPENSHIFT_NAMESPACE}"
 echo "   RELEASE_ALL: ${RELEASE_ALL:-false}"
 echo ""
@@ -93,7 +109,7 @@ RESTARTED_COUNT=0
 # ConfigMap Change Detection - Restart pods if config changed
 # ==============================================================================
 echo ""
-echo "🔍 Checking for ConfigMap changes..."
+echo "[CHECK] Checking for ConfigMap changes..."
 
 # Function to get ConfigMap data checksum (only .data field, not metadata/status)
 # This avoids false positives from OpenShift-added fields
@@ -122,11 +138,11 @@ declare -A CONFIGMAP_RESTART
 BACKEND_CONFIG_CHECKSUM=$(get_configmap_data_checksum "backend-config")
 OLD_CHECKSUM=$(get_stored_checksum "backend-config")
 
-echo "  📊 backend-config checksum: $BACKEND_CONFIG_CHECKSUM"
-echo "  📊 stored checksum: ${OLD_CHECKSUM:-<none>}"
+echo "  [SUMMARY] backend-config checksum: $BACKEND_CONFIG_CHECKSUM"
+echo "  [SUMMARY] stored checksum: ${OLD_CHECKSUM:-<none>}"
 
 if [ -n "$OLD_CHECKSUM" ] && [ "$OLD_CHECKSUM" != "$BACKEND_CONFIG_CHECKSUM" ]; then
-    echo "  📝 backend-config CHANGED - marking services for restart"
+    echo "  [NOTE] backend-config CHANGED - marking services for restart"
     CONFIGMAP_RESTART["api-gateway"]=1
     CONFIGMAP_RESTART["cluster-manager"]=1
     CONFIGMAP_RESTART["analysis-orchestrator"]=1
@@ -136,10 +152,12 @@ if [ -n "$OLD_CHECKSUM" ] && [ "$OLD_CHECKSUM" != "$BACKEND_CONFIG_CHECKSUM" ]; 
     CONFIGMAP_RESTART["graph-writer"]=1
     CONFIGMAP_RESTART["graph-query"]=1
     CONFIGMAP_RESTART["change-detection-worker"]=1
+    CONFIGMAP_RESTART["l7-ingestion-service"]=1
+    CONFIGMAP_RESTART["flowfish-l7-collector"]=1
 elif [ -z "$OLD_CHECKSUM" ]; then
-    echo "  ℹ️  No stored checksum found (first run), storing current checksum"
+    echo "  [INFO] No stored checksum found (first run), storing current checksum"
 else
-    echo "  ✅ backend-config unchanged"
+    echo "  [OK] backend-config unchanged"
 fi
 
 # Store current checksum for next run
@@ -149,7 +167,7 @@ store_checksum "backend-config" "$BACKEND_CONFIG_CHECKSUM"
 # Secret Change Detection - Restart pods if secrets changed
 # ==============================================================================
 echo ""
-echo "🔍 Checking for Secret changes..."
+echo "[CHECK] Checking for Secret changes..."
 
 # Function to get Secret data checksum (only .data field)
 get_secret_data_checksum() {
@@ -178,11 +196,11 @@ store_secret_checksum() {
 SECRETS_CHECKSUM=$(get_secret_data_checksum "flowfish-secrets")
 OLD_SECRET_CHECKSUM=$(get_stored_secret_checksum "flowfish-secrets")
 
-echo "  🔐 flowfish-secrets checksum: $SECRETS_CHECKSUM"
-echo "  🔐 stored checksum: ${OLD_SECRET_CHECKSUM:-<none>}"
+echo "  [AUTH] flowfish-secrets checksum: $SECRETS_CHECKSUM"
+echo "  [AUTH] stored checksum: ${OLD_SECRET_CHECKSUM:-<none>}"
 
 if [ -n "$OLD_SECRET_CHECKSUM" ] && [ "$OLD_SECRET_CHECKSUM" != "$SECRETS_CHECKSUM" ]; then
-    echo "  📝 flowfish-secrets CHANGED - marking services for restart"
+    echo "  [NOTE] flowfish-secrets CHANGED - marking services for restart"
     CONFIGMAP_RESTART["api-gateway"]=1
     CONFIGMAP_RESTART["cluster-manager"]=1
     CONFIGMAP_RESTART["analysis-orchestrator"]=1
@@ -192,11 +210,13 @@ if [ -n "$OLD_SECRET_CHECKSUM" ] && [ "$OLD_SECRET_CHECKSUM" != "$SECRETS_CHECKS
     CONFIGMAP_RESTART["graph-writer"]=1
     CONFIGMAP_RESTART["graph-query"]=1
     CONFIGMAP_RESTART["change-detection-worker"]=1
+    CONFIGMAP_RESTART["l7-ingestion-service"]=1
+    CONFIGMAP_RESTART["flowfish-l7-collector"]=1
     CONFIGMAP_RESTART["backend"]=1
 elif [ -z "$OLD_SECRET_CHECKSUM" ]; then
-    echo "  ℹ️  No stored secret checksum found (first run), storing current checksum"
+    echo "  [INFO] No stored secret checksum found (first run), storing current checksum"
 else
-    echo "  ✅ flowfish-secrets unchanged"
+    echo "  [OK] flowfish-secrets unchanged"
 fi
 
 # Store current secret checksum for next run
@@ -234,13 +254,21 @@ deploy_microservice() {
     if [ "$should_deploy" = "true" ]; then
         # New image built - apply manifest with new image tag
         if [ -f "$manifest_file" ]; then
+            # Guard: check manifest doesn't contain placeholder tags
+            if grep -qE "NEEDS_CLUSTER_TAG|NOT_BUILT|{{IMAGE_TAG}}" "$manifest_file" 2>/dev/null; then
+                echo ""
+                echo "[WARN] Skipping $service_name - manifest has placeholder image tag"
+                SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+                return 0
+            fi
+            
             echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "🚀 Deploying: $service_name ($deploy_reason)"
+            echo "[DEPLOY] Deploying: $service_name ($deploy_reason)"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
             if [ -n "$image_tag" ]; then
-                echo "📌 Image Tag: $image_tag"
+                echo "[INFO] Image Tag: $image_tag"
             fi
             
             oc apply -f "$manifest_file"
@@ -248,14 +276,14 @@ deploy_microservice() {
             local DEPLOY_NAME=$(grep -A 1 "kind: Deployment" "$manifest_file" 2>/dev/null | grep "name:" | head -1 | awk '{print $2}' || echo "")
             
             if [ -n "$DEPLOY_NAME" ]; then
-                echo "⏳ Waiting for rollout: $DEPLOY_NAME"
+                echo "Waiting for rollout: $DEPLOY_NAME"
                 oc rollout status deployment/$DEPLOY_NAME -n ${OPENSHIFT_NAMESPACE} --timeout=5m || true
             fi
             
-            echo "✅ $service_name deployed!"
+            echo "[OK] $service_name deployed!"
             DEPLOYED_COUNT=$((DEPLOYED_COUNT + 1))
         else
-            echo "⚠️  WARNING: Manifest not found: $manifest_file"
+            echo "[WARN] WARNING: Manifest not found: $manifest_file"
         fi
         return 0
         
@@ -263,22 +291,22 @@ deploy_microservice() {
         # ConfigMap changed - restart pods with CURRENT image (don't apply new manifest)
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "🔄 Restarting: $service_name ($deploy_reason)"
+        echo "[RESTART] Restarting: $service_name ($deploy_reason)"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
         if oc get deployment "$deployment_name" -n ${OPENSHIFT_NAMESPACE} &>/dev/null; then
             oc rollout restart deployment/"$deployment_name" -n ${OPENSHIFT_NAMESPACE}
             oc rollout status deployment/"$deployment_name" -n ${OPENSHIFT_NAMESPACE} --timeout=5m || true
-            echo "✅ $service_name restarted!"
+            echo "[OK] $service_name restarted!"
             RESTARTED_COUNT=$((RESTARTED_COUNT + 1))
         else
-            echo "⚠️  Deployment $deployment_name not found, skipping restart"
+            echo "[WARN] Deployment $deployment_name not found, skipping restart"
         fi
         return 0
         
     else
         # Nothing changed - skip
-        echo "⏭️  Skipping $service_name - No changes"
+        echo "[SKIP] Skipping $service_name - No changes"
         SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
         return 0
     fi
@@ -286,7 +314,7 @@ deploy_microservice() {
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📦 Starting Microservices Deployment..."
+echo "[INFO] Starting Microservices Deployment..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Deploy microservices - sıralı olarak
@@ -300,25 +328,27 @@ deploy_microservice "Graph Writer" "15-graph-writer.yaml" "${GRAPH_WRITER_BUILT:
 deploy_microservice "Graph Query" "16-graph-query.yaml" "${GRAPH_QUERY_BUILT:-false}" "${GRAPH_QUERY_TAG}" "graph-query"
 deploy_microservice "Analysis Orchestrator" "13-analysis-orchestrator.yaml" "${ANALYSIS_ORCHESTRATOR_BUILT:-false}" "${ANALYSIS_ORCHESTRATOR_TAG}" "analysis-orchestrator"
 deploy_microservice "Change Detection Worker" "18-change-detection-worker.yaml" "${CHANGE_WORKER_BUILT:-false}" "${CHANGE_WORKER_TAG}" "change-detection-worker"
+deploy_microservice "L7 Ingestion Service" "22-l7-ingestion-service.yaml" "${L7_INGESTION_SERVICE_BUILT:-false}" "${L7_INGESTION_SERVICE_TAG}" "l7-ingestion-service"
+deploy_microservice "L7 Collector" "21-flowfish-l7-collector.yaml" "${L7_COLLECTOR_BUILT:-false}" "${L7_COLLECTOR_TAG}" "flowfish-l7-collector"
 
 # Özet
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📊 DEPLOYMENT SUMMARY"
+echo "[SUMMARY] DEPLOYMENT SUMMARY"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "✅ Deployed:  $DEPLOYED_COUNT microservices"
-echo "🔄 Restarted: $RESTARTED_COUNT microservices (ConfigMap change)"
-echo "⏭️  Skipped:   $SKIPPED_COUNT microservices"
+echo "[OK] Deployed:  $DEPLOYED_COUNT microservices"
+echo "[RESTART] Restarted: $RESTARTED_COUNT microservices (ConfigMap change)"
+echo "[SKIP] Skipped:   $SKIPPED_COUNT microservices"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ $DEPLOYED_COUNT -eq 0 ] && [ $RESTARTED_COUNT -eq 0 ]; then
-    echo "ℹ️  No microservices needed deployment or restart"
+    echo "[INFO] No microservices needed deployment or restart"
 fi
 
 # Final status
 echo ""
-echo "📋 Microservices Status:"
+echo "[INFO] Microservices Status:"
 oc get pods -n ${OPENSHIFT_NAMESPACE} -l tier=microservices 2>/dev/null || true
 
 echo ""
-echo "🎉 Microservices deployment task completed!"
+echo "[DONE] Microservices deployment task completed!"

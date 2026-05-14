@@ -2,6 +2,7 @@
 
 import grpc
 from concurrent import futures
+import json
 import logging
 import sys
 import os
@@ -217,6 +218,20 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             exclude_pod_patterns = scope_data.get('exclude_pod_patterns', []) or []
             exclude_strategy = scope_data.get('exclude_strategy', 'aggressive') or 'aggressive'
             
+            _VALID_LEVELS = {"l4", "l7", "both"}
+            analysis_level = (
+                (getattr(analysis, "analysis_level", None) or "").strip().lower()
+                or "l4"
+            )
+            if analysis_level not in _VALID_LEVELS:
+                logger.warning(
+                    "Unknown analysis_level '%s' for analysis %s — defaulting to 'l4'",
+                    analysis_level, request.analysis_id,
+                )
+                analysis_level = "l4"
+            wants_l4 = analysis_level != "l7"
+            wants_l7 = analysis_level in ("l7", "both")
+            
             gadget_data = analysis.gadget_config or {}
             # Default gadgets: network flow, TCP throughput (for bytes), TCP retransmit (for errors)
             default_gadgets = ['trace_network', 'top_tcp', 'trace_tcpretrans']
@@ -316,12 +331,12 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             except Exception as e:
                 logger.warning(f"Failed to fetch network config, ingestion will use defaults: {e}")
             
-            # Start collection for each cluster
+            # Start collection for each cluster (L4 / Inspector Gadget — skipped when analysis_level is l7-only)
             task_assignments = []
             session_ids = []
             failed_clusters = []
             
-            for cluster_id in cluster_ids:
+            for cluster_id in (cluster_ids if wants_l4 else []):
                 try:
                     cluster = db_manager.get_cluster_sync(cluster_id)
                     
@@ -443,12 +458,109 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                     logger.error(f"Failed to start collection on cluster {cluster_id}: {e}")
                     failed_clusters.append({"cluster_id": cluster_id, "error": str(e)})
             
-            # Store session mappings (store all session IDs as comma-separated for multi-cluster)
-            if session_ids:
-                self.active_sessions[request.analysis_id] = ",".join(session_ids)
-                
-                # Update auto-stop monitor with current sessions
-                auto_stop_monitor.set_active_sessions(self.active_sessions)
+            l7_ok = False
+            l7_started_clusters = []
+            if wants_l7:
+                l7_client = None
+                try:
+                    from app.l7_ingestion_client import L7IngestionClient
+                    l7_client = L7IngestionClient(
+                        host=settings.l7_ingestion_host,
+                        port=settings.l7_ingestion_port,
+                    )
+                    l7_config = getattr(analysis, "l7_config", None) or {}
+                    if isinstance(l7_config, str):
+                        l7_config = json.loads(l7_config)
+                    
+                    l7_protocols = l7_config.get("protocols", ["http", "grpc"])
+                    l7_sampling_rate = l7_config.get("sampling_rate", 1.0)
+
+                    beyla_default_excludes = []
+                    try:
+                        with httpx.Client(timeout=5.0) as http_client:
+                            resp = http_client.get(f"{backend_url}/api/v1/settings/beyla")
+                            if resp.status_code == 200:
+                                beyla_settings = resp.json()
+                                beyla_default_excludes = beyla_settings.get("default_excluded_namespaces", [])
+                    except Exception as be:
+                        logger.debug("Could not fetch beyla settings defaults: %s", be)
+                    
+                    for cid in cluster_ids:
+                        try:
+                            cluster = db_manager.get_cluster_sync(cid)
+                            if not cluster:
+                                logger.warning(f"L7: cluster {cid} not found, skipping")
+                                continue
+                            beyla_ns = cluster.get("beyla_namespace")
+                            if not beyla_ns:
+                                logger.warning(f"Cluster {cid} has no Beyla configured, skipping L7")
+                                continue
+                            
+                            cluster_id_str = str(cid)
+                            cluster_specific_scope = per_cluster_scope.get(cluster_id_str, {})
+                            cluster_ns = (
+                                cluster_specific_scope.get("namespaces")
+                                if cluster_specific_scope.get("namespaces")
+                                else global_namespaces
+                            )
+                            cluster_exclude = (
+                                cluster_specific_scope.get("exclude_namespaces")
+                                if cluster_specific_scope.get("exclude_namespaces")
+                                else exclude_namespaces
+                            )
+                            merged_deny = list(dict.fromkeys(
+                                (list(cluster_exclude) if cluster_exclude else [])
+                                + beyla_default_excludes
+                            ))
+
+                            l7_conn_type = (cluster.get("connection_type") or "in-cluster").lower()
+                            l7_is_local = l7_conn_type in ("in-cluster", "in_cluster")
+
+                            l7_result = l7_client.start_l7_collection(
+                                analysis_id=str(analysis.id),
+                                cluster_id=str(cid),
+                                cluster_name=cluster.get("name", ""),
+                                beyla_namespace=beyla_ns,
+                                protocols=l7_protocols,
+                                sampling_rate=l7_sampling_rate,
+                                namespace_allow=list(cluster_ns) if cluster_ns else [],
+                                namespace_deny=merged_deny,
+                                cluster_api_url="" if l7_is_local else cluster.get("api_server_url", ""),
+                                cluster_token="" if l7_is_local else cluster.get("token_encrypted", ""),
+                                cluster_ca_cert="" if l7_is_local else cluster.get("ca_cert_encrypted", ""),
+                                skip_tls_verify=cluster.get("skip_tls_verify", False),
+                                max_events_per_second=l7_config.get("max_events_per_second", 5000),
+                                service_filter=l7_config.get("service_filter", ""),
+                                http_methods=l7_config.get("http_methods", []),
+                                status_codes=l7_config.get("status_codes", []),
+                                path_pattern=l7_config.get("path_pattern", ""),
+                                exclude_paths=l7_config.get(
+                                    "exclude_paths", "/healthz, /readyz, /livez, /metrics"
+                                ),
+                            )
+                            if l7_result.get("success"):
+                                l7_started_clusters.append(cid)
+                            logger.info(f"L7 collection started for cluster {cid}: {l7_result}")
+                        except Exception as e:
+                            logger.error(f"L7 start failed for cluster {cid}: {e}", exc_info=True)
+                    l7_ok = len(l7_started_clusters) > 0
+                except Exception as e:
+                    logger.error(f"L7 collection start failed for analysis {request.analysis_id}: {e}", exc_info=True)
+                finally:
+                    if l7_client is not None:
+                        l7_client.close()
+            
+            l4_ok = bool(session_ids)
+            if analysis_level == "both":
+                start_ok = l4_ok or l7_ok
+            else:
+                start_ok = (not wants_l4 or l4_ok) and (not wants_l7 or l7_ok)
+            
+            # Store session mappings (L4) and mark analysis running when L4 and/or L7 started successfully
+            if start_ok:
+                if session_ids:
+                    self.active_sessions[request.analysis_id] = ",".join(session_ids)
+                    auto_stop_monitor.set_active_sessions(self.active_sessions)
                 
                 # Clear stale gadget warnings from previous runs before setting status
                 clean_output = dict(analysis.output_config or {})
@@ -458,70 +570,91 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                     "output_config": clean_output
                 })
                 
-                # Update analysis status (sets started_at timestamp)
                 db_manager.update_analysis_status_sync(request.analysis_id, AnalysisStatus.RUNNING)
                 
-                # Check for gadget startup errors ASYNCHRONOUSLY (non-blocking)
-                # This runs in a background thread so gRPC response is not delayed
-                def _check_gadget_errors_background(analysis_id: int, session_id_list: list, existing_output: dict):
-                    """Background task to check gadget errors after startup delay"""
-                    import time as time_module  # Local import for thread safety
-                    try:
-                        # Wait for gadgets to attempt startup
-                        time_module.sleep(3)
-                        
-                        all_gadget_errors = []
-                        for sid in session_id_list:
-                            try:
-                                status = ingestion_client.get_collection_status(sid)
-                                if status and status.get('gadget_errors'):
-                                    all_gadget_errors.extend(status['gadget_errors'])
-                            except Exception as e:
-                                logger.warning(f"Failed to get status for session {sid}: {e}")
-                        
-                        # Save gadget errors to analysis output_config if any found
-                        if all_gadget_errors:
-                            logger.warning(f"Analysis {analysis_id} has gadget errors: {len(all_gadget_errors)}")
-                            try:
-                                updated_output = {
-                                    **(existing_output or {}),
-                                    "gadget_errors": all_gadget_errors,
-                                    "has_gadget_warnings": True
-                                }
-                                db_manager.update_analysis_sync(analysis_id, {"output_config": updated_output})
-                                logger.info(f"Saved gadget errors to analysis {analysis_id} metadata (async)")
-                            except Exception as e:
-                                logger.error(f"Failed to save gadget errors to analysis: {e}")
-                    except Exception as e:
-                        logger.error(f"Background gadget error check failed: {e}")
+                if session_ids:
+                    def _check_gadget_errors_background(analysis_id: int, session_id_list: list, existing_output: dict):
+                        """Background task to check gadget errors after startup delay"""
+                        import time as time_module  # Local import for thread safety
+                        try:
+                            time_module.sleep(3)
+                            
+                            all_gadget_errors = []
+                            for sid in session_id_list:
+                                try:
+                                    status = ingestion_client.get_collection_status(sid)
+                                    if status and status.get('gadget_errors'):
+                                        all_gadget_errors.extend(status['gadget_errors'])
+                                except Exception as e:
+                                    logger.warning(f"Failed to get status for session {sid}: {e}")
+                            
+                            if all_gadget_errors:
+                                logger.warning(f"Analysis {analysis_id} has gadget errors: {len(all_gadget_errors)}")
+                                try:
+                                    updated_output = {
+                                        **(existing_output or {}),
+                                        "gadget_errors": all_gadget_errors,
+                                        "has_gadget_warnings": True
+                                    }
+                                    db_manager.update_analysis_sync(analysis_id, {"output_config": updated_output})
+                                    logger.info(f"Saved gadget errors to analysis {analysis_id} metadata (async)")
+                                except Exception as e:
+                                    logger.error(f"Failed to save gadget errors to analysis: {e}")
+                        except Exception as e:
+                            logger.error(f"Background gadget error check failed: {e}")
+                    
+                    existing_output = clean_output
+                    thread = threading.Thread(
+                        target=_check_gadget_errors_background,
+                        args=(request.analysis_id, list(session_ids), existing_output),
+                        daemon=True
+                    )
+                    thread.start()
                 
-                # Start background thread (non-blocking)
-                existing_output = clean_output
-                thread = threading.Thread(
-                    target=_check_gadget_errors_background,
-                    args=(request.analysis_id, list(session_ids), existing_output),
-                    daemon=True  # Thread will exit when main process exits
-                )
-                thread.start()
-                
-                # Build success message
-                if failed_clusters:
-                    message = f"Analysis started on {len(session_ids)}/{len(cluster_ids)} clusters"
+                parts = []
+                if session_ids:
+                    if failed_clusters:
+                        parts.append(f"L4 on {len(session_ids)}/{len(cluster_ids)} clusters")
+                    else:
+                        parts.append(f"L4 on {len(cluster_ids)} cluster(s)")
+                if l7_started_clusters:
+                    if len(l7_started_clusters) < len(cluster_ids) and wants_l7:
+                        parts.append(f"L7 on {len(l7_started_clusters)}/{len(cluster_ids)} clusters")
+                    else:
+                        parts.append(f"L7 on {len(l7_started_clusters)} cluster(s)")
+                warnings = []
+                if analysis_level == "both":
+                    if wants_l4 and not l4_ok:
+                        warnings.append("L4 collection failed")
+                    if wants_l7 and not l7_ok:
+                        warnings.append("L7 collection failed")
+                if parts:
+                    message = f"Analysis started: {', '.join(parts)}"
+                    if warnings:
+                        message += f" (Warning: {', '.join(warnings)})"
                 else:
-                    message = f"Analysis started successfully on {len(cluster_ids)} cluster(s)"
+                    message = "Analysis started successfully"
                 
                 return analysis_orchestrator_pb2.StartAnalysisResponse(
                     success=True,
                     message=message,
                     task_assignments=task_assignments
                 )
+            
+            if wants_l7 and not l7_ok and wants_l4 and not l4_ok:
+                fail_msg = "Failed to start L4 and L7 collection"
+            elif wants_l7 and not l7_ok:
+                fail_msg = "Failed to start L7 collection"
+            elif wants_l4 and not l4_ok:
+                fail_msg = f"Failed to start analysis on all {len(cluster_ids)} clusters"
             else:
-                # All clusters failed
-                return analysis_orchestrator_pb2.StartAnalysisResponse(
-                    success=False,
-                    message=f"Failed to start analysis on all {len(cluster_ids)} clusters",
-                    task_assignments=[]
-                )
+                fail_msg = "Failed to start analysis"
+            
+            return analysis_orchestrator_pb2.StartAnalysisResponse(
+                success=False,
+                message=fail_msg,
+                task_assignments=[]
+            )
         
         except Exception as e:
             logger.error(f"Failed to start analysis {request.analysis_id}: {e}", exc_info=True)
@@ -531,20 +664,80 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
                 task_assignments=[]
             )
     
-    def StopAnalysis(self, request, context):
-        """Stop an analysis (stops eBPF collection) - supports multi-cluster"""
+    @staticmethod
+    def _normalize_cluster_ids(analysis) -> list:
+        """Safely extract cluster_ids list from analysis object (handles JSON string, list, or None)."""
+        raw = getattr(analysis, "cluster_ids", None) or []
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                raw = []
+        if not isinstance(raw, list):
+            raw = []
+        if not raw:
+            cid = getattr(analysis, "cluster_id", None)
+            raw = [cid] if cid else []
+        return raw
+
+    def _stop_l7_collection(self, analysis_id: int):
+        """Stop L7 (Beyla) collection for an analysis. Returns True if stopped, False on error, None if N/A."""
         try:
+            analysis = db_manager.get_analysis_sync(analysis_id)
+            if not analysis:
+                return None
+            level = ((getattr(analysis, "analysis_level", None) or "") ).strip().lower()
+            if level not in ("l7", "both"):
+                return None
+
+            cluster_ids = self._normalize_cluster_ids(analysis)
+
+            if not cluster_ids:
+                logger.warning("L7 stop: no cluster_ids for analysis_id=%s, cannot send stop RPCs", analysis_id)
+                return False
+
+            from app.l7_ingestion_client import L7IngestionClient
+            l7_client = L7IngestionClient(
+                host=settings.l7_ingestion_host,
+                port=settings.l7_ingestion_port,
+            )
+            try:
+                any_real_failure = False
+                for cid in cluster_ids:
+                    result = l7_client.stop_l7_collection(str(analysis_id), cluster_id=str(cid))
+                    ok = bool(result.get("success"))
+                    msg = result.get("message", "")
+                    logger.info("L7 collection stop analysis_id=%s cluster_id=%s result=%s", analysis_id, cid, result)
+                    if not ok and "not found" not in msg.lower():
+                        any_real_failure = True
+                return not any_real_failure
+            finally:
+                l7_client.close()
+        except Exception as e:
+            logger.error("Failed to stop L7 collection analysis_id=%s: %s", analysis_id, e)
+            return False
+    
+    def StopAnalysis(self, request, context):
+        """Stop an analysis (stops eBPF and L7 collection) - supports multi-cluster"""
+        try:
+            l7_stopped = self._stop_l7_collection(request.analysis_id)
+            
             # Check if we have active sessions for this analysis
             session_ids_str = self.active_sessions.get(request.analysis_id)
             
             if not session_ids_str:
-                logger.warning(f"No active session found for analysis {request.analysis_id}")
-                # Still try to update status (sync)
+                logger.warning(f"No active L4 session found for analysis {request.analysis_id}")
                 db_manager.update_analysis_status_sync(request.analysis_id, AnalysisStatus.STOPPED)
+                if l7_stopped is True:
+                    msg = "L7 collection stopped successfully"
+                elif l7_stopped is False:
+                    msg = "L7 collection stop failed (L7 may still be running)"
+                else:
+                    msg = "Analysis was not running"
                 return common_pb2.StatusResponse(
-                    success=True,
-                    message="Analysis was not running",
-                    code=0
+                    success=l7_stopped is not False,
+                    message=msg,
+                    code=0 if l7_stopped is not False else 500
                 )
             
             # Multi-cluster support: session_ids are comma-separated
@@ -606,17 +799,24 @@ class AnalysisOrchestratorService(analysis_orchestrator_pb2_grpc.AnalysisOrchest
             # Update analysis status (sync)
             db_manager.update_analysis_status_sync(request.analysis_id, AnalysisStatus.STOPPED)
             
+            # Build L7 status suffix
+            l7_suffix = ""
+            if l7_stopped is True:
+                l7_suffix = " | L7 stopped"
+            elif l7_stopped is False:
+                l7_suffix = " | L7 stop FAILED (may still be running)"
+            
             # Return appropriate response
             if stopped_count == len(session_ids):
-                message = f"Analysis stopped successfully ({stopped_count} session(s))"
-                return common_pb2.StatusResponse(success=True, message=message, code=0)
+                message = f"Analysis stopped successfully ({stopped_count} session(s)){l7_suffix}"
+                return common_pb2.StatusResponse(success=l7_stopped is not False, message=message, code=0)
             elif stopped_count > 0:
-                message = f"Analysis partially stopped: {stopped_count}/{len(session_ids)} sessions"
-                return common_pb2.StatusResponse(success=True, message=message, code=0)
+                message = f"Analysis partially stopped: {stopped_count}/{len(session_ids)} sessions{l7_suffix}"
+                return common_pb2.StatusResponse(success=l7_stopped is not False, message=message, code=0)
             else:
                 return common_pb2.StatusResponse(
                     success=False,
-                    message="Failed to stop collection via Ingestion Service",
+                    message=f"Failed to stop collection via Ingestion Service{l7_suffix}",
                     code=500
                 )
         

@@ -3,7 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ingestion-service
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: ingestion-service
     component: ingestion
@@ -24,7 +24,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ingestion-service
-  namespace: flowfish
+  namespace: {{OPENSHIFT_NAMESPACE}}
   labels:
     app: ingestion-service
     component: ingestion
@@ -48,7 +48,7 @@ spec:
       serviceAccountName: flowfish
       containers:
         - name: ingestion-service
-          image: taylanbakircioglu/flowfish:ingestion-service-latest
+          image: {{HARBOR_REGISTRY}}/{{HARBOR_PROJECT}}/flowfish-ingestion-service:{{IMAGE_TAG}}
           imagePullPolicy: Always
           ports:
             - name: grpc
@@ -82,7 +82,7 @@ spec:
             - name: GADGET_PROTOCOL
               value: "kubectl"
             - name: GADGET_NAMESPACE
-              value: "flowfish"
+              value: "{{OPENSHIFT_NAMESPACE}}"
             - name: GADGET_REGISTRY
               valueFrom:
                 configMapKeyRef:
@@ -98,6 +98,52 @@ spec:
                 configMapKeyRef:
                   name: backend-config
                   key: GADGET_IMAGE_PREFIX
+            # Cold-start tolerance for the IG DaemonSet warm-up race.
+            #
+            # The first analysis run after an IG (re)install pays the
+            # OCI image-pull + gRPC dial latency on every gadget. WAIT
+            # gives the bulk of gadgets time to come up; RETRY auto-
+            # restarts any that lost the race so the operator never
+            # sees a transient warning. The retry recreates both the
+            # gadget subprocess and its collection task together — see
+            # TraceManager._retry_failed_gadgets.
+            #
+            # Bump WAIT if your registry is far/slow (e.g. air-gapped
+            # cluster pulling from a remote Harbor mirror). Bump RETRY
+            # only if a single warm-path retry is still not enough,
+            # which would point at a deeper IG/network issue.
+            - name: GADGET_STARTUP_WAIT_SECONDS
+              value: "8.0"
+            - name: GADGET_STARTUP_RETRY_ATTEMPTS
+              # Two retries (was 1) — covers the heavy-load path where the
+              # first retry hits an IG pod that's still finishing its post-
+              # SIGKILL restart, while the second retry catches the pod
+              # once it's actually warm. Each attempt waits a progressively
+              # longer pre-wait (see GADGET_RETRY_BACKOFF_MULTIPLIER).
+              value: "2"
+            - name: GADGET_RETRY_BACKOFF_MULTIPLIER
+              # Multiplier applied to GADGET_RETRY_PRE_WAIT_SECONDS on each
+              # attempt past the first: with 1.5x and 12s base the wait
+              # progression is 12s → 18s → 27s, ... Set to 1.0 for legacy
+              # constant backoff (each retry waits the same amount).
+              value: "1.5"
+            # Stagger interval between consecutive gadget launches and
+            # extra wait before retries. Together these prevent the IG
+            # DaemonSet from being flooded by an 11-gadget burst (which
+            # in production triggered "lost samples / bad fd" errors,
+            # IG SIGKILL exit 137, and trace_sni SIGABRT). 1.0s stagger
+            # adds ~11s to a full 11-gadget session start; 12s retry
+            # pre-wait covers IG container restart bootstrap.
+            #
+            # Stagger raised 0.5s → 1.0s after observing kprobe-heavy
+            # gadgets (trace_tcp / trace_open / trace_capabilities /
+            # trace_bind) racing for kernel kprobe attach slots when
+            # spawned 0.5s apart on a busy cluster. Tune up if your
+            # cluster has even heavier per-node traffic.
+            - name: GADGET_STARTUP_STAGGER_SECONDS
+              value: "1.0"
+            - name: GADGET_RETRY_PRE_WAIT_SECONDS
+              value: "12.0"
             # Encryption key for remote cluster credentials
             - name: FLOWFISH_ENCRYPTION_KEY
               valueFrom:

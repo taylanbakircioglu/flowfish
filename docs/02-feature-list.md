@@ -5,6 +5,7 @@ This document describes all Flowfish platform features in detail, organized by p
 ## 📋 Table of Contents
 
 - [Phase 1: MVP (Minimum Viable Product)](#phase-1-mvp-minimum-viable-product)
+  - [1.X. L7 Application Level Service Map](#1x-l7-application-level-service-map-grafana-beyla)
 - [Phase 2: Advanced Features](#phase-2-advanced-features)
 - [Phase 3: Enterprise Features](#phase-3-enterprise-features)
 
@@ -586,6 +587,106 @@ This document describes all Flowfish platform features in detail, organized by p
 **Dependencies:**
 - `GET /api/v1/dependencies/graph`
 - `GET /api/v1/dependencies/map`
+
+---
+
+### 1.X. L7 Application Level Service Map (Grafana Beyla)
+
+#### 1.X.1. Beyla eBPF Agent Deployment
+- ✅ Grafana Beyla deployed as DaemonSet for L7 traffic capture
+- ✅ HTTP, gRPC, and DNS protocol interception via eBPF
+- ✅ Cluster management integration (install/upgrade/uninstall scripts)
+- ✅ Health status monitoring per cluster
+- ✅ Cluster scale presets (small/medium/large/xlarge) for resource limits
+
+#### 1.X.2. flowfish-l7-collector
+- ✅ In-cluster OTLP HTTP receiver (bridges Beyla push to Flowfish pull)
+- ✅ Circular event buffer with cursor-based pagination
+- ✅ K8s metadata enrichment (IP → workload resolution)
+- ✅ Pull API for Flowfish central platform
+
+#### 1.X.3. L7 Ingestion Pipeline
+- ✅ L7 Ingestion Service with K8s API Service Proxy polling
+- ✅ Two-layer event transformation (collector → ingestion → RabbitMQ)
+- ✅ Per-analysis enrichment (analysis_id, cluster_id)
+- ✅ L7 capture filters (namespace, service, HTTP method/status/path)
+- ✅ Isolated RabbitMQ exchanges and queues (flowfish.l7.*)
+
+#### 1.X.4. L7 Data Storage
+- ✅ ClickHouse tables: l7_http_flows, l7_grpc_flows, l7_dns_flows
+- ✅ 5-minute aggregation materialized view for HTTP
+- ✅ Neo4j L7Workload nodes and L7_COMMUNICATES_WITH relationships
+- ✅ 30-day TTL on ClickHouse L7 tables
+
+#### 1.X.5. L7 Service Map UI
+- ✅ Interactive graph visualization with 16 layout algorithms
+- ✅ Protocol-aware edge coloring (HTTP/gRPC/DNS)
+- ✅ Namespace grouping and filtering
+- ✅ Edge click for communication details (latency, error rates, request counts)
+- ✅ API gateway chain resolution (A → APISIX → B)
+- ✅ Network type classification (Pod-Network, Service-Network, Node-Network, Internal, External) with L4-consistent coloring
+- ✅ IP metadata enrichment: Node IP → cluster-infra, Service VIP → service name, unresolved IP → CIDR classification
+- ✅ Dependency guard: "Dim System Namespaces" mode (opacity 0.15) instead of hiding — edges always preserved
+- ✅ Multi-protocol backend filtering (`protocols=http,grpc` with backward-compatible `protocol` parameter)
+- ✅ Error breakdown tooltip on stats bar (HTTP status code distribution)
+- ✅ Error breakdown panel in workload drawer (4xx/5xx distribution per workload)
+- ✅ Configurable edge limit (200/500/1k/2k/5k) with alert banner when truncated
+- ✅ Node visual indicators: network type icon, owner kind tag, external badge
+
+#### 1.X.6. Analysis Wizard L7 Support
+- ✅ L4/L7/Both analysis level selection
+- ✅ L7 protocol cards with volume/impact indicators
+- ✅ L7 capture filters configuration
+- ✅ Protocol rate estimation and data volume warnings
+- ✅ Agent health pre-check (Inspector Gadget + Beyla)
+
+#### 1.X.7. Integration Hub L7 Support
+- ✅ Network Level (L3/L4) and Application Level (L7) toggle
+- ✅ Unified L4+L7 dependency view — `analysis_level=both` runs the L4 and L7 endpoints in parallel (`Promise.allSettled`) and renders Network/Application tabs in the Preview step plus an L4/L7 toggle in the Integration Code step
+- ✅ Shared identification surface — both L4 and L7 summary endpoints accept `annotation_key/value`, `label_key/value`, `owner_name` (alias for L7 `workload_name`), and `pod_name`; values support fnmatch globs (`*`, `?`, `[seq]`)
+- ✅ `is_matched` flag on L7 summary results so callers can distinguish workloads matched by the filter from their immediate neighbours
+- ✅ L7-specific code snippets (cURL, Python, JavaScript, Pipeline)
+
+#### 1.X.8. L7 API Endpoints
+- `GET /api/v1/l7/dependencies/graph`
+- `GET /api/v1/l7/communications`
+- `GET /api/v1/l7/communications/stats`
+- `GET /api/v1/l7/communications/error-stats`
+- `GET /api/v1/l7/dependencies/summary`
+- `GET /api/v1/l7/dependencies/tree-summary`
+- `GET /api/v1/l7/events/http`
+- `GET /api/v1/l7/events/grpc`
+- `GET /api/v1/l7/events/dns`
+- `GET /api/v1/l7/events/stats`
+- `GET /api/v1/l7/events/histogram`
+- `GET /api/v1/l7/events/traces` *(distributed tracing — recent traces list)*
+- `GET /api/v1/l7/events/traces/{trace_id}` *(distributed tracing — span detail)*
+- `GET /api/v1/dependencies/unified-summary`
+- `GET /api/v1/settings/beyla`
+- `PUT /api/v1/settings/beyla`
+
+#### 1.X.9. L7 Distributed Tracing (W3C OpenTelemetry)
+- ✅ Beyla passive mode (`ebpf.track_request_headers: true`) reads existing
+  `traceparent` headers without injecting (no extra kernel privileges, no
+  request mutation)
+- ✅ Trace context (trace_id, span_id, parent_span_id, span_name, span_kind)
+  persisted in ClickHouse `l7_http_flows`, `l7_grpc_flows`, `l7_dns_flows`
+  with bloom-filter index for fast `trace_id` lookup
+- ✅ Trace properties (last_trace_id, last_span_id, trace_count) stamped on
+  Neo4j `L7_COMMUNICATES_WITH` relationships
+- ✅ Cross-cluster `SAME_WORKLOAD` periodic matcher with 3 confidence
+  layers: trace_id (high), exact name (medium), hostname (medium) —
+  bridges `external` placeholder nodes to local cluster nodes
+- ✅ Service Map: edge-click opens trace drawer for traced edges; cluster
+  badges visible on nodes
+- ✅ Trace Explorer page (`/discovery/trace-explorer`) with workload and
+  trace_id search, recent traces table, waterfall detail view
+- ✅ TraceWaterfall component with parent/child indentation, span_kind,
+  protocol coloring, error highlighting, and sampling/filter warnings
+- ✅ Feature-flagged: `L7_TRACING_ENABLED` env var on writers (default off
+  in production manifests, on in local-test)
+- ✅ Graceful schema fallback: writer falls back to legacy INSERT when
+  trace columns are not yet migrated, preventing deploy-order races
 
 ---
 ## Phase 2: Advanced Features
@@ -1257,9 +1358,10 @@ Range: 0-100
 
 ### 2.10. Integration Hub
 - Four-step guided wizard (Integration Type → Configure → Preview → Integration Code) with two integration paths: Dependency Analysis and Blast Radius Gate
-- Configure step: analysis selection, service identification method (Annotation, Label, Namespace + Deployment, Pod Name, Advanced), search depth, live test query
-- Preview step: per-service dependency breakdown with expandable matched services, downstream/callers by category, hop distance visualization for multi-depth queries, and aggregate summary
-- Integration Code step: tabbed snippet generation (Pipeline YAML, cURL, Python, JavaScript, Blast Radius)
+- Configure step: analysis selection, service identification method (Annotation, Label, Namespace + Deployment / Workload, Pod Name, Advanced), search depth, live test query. Namespace lives as an orthogonal field that applies to every method (including L7).
+- Preview step: per-service dependency breakdown with expandable matched services, downstream/callers by category, hop distance visualization for multi-depth queries, and aggregate summary. For `analysis_level=both` selections, the Preview renders **two tabs** — *Network Dependencies (L4)* (`by_category` grouping) and *Application Dependencies (L7)* (`by_protocol` grouping). v2.6.0+
+- Integration Code step: tabbed snippet generation (Pipeline YAML, cURL, Python, JavaScript, Blast Radius). BOTH-mode adds a top-level L4/L7 radio toggle that swaps the active snippet set between Network and Application without duplicating tabs. v2.6.0+
+- BOTH-mode dual query: Test Query fans out to `GET /communications/dependencies/summary` (L4), `GET /l7/dependencies/summary` (L7), and `GET /l7/dependencies/tree-summary` (L7) in parallel via `Promise.allSettled`. L4 covers every selected analysis, L7 queries the first analysis with a toast warning when additional analyses are dropped. Partial failure (e.g. L7 endpoint down) still enables the Preview — the failing tab carries an inline error banner. v2.6.0+
 - Dedicated pipeline platforms with platform-specific templates: Azure DevOps, GitHub Actions, GitLab CI, Jenkins, and Other (Generic)
 - Blast Radius tab: pre-deployment risk assessment snippets with cross-link to Blast Radius Oracle page
 - Theme-aware UI with Ant Design token-based colors for light/dark mode consistency

@@ -19,6 +19,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 from enum import Enum
+import re
 import structlog
 import os
 import json
@@ -34,6 +35,27 @@ from services.change_detection_service import (
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+# Validate change_id (UUID) at the API boundary. Without this, accidental
+# URLs like `/changes/detected` (typo, stale frontend route, or copy/paste)
+# hit the `/changes/{change_id}` path parameter and reach ClickHouse with
+# a non-UUID literal — ClickHouse then surfaces a multi-page stack trace
+# as a 500. Pre-validating gives the operator a clean 400 instead.
+_CHANGE_ID_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _validate_change_id(change_id: str) -> str:
+    if not change_id or not _CHANGE_ID_UUID_RE.match(change_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid change_id: expected a UUID (e.g. "
+                "'550e8400-e29b-41d4-a716-446655440000')"
+            ),
+        )
+    return change_id
 
 # Feature flags
 RUN_BASED_FILTERING = os.getenv("RUN_BASED_FILTERING_ENABLED", "true").lower() == "true"
@@ -743,9 +765,15 @@ async def get_changes(
         except ValueError:
             pass
     
-    # Require cluster_id for ClickHouse query
-    if not cluster_id:
-        logger.warning("No cluster_id provided, returning empty result")
+    # Require either cluster_id OR analysis_id. If both are missing the
+    # query would scan every cluster's history, so refuse it cleanly.
+    # Multi-cluster analyses (analysis_id only, no cluster_id) are now
+    # supported: the helper rewrites the WHERE clause to cover every
+    # `<analysis_id>-<cluster_id>` row.
+    if not cluster_id and not analysis_id:
+        logger.warning(
+            "Neither cluster_id nor analysis_id provided, returning empty result"
+        )
         return ChangesResponse(
             changes=[],
             total=0,
@@ -761,7 +789,7 @@ async def get_changes(
                 summary={"added": 0, "removed": 0, "changed": 0}
             )
         )
-    
+
     # Query ClickHouse (ONLY storage for change events)
     try:
         result = await get_changes_from_clickhouse(
@@ -995,7 +1023,7 @@ async def _get_comparison_data(cluster_id: int, analysis_id: Optional[int] = Non
 
 
 async def get_changes_from_clickhouse(
-    cluster_id: int,
+    cluster_id: Optional[int],
     analysis_id: Optional[int],
     run_ids: Optional[List[int]],
     start_time: Optional[datetime],
@@ -1007,25 +1035,65 @@ async def get_changes_from_clickhouse(
 ) -> ChangesResponse:
     """
     Get changes from ClickHouse (ONLY storage for change events)
-    
+
     This provides better performance for large datasets and run-based filtering.
     PostgreSQL change_events table has been removed.
-    
+
     Uses the ClickHouseService from database.clickhouse module.
+
+    Multi-cluster note: when ``cluster_id`` is None and ``analysis_id`` is
+    provided, the analysis_id LIKE '<id>-%' pattern covers every cluster
+    that participated in the analysis (worker stores per-cluster suffix).
+    Without this branch the endpoint silently returned 0 changes for
+    multi-cluster analyses.
     """
     from database.clickhouse import get_clickhouse_client
-    
+
     try:
         client = get_clickhouse_client()
-        
+
         # Build WHERE clauses:
         # - base_where: cluster/analysis/time scoping (used for stats - always unfiltered)
         # - filtered_where: base + change_type/risk_level filters (used for paginated results)
-        base_parts = [f"cluster_id = {cluster_id}"]
-        
+        base_parts: List[str] = []
+        if cluster_id is not None:
+            base_parts.append(f"cluster_id = {int(cluster_id)}")
+
         if analysis_id:
-            ch_aid = await _get_ch_analysis_id(analysis_id, cluster_id)
-            base_parts.append(f"analysis_id = '{ch_aid}'")
+            if cluster_id is not None:
+                # Single-cluster path: exact match on '46-15' style id.
+                ch_aid = await _get_ch_analysis_id(analysis_id, cluster_id)
+                base_parts.append(f"analysis_id = '{ch_aid}'")
+            else:
+                # Multi-cluster path: cover every cluster's per-suffix id
+                # ('46-15', '46-16', ...) plus the bare form ('46') for
+                # legacy rows written before the suffix convention landed.
+                aid_int = int(analysis_id)
+                base_parts.append(
+                    f"(analysis_id = '{aid_int}' "
+                    f"OR analysis_id LIKE '{aid_int}-%')"
+                )
+
+        # Defensive: if neither scope was supplied we'd return *all*
+        # change_events rows from every analysis. Refuse to do that and
+        # mirror the original empty-response behaviour to keep the API
+        # contract intact.
+        if not base_parts:
+            return ChangesResponse(
+                changes=[],
+                total=0,
+                stats=ChangeStats(
+                    total_changes=0,
+                    by_type={},
+                    by_risk={},
+                    by_namespace={},
+                ),
+                comparison=SnapshotComparison(
+                    before={"workloads": 0, "connections": 0, "namespaces": 0},
+                    after={"workloads": 0, "connections": 0, "namespaces": 0},
+                    summary={"added": 0, "removed": 0, "changed": 0},
+                ),
+            )
         
         if run_ids:
             run_ids_str = ",".join(str(r) for r in run_ids)
@@ -1246,7 +1314,8 @@ async def get_change_details(
     change_service: ChangeDetectionService = Depends(get_change_detection_service)
 ):
     """Get detailed information about a specific change from ClickHouse"""
-    
+    _validate_change_id(change_id)
+
     try:
         from database.clickhouse import get_clickhouse_client
         
@@ -2406,6 +2475,7 @@ async def get_change_impact(
     Shorthand endpoint that automatically fetches the change details
     and runs impact analysis.
     """
+    _validate_change_id(change_id)
     try:
         from database.clickhouse import get_clickhouse_client
         
@@ -2470,6 +2540,7 @@ async def get_correlated_changes(
     - Cascade effects (one change triggering others)
     - Configuration drift patterns
     """
+    _validate_change_id(change_id)
     try:
         correlated = await change_service.get_correlated_changes(
             cluster_id=cluster_id,

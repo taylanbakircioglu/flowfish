@@ -11,6 +11,50 @@ from database.postgresql import database
 
 logger = structlog.get_logger()
 
+# user-agents is an optional dependency — keep the import guarded so a
+# fresh deploy that hasn't installed it yet still logs activities (just
+# without the structured client metadata).
+try:  # pragma: no cover - simple import guard
+    from user_agents import parse as _parse_user_agent  # type: ignore
+except Exception:  # pragma: no cover
+    _parse_user_agent = None  # type: ignore[assignment]
+
+
+def _summarize_user_agent(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse a raw User-Agent header into a structured summary.
+
+    Returns ``None`` if no useful information can be extracted (so we don't
+    bloat the JSONB column with empty objects). Used by ``log_activity`` to
+    enrich the ``details`` payload with browser/OS/device info that the
+    UserManagement Activity Log detail drawer can render directly.
+    """
+    if not raw or not _parse_user_agent:
+        return None
+    try:
+        parsed = _parse_user_agent(raw)
+        summary = {
+            "browser": (
+                f"{parsed.browser.family} {parsed.browser.version_string}".strip()
+                if parsed.browser.family
+                else None
+            ),
+            "os": (
+                f"{parsed.os.family} {parsed.os.version_string}".strip()
+                if parsed.os.family
+                else None
+            ),
+            "device": parsed.device.family if parsed.device.family else None,
+            "is_bot": bool(parsed.is_bot),
+            "is_mobile": bool(parsed.is_mobile),
+            "is_tablet": bool(parsed.is_tablet),
+            "is_pc": bool(parsed.is_pc),
+        }
+        # Strip falsy entries to keep the JSON small.
+        cleaned = {k: v for k, v in summary.items() if v not in (None, "", False) or k.startswith("is_")}
+        return cleaned or None
+    except Exception:  # pragma: no cover - defensive
+        return None
+
 
 class ActivityService:
     """Service for logging user activities"""
@@ -82,8 +126,28 @@ class ActivityService:
                  CAST(:details AS jsonb), :ip_address, :user_agent, :status, :error_message, NOW())
                 RETURNING id
             """
-            
+
             import json
+
+            # Plan v3 Akış F m.10 (B4.7): enrich the JSONB `details` payload
+            # with a parsed user-agent summary so the UserManagement detail
+            # drawer can render structured browser/OS info instead of raw
+            # headers. We never overwrite caller-provided keys and keep the
+            # raw header on a separate `client.user_agent_raw` slot for
+            # forensics. If user-agents isn't installed we silently skip.
+            details_payload: Dict[str, Any] = dict(details) if details else {}
+            ua_summary = _summarize_user_agent(user_agent)
+            if ua_summary or user_agent:
+                client_meta = dict(details_payload.get("client") or {})
+                if ua_summary:
+                    for k, v in ua_summary.items():
+                        client_meta.setdefault(k, v)
+                if user_agent and "user_agent_raw" not in client_meta:
+                    client_meta["user_agent_raw"] = user_agent[:512]
+                if ip_address and "ip_address" not in client_meta:
+                    client_meta["ip_address"] = ip_address
+                details_payload["client"] = client_meta
+
             result = await database.fetch_one(query, {
                 "user_id": user_id,
                 "username": username,
@@ -91,7 +155,7 @@ class ActivityService:
                 "resource_type": resource_type,
                 "resource_id": str(resource_id) if resource_id else None,
                 "resource_name": resource_name,
-                "details": json.dumps(details) if details else "{}",
+                "details": json.dumps(details_payload),
                 "ip_address": ip_address,
                 "user_agent": user_agent,
                 "status": status,

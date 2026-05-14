@@ -4,7 +4,7 @@ Sprint 5-6: Analysis Wizard & Communication Discovery
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
 import structlog
@@ -241,6 +241,14 @@ class AnalysisCreateRequest(BaseModel):
         default=["all"],
         description="Change types to track: ['all'] or specific types like ['replica_changed', 'connection_added', 'port_changed']"
     )
+    analysis_level: Literal["l4", "l7", "both"] = Field(
+        default="l4",
+        description="Network capture depth: 'l4' (Inspector Gadget), 'l7' (Beyla/Kubeshark), or 'both'",
+    )
+    l7_config: Optional[dict] = Field(
+        default=None,
+        description="Optional L7 capture configuration (protocols, sampling, filters) when analysis_level is l7 or both",
+    )
 
 class AnalysisResponse(BaseModel):
     """Analysis response model with multi-cluster support"""
@@ -272,6 +280,8 @@ class AnalysisResponse(BaseModel):
     last_run_at: Optional[datetime] = None
     schedule_run_count: int = 0
     max_scheduled_runs: Optional[int] = None
+    analysis_level: str = "l4"
+    l7_config: Optional[dict] = None
 
 class AnalysisRunResponse(BaseModel):
     """Analysis run response"""
@@ -347,15 +357,19 @@ async def create_analysis(
             status, scope_type, scope_config,
             gadget_config, time_config, output_config, 
             change_detection_enabled, change_detection_strategy, change_detection_types,
+            analysis_level, l7_config,
             created_by
         ) VALUES (
             :name, :description, :cluster_id, :cluster_ids, :is_multi_cluster,
             'draft', :scope_type, :scope_config,
             :gadget_config, :time_config, :output_config,
             :change_detection_enabled, :change_detection_strategy, :change_detection_types,
+            :analysis_level, CAST(:l7_config AS jsonb),
             :created_by
         ) RETURNING *
     """
+
+    l7_json = json.dumps(analysis.l7_config) if analysis.l7_config else None
 
     values = {
         "name": analysis.name,
@@ -371,6 +385,8 @@ async def create_analysis(
         "change_detection_enabled": analysis.change_detection_enabled,
         "change_detection_strategy": analysis.change_detection_strategy,
         "change_detection_types": json.dumps(analysis.change_detection_types),
+        "analysis_level": (analysis.analysis_level or "l4").strip().lower(),
+        "l7_config": l7_json,
         "created_by": current_user.get('user_id', 1)
     }
     
@@ -421,6 +437,8 @@ async def create_analysis(
         response_data['cluster_ids'] = json.loads(response_data['cluster_ids']) if isinstance(response_data['cluster_ids'], str) else response_data['cluster_ids']
     if response_data.get('change_detection_types'):
         response_data['change_detection_types'] = json.loads(response_data['change_detection_types']) if isinstance(response_data['change_detection_types'], str) else response_data['change_detection_types']
+    if response_data.get('l7_config') and isinstance(response_data['l7_config'], str):
+        response_data['l7_config'] = json.loads(response_data['l7_config'])
     
     # Log activity
     await activity_service.log_activity(
@@ -446,7 +464,8 @@ async def create_analysis(
 async def get_analyses(
     cluster_id: Optional[int] = None,
     status: Optional[str] = None,
-    include_multi_cluster: bool = True
+    include_multi_cluster: bool = True,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Get all analyses with optional filters
@@ -495,6 +514,8 @@ async def get_analyses(
             row_dict['cluster_ids'] = json.loads(row_dict['cluster_ids']) if isinstance(row_dict['cluster_ids'], str) else row_dict['cluster_ids']
         if row_dict.get('change_detection_types'):
             row_dict['change_detection_types'] = json.loads(row_dict['change_detection_types']) if isinstance(row_dict['change_detection_types'], str) else row_dict['change_detection_types']
+        if row_dict.get('l7_config') and isinstance(row_dict['l7_config'], str):
+            row_dict['l7_config'] = json.loads(row_dict['l7_config'])
         response_list.append(AnalysisResponse(**row_dict))
 
     return response_list
@@ -528,6 +549,8 @@ async def get_analysis(
         row_dict['cluster_ids'] = json.loads(row_dict['cluster_ids']) if isinstance(row_dict['cluster_ids'], str) else row_dict['cluster_ids']
     if row_dict.get('change_detection_types'):
         row_dict['change_detection_types'] = json.loads(row_dict['change_detection_types']) if isinstance(row_dict['change_detection_types'], str) else row_dict['change_detection_types']
+    if row_dict.get('l7_config') and isinstance(row_dict['l7_config'], str):
+        row_dict['l7_config'] = json.loads(row_dict['l7_config'])
 
     return AnalysisResponse(**row_dict)
 
@@ -600,12 +623,15 @@ async def start_analysis(
     update_query = "UPDATE analyses SET status = 'running', started_at = NOW(), updated_at = NOW() WHERE id = :id"
     await database.execute(update_query, {"id": analysis_id})
     
+    analysis_level = (analysis.get("analysis_level") or "l4").strip().lower()
+
     # Start analysis via Analysis Orchestrator (microservice)
     try:
         logger.info("Calling Analysis Orchestrator to start analysis",
                    analysis_id=analysis_id)
-        
-        orchestrator_response = await analysis_orchestrator_client.start_analysis(analysis_id)
+        orchestrator_response = await analysis_orchestrator_client.start_analysis(
+            analysis_id, analysis_level=analysis_level
+        )
         
         logger.info("Analysis Orchestrator started analysis successfully",
                    analysis_id=analysis_id,
@@ -821,6 +847,34 @@ async def stop_analysis(
         except Exception as comm_err:
             logger.warning(f"Failed to get communications count: {comm_err}")
         
+        # L7 unique communications (dedup across HTTP/gRPC/DNS tables)
+        try:
+            aid_str = str(analysis_id)
+            l7_comm_query = f"""
+                SELECT count() as cnt FROM (
+                    SELECT DISTINCT src_workload, src_namespace, dst_workload, dst_namespace FROM (
+                        SELECT src_workload, src_namespace, dst_workload, dst_namespace
+                        FROM l7_http_flows
+                        WHERE analysis_id = '{aid_str}' OR analysis_id LIKE '{aid_str}-%'
+                        UNION ALL
+                        SELECT src_workload, src_namespace, dst_workload, dst_namespace
+                        FROM l7_grpc_flows
+                        WHERE analysis_id = '{aid_str}' OR analysis_id LIKE '{aid_str}-%'
+                        UNION ALL
+                        SELECT src_workload, src_namespace, dst_workload, dst_namespace
+                        FROM l7_dns_flows
+                        WHERE analysis_id = '{aid_str}' OR analysis_id LIKE '{aid_str}-%'
+                    )
+                )
+            """
+            l7_comm_result = await direct_repo._execute_query(l7_comm_query)
+            if l7_comm_result and len(l7_comm_result) > 0:
+                l7_comms = int(l7_comm_result[0].get('cnt', 0))
+                total_comms_clickhouse += l7_comms
+                communications_discovered = max(0, total_comms_clickhouse - previous_comms_total)
+        except Exception:
+            pass
+
         logger.info("Fetched analysis statistics from ClickHouse",
                    analysis_id=analysis_id,
                    total_events_clickhouse=total_events_clickhouse,
@@ -933,8 +987,8 @@ async def delete_analysis(
     import time
     start_time = time.time()
     
-    # Get analysis with cluster_id for comprehensive deletion
-    analysis_query = "SELECT status, name, cluster_id, is_scheduled FROM analyses WHERE id = :id"
+    # Get analysis with cluster_id and analysis_level for comprehensive deletion
+    analysis_query = "SELECT status, name, cluster_id, is_scheduled, analysis_level FROM analyses WHERE id = :id"
     analysis = await database.fetch_one(analysis_query, {"id": analysis_id})
     
     if not analysis:
@@ -962,7 +1016,16 @@ async def delete_analysis(
     neo4j_result = {}
     clickhouse_result = {}
     redis_result = {}
-    
+
+    # STEP -1: Best-effort L7 collection stop (safety net in case session lingers)
+    analysis_level = (analysis.get("analysis_level") or "l4").strip().lower()
+    if analysis_level in ("l7", "both"):
+        try:
+            await analysis_orchestrator_client.stop_analysis(analysis_id)
+            logger.info("Pre-delete L7 stop attempt completed", analysis_id=analysis_id)
+        except Exception as e:
+            logger.debug("Pre-delete stop attempt (expected if already stopped): %s", e)
+
     # STEP 0: Mark analysis as deleted in Redis cache
     # This prevents timeseries-writer and graph-writer from creating orphan data
     # while we're deleting
@@ -1003,6 +1066,18 @@ async def delete_analysis(
                       analysis_id=analysis_id, 
                       error=str(e))
         neo4j_result = {"error": str(e)}
+
+    # Delete L7 data from Neo4j (L7Workload nodes) if applicable
+    try:
+        from database.neo4j import neo4j_service as _neo4j
+        l7_neo4j_result = _neo4j.delete_l7_analysis_data(analysis_id)
+        if l7_neo4j_result.get("deleted_nodes", 0) > 0:
+            logger.info("Deleted L7 Neo4j data",
+                       analysis_id=analysis_id,
+                       deleted_nodes=l7_neo4j_result.get("deleted_nodes", 0))
+    except Exception as e:
+        logger.warning("Failed to delete L7 Neo4j data (continuing)",
+                      analysis_id=analysis_id, error=str(e))
     
     # Delete from ClickHouse (time-series events) - with polling
     # Try microservice first, then fallback to direct ClickHouse access
@@ -1049,6 +1124,33 @@ async def delete_analysis(
                       error=str(e))
         clickhouse_result = {"error": str(e)}
     
+    # Delete L7 ClickHouse data (l7_http_flows, l7_grpc_flows, l7_dns_flows)
+    try:
+        from config import get_clickhouse_config
+        import httpx
+        ch_config = get_clickhouse_config()
+        ch_url = f"http://{ch_config.get('host', 'clickhouse')}:{ch_config.get('port', 8123)}"
+        ch_db = ch_config.get('database', 'flowfish')
+        l7_tables = ["l7_http_flows", "l7_grpc_flows", "l7_dns_flows", "l7_http_flows_5min_mv"]
+        aid_str = str(analysis_id)
+        l7_ch_errors = []
+        for tbl in l7_tables:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    sql = f"ALTER TABLE {ch_db}.{tbl} DELETE WHERE analysis_id = '{aid_str}' OR analysis_id LIKE '{aid_str}-%'"
+                    resp = await client.post(ch_url, content=sql)
+                    if resp.status_code >= 400:
+                        l7_ch_errors.append(f"{tbl}: HTTP {resp.status_code}")
+            except Exception as tbl_err:
+                l7_ch_errors.append(f"{tbl}: {tbl_err}")
+        if l7_ch_errors:
+            logger.warning("L7 ClickHouse cleanup partial failures", analysis_id=analysis_id, errors=l7_ch_errors)
+        else:
+            logger.info("L7 ClickHouse cleanup done", analysis_id=analysis_id)
+    except Exception as e:
+        logger.warning("Failed to delete L7 ClickHouse data (continuing)",
+                      analysis_id=analysis_id, error=str(e))
+
     # Delete from Redis (cached data)
     try:
         from database.redis import redis_client
@@ -1067,6 +1169,9 @@ async def delete_analysis(
             f"*analysis*{analysis_id}*",
             f"*:analysis:{analysis_id}*",
             f"analysis:{analysis_id}:*",
+            f"flowfish:l7:stats:{analysis_id}",
+            f"flowfish:l7:graph:{analysis_id}:*",
+            f"flowfish:l7:cursor:{analysis_id}:*",
         ]
         
         for pattern in analysis_patterns:
@@ -1206,7 +1311,8 @@ async def delete_analysis(
         tables = [
             'network_flows', 'dns_queries', 'tcp_lifecycle', 'process_events',
             'file_operations', 'capability_checks', 'oom_kills', 'bind_events',
-            'sni_events', 'mount_events', 'workload_metadata', 'communication_edges'
+            'sni_events', 'mount_events', 'workload_metadata', 'communication_edges',
+            'l7_http_flows', 'l7_grpc_flows', 'l7_dns_flows',
         ]
         
         ch_config = get_clickhouse_config()
@@ -1230,16 +1336,17 @@ async def delete_analysis(
             except:
                 pass
         
-        # Delete orphaned data
+        # Delete orphaned data — analysis_id can be numeric or composite (e.g. "42-3")
         for orphan_id in orphaned_ids:
             try:
+                aid = int(orphan_id) if orphan_id.isdigit() else orphan_id
                 result = await direct_repo.delete_analysis_data(
-                    int(orphan_id) if orphan_id.isdigit() else 0,
-                    wait_for_completion=False,  # Don't wait, do async
+                    aid,
+                    wait_for_completion=False,
                     timeout_seconds=10
                 )
                 orphan_result["cleaned"] += result.get("total_deleted", 0)
-            except:
+            except Exception:
                 pass
         
         if orphaned_ids:
@@ -1367,6 +1474,32 @@ async def get_analysis_runs(
                 comm_result = await direct_repo._execute_query(comm_query)
                 if comm_result and len(comm_result) > 0:
                     communications_count = int(comm_result[0].get('cnt', 0))
+
+                # L7 unique communications (dedup across L7 tables)
+                try:
+                    aid = str(analysis_id)
+                    l7_comm_query = f"""
+                        SELECT count() as cnt FROM (
+                            SELECT DISTINCT src_workload, src_namespace, dst_workload, dst_namespace FROM (
+                                SELECT src_workload, src_namespace, dst_workload, dst_namespace
+                                FROM l7_http_flows
+                                WHERE analysis_id = '{aid}' OR analysis_id LIKE '{aid}-%'
+                                UNION ALL
+                                SELECT src_workload, src_namespace, dst_workload, dst_namespace
+                                FROM l7_grpc_flows
+                                WHERE analysis_id = '{aid}' OR analysis_id LIKE '{aid}-%'
+                                UNION ALL
+                                SELECT src_workload, src_namespace, dst_workload, dst_namespace
+                                FROM l7_dns_flows
+                                WHERE analysis_id = '{aid}' OR analysis_id LIKE '{aid}-%'
+                            )
+                        )
+                    """
+                    l7_comm_result = await direct_repo._execute_query(l7_comm_query)
+                    if l7_comm_result and len(l7_comm_result) > 0:
+                        communications_count += int(l7_comm_result[0].get('cnt', 0))
+                except Exception:
+                    pass
             except Exception as e:
                 logger.debug(f"Failed to get communications count: {e}")
             
@@ -1509,7 +1642,8 @@ async def cleanup_orphaned_data(
         tables = [
             'network_flows', 'dns_queries', 'tcp_lifecycle', 'process_events',
             'file_operations', 'capability_checks', 'oom_kills', 'bind_events',
-            'sni_events', 'mount_events', 'workload_metadata', 'communication_edges'
+            'sni_events', 'mount_events', 'workload_metadata', 'communication_edges',
+            'l7_http_flows', 'l7_grpc_flows', 'l7_dns_flows',
         ]
         
         for table in tables:
@@ -1531,8 +1665,9 @@ async def cleanup_orphaned_data(
         # Step 3: Delete orphaned data from ClickHouse
         for orphan_id in orphaned_ids:
             try:
+                aid = int(orphan_id) if orphan_id.isdigit() else orphan_id
                 result = await direct_repo.delete_analysis_data(
-                    int(orphan_id) if orphan_id.isdigit() else 0,
+                    aid,
                     wait_for_completion=True,
                     timeout_seconds=30
                 )
@@ -1554,8 +1689,9 @@ async def cleanup_orphaned_data(
         
         for orphan_id in orphaned_ids:
             try:
+                aid = int(orphan_id) if orphan_id.isdigit() else orphan_id
                 result = neo4j_service.delete_analysis_data(
-                    int(orphan_id) if orphan_id.isdigit() else 0,
+                    aid,
                     batch_size=5000
                 )
                 neo4j_result["deleted_edges"] += result.get("deleted_edges", 0)

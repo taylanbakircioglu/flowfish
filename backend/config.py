@@ -125,6 +125,8 @@ class Settings(BaseSettings):
         default="v0.46.0",
         description="Minimum supported gadget version for Flowfish compatibility"
     )
+    BEYLA_SUPPORTED_VERSION: str = "v3.9.5"
+    BEYLA_DEFAULT_IMAGE: str = "grafana/beyla:3.9.5"
     
     # =========================================================================
     # Service Endpoints
@@ -160,6 +162,17 @@ class Settings(BaseSettings):
         default="http://timeseries-query:8002",
         description="Timeseries Query Service HTTP endpoint. Set via ConfigMap in production.",
         json_schema_extra={"env": "TIMESERIES_QUERY_URL"}
+    )
+    
+    # =========================================================================
+    # Build / Image Metadata
+    # =========================================================================
+    
+    IMAGE_TAG: str = Field(
+        default="latest",
+        description="Container image tag shared across all Flowfish services. "
+                    "Set by CI/CD pipeline (e.g. git SHA, semver). "
+                    "Used as default version when generating install scripts.",
     )
     
     # =========================================================================

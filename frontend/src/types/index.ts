@@ -25,6 +25,11 @@ export interface Cluster {
   gadget_endpoint?: string;   // Deprecated - kept for backward compatibility
   gadget_health_status?: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
   gadget_version?: string;
+  beyla_namespace?: string;
+  beyla_health_status?: string;
+  beyla_version?: string;
+  l7_collector_endpoint?: string;
+  beyla_last_check?: string;
   status?: 'active' | 'inactive' | 'maintenance' | 'deleted';
   total_nodes?: number;
   total_pods?: number;
@@ -122,6 +127,8 @@ export interface Analysis {
   scope_type: string;
   scope_config: Record<string, unknown>;
   gadget_config: Record<string, unknown>;
+  analysis_level?: string;
+  l7_config?: Record<string, any>;
   time_config: Record<string, unknown>;
   output_config: Record<string, unknown>;
   // Change Detection settings
@@ -148,6 +155,20 @@ export interface ApiResponse<T> {
   data: T;
   message?: string;
   success: boolean;
+}
+
+export interface L7WorkloadNode {
+  id: string;
+  name: string;
+  namespace: string;
+  cluster: string;
+  kind: string;
+  analysis_id: string;
+  network_type?: string;
+  is_external?: boolean;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+  owner_kind?: string;
 }
 
 export interface PaginatedResponse<T> {
