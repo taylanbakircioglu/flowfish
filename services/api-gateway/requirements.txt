@@ -12,7 +12,7 @@ grpcio-tools==1.68.1
 protobuf>=5.29.2  # Security update
 
 # Authentication & Security
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.4.0  # CVE-2024-33663 fix (algorithm confusion)
 cryptography>=42.0.4  # CVE-2024-26130, CVE-2023-50782 fix
 passlib[bcrypt]==1.7.4
 python-dotenv==1.0.0
