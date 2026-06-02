@@ -1,5 +1,7 @@
 # Simple static frontend for MVP
-FROM nginx:alpine
+# Pinned to a patched nginx release (>= 1.31.1) to remediate the "poolslip"
+# advisory; the floating nginx:alpine tag previously shipped vulnerable 1.31.0.
+FROM nginx:1.31.1-alpine
 
 # Remove default nginx website
 RUN rm -rf /usr/share/nginx/html/*

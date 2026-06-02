@@ -36,7 +36,9 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN npm run build
 
 # Production stage
-FROM nginx:alpine AS production
+# Pinned to a patched nginx release (>= 1.31.1) to remediate the "poolslip"
+# advisory; the floating nginx:alpine tag previously shipped vulnerable 1.31.0.
+FROM nginx:1.31.1-alpine AS production
 
 # Remove default nginx website
 RUN rm -rf /usr/share/nginx/html/*
