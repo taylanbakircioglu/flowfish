@@ -46,9 +46,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Generate version tag
+      - name: Read version from version.json
         id: version
-        run: echo "TAG=$(date +'%Y%m%d.%H%M')-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+        run: echo "VERSION=$(jq -r .version version.json)" >> "$GITHUB_OUTPUT"
 
       - name: Login to Docker Hub
         env:
@@ -81,7 +81,37 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
+            ${{ env.DOCKERHUB_REPO }}:${{ matrix.service }}-${{ steps.version.outputs.VERSION }}
             ${{ env.DOCKERHUB_REPO }}:${{ matrix.service }}-latest
-            ${{ env.DOCKERHUB_REPO }}:${{ matrix.service }}-${{ steps.version.outputs.TAG }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  tag-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from version.json
+        id: version
+        run: echo "VERSION=$(jq -r .version version.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push git tag (idempotent)
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          TAG="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin; nothing to do."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "${TAG}"
+            echo "Created and pushed tag ${TAG}"
+          fi
