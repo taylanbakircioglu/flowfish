@@ -90,13 +90,70 @@ data:
         # `loopback` events as a defense; this is the upstream root-cause fix.
         - k8s_namespace: "{{OPENSHIFT_NAMESPACE}}"
         - k8s_namespace: "gadget"
+    routes:
+      # =====================================================================
+      # ROUTE DECORATION — fixes `http.route="/*/*/*/*/*"` star explosion
+      # =====================================================================
+      # Without this section Beyla falls back to the `heuristic` decorator
+      # but never logs an explicit choice and never filters health/admin
+      # endpoints. The result on API-gateway namespaces (Apisix, Envoy etc.)
+      # is dashboards full of `/*/*/*/*/*` time series carrying every backend
+      # call merged into a single label.
+      #
+      # MODE — `low-cardinality`:
+      #   `heuristic` + dynamic per-segment cardinality collapsing. Each
+      #   service builds an in-memory trie of observed paths; when a node's
+      #   unique-children count exceeds `max_path_segment_cardinality`, all
+      #   children collapse to `wildcard_char`. Requires Beyla >= 1.7;
+      #   confirmed available in the 3.9.5 image used below.
+      #
+      # CARDINALITY THRESHOLD — 100:
+      #   Apisix-style gateways front 30–80 distinct application prefixes.
+      #   The previously-tested value of 15 was hit by the root node alone
+      #   (every top-level prefix collapsed to `*`, cascading to all child
+      #   levels). 100 keeps real application names intact while still
+      #   collapsing per-request unique IDs (UUIDs, customer numbers, etc.).
+      #   Tune downward (50) if Prometheus/Mimir cardinality becomes a
+      #   concern; tune upward (200) if more application prefixes appear.
+      #
+      # IGNORED PATTERNS — drops health/admin/metric endpoints from BOTH
+      # traces and metrics (`ignore_mode: all`) so Service Map and L7
+      # latency aggregates are not skewed by liveness probes or Apisix
+      # admin polling.
+      #
+      # NOTE on passive-mode contract: this section is purely a *decorator*
+      # over already-observed events. It does NOT inject anything onto the
+      # wire and does NOT violate the read-only stance documented in the
+      # `ebpf:` block above.
+      unmatched: low-cardinality
+      max_path_segment_cardinality: 100
+      wildcard_char: "*"
+      ignored_patterns:
+        - /health
+        - /healthz
+        - /readyz
+        - /livez
+        - /metrics
+        - /actuator/*
+        - /apisix/status
+        - /apisix/admin/*
+      ignore_mode: all
     otel_traces_export:
       endpoint: http://flowfish-l7-collector.{{OPENSHIFT_NAMESPACE}}:4318
       protocol: http/protobuf
+      # NOTE: no `sampler:` block here on purpose. Sampling decisions belong
+      # to the flowfish-l7-collector / timeseries-writer pipeline, which has
+      # full PID-temporal context (see Phase-4 comment under `attributes:`)
+      # and can make consistent drop/keep choices across the whole trace.
+      # A Beyla-side sampler would shed 90 % of spans BEFORE the collector
+      # ever sees them, breaking PID stitching.
     otel_metrics_export:
       endpoint: http://flowfish-l7-collector.{{OPENSHIFT_NAMESPACE}}:4318
       protocol: http/protobuf
-      features: ["application", "application_service_graph"]
+      # `application_process` adds per-service CPU/RSS gauges sourced from
+      # the same eBPF process probes already attached for L7 capture — no
+      # extra kernel attach points, no measurable overhead.
+      features: ["application", "application_service_graph", "application_process"]
 ---
 apiVersion: v1
 kind: ServiceAccount

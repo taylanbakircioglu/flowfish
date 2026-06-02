@@ -647,6 +647,16 @@ This document describes all Flowfish platform features in detail, organized by p
 - ✅ `is_matched` flag on L7 summary results so callers can distinguish workloads matched by the filter from their immediate neighbours
 - ✅ L7-specific code snippets (cURL, Python, JavaScript, Pipeline)
 
+#### 1.X.7a. L7 HTTP Path Visibility (v2.7.0+, Audit v4)
+- ✅ **Real HTTP paths in Service Map and Integration Hub** — `event_transformer._extract_http_path` walks the OpenTelemetry HTTP semantic-convention lookup chain (`url.path` → `http.route` → `url.full` → `http.target` → `http.url`) so Beyla CLIENT spans (which only emit `url.full`) no longer collapse to `/`
+- ✅ Relative-path guard against malformed `url.full` values — falls through to the next attribute when `urlsplit` returns a bare token, preventing garbage paths from poisoning the per-path edge MERGE key
+- ✅ **Per-path edge model** — Neo4j `L7_COMMUNICATES_WITH` MERGE key extended to `(analysis_id, http_method, http_path)`; each distinct endpoint between two workloads materialises as its own edge with stable request_count / error_count / latency counters
+- ✅ Dedup migration cyphers (`_MIGRATE_OUT_CYPHER`, `_MIGRATE_IN_CYPHER`) preserve per-path granularity when re-pointing edges off `namespace='unknown'` placeholder nodes
+- ✅ `l7_comm_method` and `l7_comm_path` relationship property indexes (Neo4j 4.3+) keep summary/graph queries fast even with high path cardinality
+- ✅ Frontend canvas edge bundling — `ServiceMap.tsx` groups per-path edges by `(source, target, protocol)` for rendering, exposes the full `paths` array in edge data, and shows a `N paths` suffix on bundled edge labels
+- ✅ Distinct-peer aggregation in `get_l7_dependency_summary` — `inbound_count` / `outbound_count` count *peers*, not edges, so per-path multiplication doesn't inflate dependency counts in the UI
+- ✅ Integration Hub Edges Table rowKey extended with `(method, path, cluster)` to eliminate React rowKey collisions under per-path multiplication
+
 #### 1.X.8. L7 API Endpoints
 - `GET /api/v1/l7/dependencies/graph`
 - `GET /api/v1/l7/communications`

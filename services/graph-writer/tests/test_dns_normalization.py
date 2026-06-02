@@ -53,7 +53,7 @@ class TestNormalizeDnsName(unittest.TestCase):
     def test_ns_svc_cluster_local_stripped(self):
         """<domain>.<namespace>.svc.cluster.local → <domain>"""
         self.assertEqual(
-            self.gb._normalize_dns_name('auth.docker.io.my-registry.svc.cluster.local'),
+            self.gb._normalize_dns_name('auth.docker.io.harbor-system.svc.cluster.local'),
             'auth.docker.io')
 
     def test_registry_docker_cluster_local(self):

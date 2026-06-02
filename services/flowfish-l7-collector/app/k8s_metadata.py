@@ -243,7 +243,7 @@ def _build_service_cache(v1) -> Tuple[Dict[str, dict], Dict[str, dict]]:
                 cip = svc.spec.cluster_ip
                 if cip and cip not in ('None', ''):
                     new_svc_cache[cip] = meta
-                # Name-based index for hostname resolution (e.g. "kafka.test-cdc-kafka")
+                # Name-based index for hostname resolution (e.g. "kafka.example-ns")
                 new_svc_name_cache[f"{svc_name}.{svc_ns}"] = meta
             _continue = svcs.metadata._continue
             if not _continue:
@@ -445,7 +445,7 @@ def resolve_hostname(hostname: str) -> Optional[dict]:
                     "annotations": {},
                 }
 
-    # 3. service.namespace pattern (e.g. "kafka.test-cdc-kafka")
+    # 3. service.namespace pattern (e.g. "kafka.example-ns")
     if '.' in hostname:
         dot_idx = hostname.find('.')
         maybe_svc = hostname[:dot_idx]

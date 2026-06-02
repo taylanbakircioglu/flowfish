@@ -1959,4 +1959,4 @@ In summary: you are free to use, modify, and distribute this software, but any m
 
 ---
 
-**Version:** 2.6.0 | **Last Updated:** May 2026
+**Version:** 2.8.0 | **Last Updated:** June 2026

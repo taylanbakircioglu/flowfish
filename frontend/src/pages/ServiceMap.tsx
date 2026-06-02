@@ -921,29 +921,112 @@ const ServiceMapPage: React.FC = () => {
       };
     });
 
-    const maxReq = Math.max(1, ...edgesWorking.map((e) => Number(e.request_count || 0)));
-    const rfEdges: Edge[] = edgesWorking.map((e, idx) => {
+    // v2.7.0 (Audit v4): bundle per-path edges by (source, target, protocol)
+    // before handing them to React Flow. The Neo4j layer now stores one edge
+    // per (method, path) endpoint so a single dependency can carry tens of
+    // raw edges — leaving them un-bundled would stack tens of parallel arrows
+    // on top of each other in the canvas. We keep all per-path detail inside
+    // `data.paths` so the drawer's HTTP/gRPC tabs can show the full breakdown
+    // when an edge is selected.
+    type EdgePathRecord = {
+      method: string;
+      path: string;
+      request_count: number;
+      error_count: number;
+      avg_latency_ms: number;
+      // Carry the per-edge search index so the bundle inherits its parent's
+      // search-hit highlight when any of its paths matches the query.
+      searchHit: boolean;
+    };
+    type EdgeBundle = {
+      source_id: string;
+      target_id: string;
+      protocol: string;
+      totalReq: number;
+      totalErr: number;
+      weightedLatencyMs: number; // sum(req * lat) → divided by totalReq below
+      lastTraceId: string;
+      traceCount: number;
+      paths: EdgePathRecord[];
+      anyDim: boolean;
+      anySearchHit: boolean;
+    };
+    const bundles = new Map<string, EdgeBundle>();
+    edgesWorking.forEach((e, idx) => {
+      const key = `${e.source_id}|${e.target_id}|${String(e.protocol || '')}`;
+      let b = bundles.get(key);
+      if (!b) {
+        b = {
+          source_id: e.source_id,
+          target_id: e.target_id,
+          protocol: String(e.protocol || ''),
+          totalReq: 0,
+          totalErr: 0,
+          weightedLatencyMs: 0,
+          lastTraceId: '',
+          traceCount: 0,
+          paths: [],
+          anyDim: false,
+          anySearchHit: false,
+        };
+        bundles.set(key, b);
+      }
       const req = Number(e.request_count || 0);
       const err = Number(e.error_count || 0);
-      const rate = req > 0 ? err / req : 0;
-      const edgeId = `e-${e.source_id}-${e.target_id}-${idx}`;
-      const focusDim =
-        Boolean(effectiveFocus) &&
-        !(e.source_id === effectiveFocus || e.target_id === effectiveFocus);
-      const sysDim = systemDimmedIds.has(e.source_id) && systemDimmedIds.has(e.target_id);
-      const dim = focusDim || sysDim;
-      const edgeSearch =
+      const lat = Number(e.avg_latency_ms ?? 0);
+      b.totalReq += req;
+      b.totalErr += err;
+      b.weightedLatencyMs += req * lat;
+      b.traceCount += Number(e.trace_count || 0);
+      if (e.last_trace_id && !b.lastTraceId) {
+        b.lastTraceId = String(e.last_trace_id);
+      }
+      const searchHit =
         Boolean(q) &&
         (searchEdgeIds.has(`${e.source_id}-${e.target_id}-${idx}`) ||
           (searchNodeIds.has(e.source_id) && searchNodeIds.has(e.target_id)));
+      if (searchHit) b.anySearchHit = true;
+      b.paths.push({
+        method: String(e.http_method || ''),
+        path: String(e.http_path || ''),
+        request_count: req,
+        error_count: err,
+        avg_latency_ms: lat,
+        searchHit,
+      });
+    });
+
+    const bundleList = Array.from(bundles.values());
+    const maxReq = Math.max(1, ...bundleList.map((b) => b.totalReq));
+    const rfEdges: Edge[] = bundleList.map((b) => {
+      const req = b.totalReq;
+      const err = b.totalErr;
+      const rate = req > 0 ? err / req : 0;
+      const avgLat = req > 0 ? b.weightedLatencyMs / req : 0;
+      const edgeId = `e-${b.source_id}-${b.target_id}-${b.protocol || 'na'}`;
+      const focusDim =
+        Boolean(effectiveFocus) &&
+        !(b.source_id === effectiveFocus || b.target_id === effectiveFocus);
+      const sysDim = systemDimmedIds.has(b.source_id) && systemDimmedIds.has(b.target_id);
+      const dim = focusDim || sysDim;
       const stroke = rate > 0.2 ? '#ef4444' : rate > 0.05 ? '#ca8a04' : '#22c55e';
       const width = 1 + Math.min(8, Math.log10(req + 1) * 2.2);
-      const proto = e.protocol ? String(e.protocol) : '';
-      const labelText = `${formatCount(req)} · ${Number(e.avg_latency_ms ?? 0).toFixed(1)} ms${proto ? ` · ${proto}` : ''}`;
+      const proto = b.protocol;
+      // Multi-path indicator — operator immediately sees that an edge
+      // aggregates several endpoints. Single-path bundles stay quiet to
+      // avoid label noise for low-fan-out services.
+      const pathSuffix = b.paths.length > 1 ? ` · ${b.paths.length} paths` : '';
+      const labelText = `${formatCount(req)} · ${avgLat.toFixed(1)} ms${proto ? ` · ${proto}` : ''}${pathSuffix}`;
+      // Representative (method, path) for backward-compat consumers that
+      // still read `data.httpPath` directly — pick the heaviest path.
+      const primary = b.paths.reduce(
+        (acc, p) => (p.request_count > acc.request_count ? p : acc),
+        b.paths[0],
+      );
       return {
         id: edgeId,
-        source: e.source_id,
-        target: e.target_id,
+        source: b.source_id,
+        target: b.target_id,
         animated: req / maxReq > 0.15,
         label: dim ? undefined : labelText,
         labelStyle: {
@@ -962,21 +1045,27 @@ const ServiceMapPage: React.FC = () => {
         style: {
           stroke,
           strokeWidth: width,
-          opacity: dim ? 0.14 : edgeSearch ? 1 : 0.9,
+          opacity: dim ? 0.14 : b.anySearchHit ? 1 : 0.9,
         },
         data: {
-          protocol: e.protocol,
-          httpMethod: e.http_method,
-          httpPath: e.http_path,
+          protocol: b.protocol,
+          // Primary (most-traffic) endpoint kept for legacy consumers.
+          httpMethod: primary?.method ?? '',
+          httpPath: primary?.path ?? '',
           requestCount: req,
           errorCount: err,
-          avgLatencyMs: Number(e.avg_latency_ms ?? 0),
+          avgLatencyMs: avgLat,
           errorRate: rate,
           // Distributed tracing context — empty for non-traced edges.
           // ServiceMap onEdgeClick checks traceCount > 0 to decide whether
           // to open the trace drawer.
-          lastTraceId: String(e.last_trace_id || ''),
-          traceCount: Number(e.trace_count || 0),
+          lastTraceId: b.lastTraceId,
+          traceCount: b.traceCount,
+          // v2.7.0: per-path breakdown carried alongside the aggregate so
+          // the drawer can list every (method, path) without an extra
+          // backend round-trip.
+          paths: b.paths,
+          pathCount: b.paths.length,
         },
       };
     });
@@ -1177,23 +1266,45 @@ const ServiceMapPage: React.FC = () => {
   }, [filteredWorkloadRows, selectedAnalysisId]);
 
   const exportEdgeCsv = useCallback(() => {
-    const headers = ['source', 'target', 'protocol', 'http_path', 'request_count', 'error_count', 'avg_latency_ms'];
+    const headers = ['source', 'target', 'protocol', 'http_method', 'http_path', 'request_count', 'error_count', 'avg_latency_ms'];
     const nodeMap = new Map(nodes.map((n) => [n.id, (n.data as L7WorkloadNodeData).workloadName || n.id]));
-    const lines = [
-      headers.join(','),
-      ...edges.map((e) => {
-        const d = (e.data || {}) as Record<string, any>;
-        return [
-          `"${nodeMap.get(e.source) ?? e.source}"`,
-          `"${nodeMap.get(e.target) ?? e.target}"`,
-          `"${d.protocol ?? ''}"`,
-          `"${(d.httpPath ?? '').replace(/"/g, '""')}"`,
+    // v2.7.0 (Audit v4): edges are now bundled per (src, dst, protocol) for
+    // rendering. To keep the CSV operator-useful we expand the bundle's
+    // `paths` array into one row per (method, path). Bundles without a
+    // paths breakdown (legacy or bridge edges) fall back to one summary row.
+    const lines: string[] = [headers.join(',')];
+    edges.forEach((e) => {
+      const d = (e.data || {}) as Record<string, any>;
+      const sourceLabel = nodeMap.get(e.source) ?? e.source;
+      const targetLabel = nodeMap.get(e.target) ?? e.target;
+      const proto = d.protocol ?? '';
+      const paths = Array.isArray(d.paths) ? d.paths : null;
+      if (paths && paths.length > 0) {
+        paths.forEach((p: any) => {
+          lines.push([
+            `"${sourceLabel}"`,
+            `"${targetLabel}"`,
+            `"${proto}"`,
+            `"${String(p.method ?? '').replace(/"/g, '""')}"`,
+            `"${String(p.path ?? '').replace(/"/g, '""')}"`,
+            String(p.request_count || 0),
+            String(p.error_count || 0),
+            String(p.avg_latency_ms ?? 0),
+          ].join(','));
+        });
+      } else {
+        lines.push([
+          `"${sourceLabel}"`,
+          `"${targetLabel}"`,
+          `"${proto}"`,
+          `"${String(d.httpMethod ?? '').replace(/"/g, '""')}"`,
+          `"${String(d.httpPath ?? '').replace(/"/g, '""')}"`,
           String(d.requestCount || 0),
           String(d.errorCount || 0),
           String(d.avgLatencyMs ?? 0),
-        ].join(',');
-      }),
-    ];
+        ].join(','));
+      }
+    });
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

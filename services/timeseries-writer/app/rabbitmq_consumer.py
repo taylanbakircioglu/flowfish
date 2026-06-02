@@ -6,7 +6,7 @@ import time
 import threading
 from typing import List, Dict, Any
 import pika
-from pika.exceptions import AMQPConnectionError
+from pika.exceptions import AMQPConnectionError, ChannelClosedByBroker
 
 from app.config import settings
 from app.clickhouse_client import ClickHouseWriter
@@ -90,11 +90,34 @@ class RabbitMQConsumer:
                     "x-max-length": 1000000     # 1M messages (same as ingestion-service)
                 }
             
-            self.channel.queue_declare(
-                queue=self.queue_name,
-                durable=True,
-                arguments=queue_args
-            )
+            try:
+                self.channel.queue_declare(
+                    queue=self.queue_name,
+                    durable=True,
+                    arguments=queue_args
+                )
+            except ChannelClosedByBroker as e:
+                # reply_code 406 (PRECONDITION_FAILED): the queue already exists
+                # with different arguments (e.g. an older build created it without
+                # the dead-letter-exchange). RabbitMQ closes the channel on the
+                # mismatch; re-open it and bind to the existing queue as-is rather
+                # than looping forever in the reconnect handler. Dead-lettering
+                # stays inactive for that legacy queue until it is recreated.
+                if e.reply_code != 406:
+                    raise
+                logger.warning(
+                    "Queue %s already exists with different arguments; using the "
+                    "existing definition (dead-lettering inactive until the queue "
+                    "is recreated).",
+                    self.queue_name,
+                )
+                self.channel = self.connection.channel()
+                self.channel.basic_qos(prefetch_count=settings.prefetch_count)
+                self.channel.queue_declare(
+                    queue=self.queue_name,
+                    durable=True,
+                    passive=True
+                )
             
             # Special handling for change_events: bind to the flowfish.change_events exchange
             if 'change_events' in self.queue_name:

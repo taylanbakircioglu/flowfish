@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from typing import Optional, List
+from urllib.parse import urlsplit
 
 from app import k8s_metadata
 
@@ -47,6 +48,61 @@ def _get_int_attr(attributes: list, key: str, default: int = 0) -> int:
         return int(val)
     except (ValueError, TypeError):
         return default
+
+
+def _extract_http_path(attrs: list) -> str:
+    """Extract HTTP request path from a span across OTel HTTP semconv versions.
+
+    OTel HTTP semantic conventions:
+      * SERVER spans expose ``url.path`` (and optionally ``http.route`` for
+        the templated route).
+      * CLIENT spans expose ``url.full`` (the absolute URL) — there is NO
+        ``url.path`` on client spans.
+    Beyla 3.x emits stable OTel attributes by default. Older builds (or
+    instrumentation libraries) fall back to the legacy ``http.target`` /
+    ``http.url`` keys, so we walk both lookup chains.
+
+    The relative-path guard on ``urlsplit(...).path`` exists because
+    ``urlsplit('not-a-url').path`` returns ``'not-a-url'`` — a bare token is
+    treated as a relative URL by stdlib. We only accept a parsed path when
+    either the URL has a scheme (truly absolute) or the path starts with
+    ``/`` (proper relative URL). This keeps malformed ``url.full`` from
+    poisoning Neo4j edges with garbage path values.
+
+    Lookup order:
+      1. url.path     — OTel stable, server spans
+      2. http.route   — OTel stable, server templated route
+      3. url.full     — OTel stable, client spans (parse path component)
+      4. http.target  — legacy semconv (OTel < 1.21), server
+      5. http.url     — legacy semconv (OTel < 1.21), client
+      6. "/"          — last-resort fallback (preserves historical shape)
+    """
+    p = _get_attr(attrs, "url.path")
+    if p:
+        return p
+    r = _get_attr(attrs, "http.route")
+    if r:
+        return r
+    full = _get_attr(attrs, "url.full")
+    if full:
+        try:
+            parsed = urlsplit(full)
+            if parsed.path and (parsed.scheme or parsed.path.startswith("/")):
+                return parsed.path
+        except (ValueError, AttributeError):
+            pass
+    tgt = _get_attr(attrs, "http.target")
+    if tgt:
+        return tgt.split("?", 1)[0]
+    legacy_url = _get_attr(attrs, "http.url")
+    if legacy_url:
+        try:
+            parsed = urlsplit(legacy_url)
+            if parsed.path and (parsed.scheme or parsed.path.startswith("/")):
+                return parsed.path
+        except (ValueError, AttributeError):
+            pass
+    return "/"
 
 
 def _clean_ip(addr: str) -> tuple:
@@ -288,14 +344,30 @@ def _transform_single_span(span, resource_attrs: list) -> Optional[dict]:
     rpc_service = _get_attr(attrs, "rpc.service")
     rpc_method = _get_attr(attrs, "rpc.method")
     dns_question_name = _get_attr(attrs, "dns.question.name")
-    http_method = _get_attr(attrs, "http.request.method")
+    http_method = (
+        _get_attr(attrs, "http.request.method")
+        or _get_attr(attrs, "http.method")  # legacy semconv (OTel < 1.21)
+    )
 
-    # Build event from existing classification logic
+    # Build event from existing classification logic.
+    # gRPC and DNS branches are evaluated first so that a span carrying both
+    # rpc.* and url.* never gets misclassified as HTTP. The HTTP branch was
+    # extended in v2.7.0 (Audit v4) to cover CLIENT spans — Beyla emits only
+    # `url.full` for outgoing calls (per OTel HTTP semconv stable), so
+    # checking for `url.path` alone missed every external API call and the
+    # transformer fell through to drop. Legacy `http.target` / `http.url`
+    # are also accepted as triggers for older Beyla builds.
     if rpc_service or rpc_method:
         event = _build_grpc_event(span, attrs, resource_attrs, span_kind)
     elif dns_question_name:
         event = _build_dns_event(span, attrs, resource_attrs, span_kind)
-    elif http_method or _get_attr(attrs, "url.path"):
+    elif (
+        http_method
+        or _get_attr(attrs, "url.path")
+        or _get_attr(attrs, "url.full")
+        or _get_attr(attrs, "http.url")
+        or _get_attr(attrs, "http.target")
+    ):
         event = _build_http_event(span, attrs, resource_attrs, span_kind)
     else:
         # Span did not match HTTP/gRPC/DNS heuristics — drop.
@@ -371,8 +443,12 @@ def _build_http_event(span, attrs, resource_attrs, span_kind) -> dict:
             "dst_annotations": dst_endpoint.get("annotations", {}),
             "src_owner_kind": src_endpoint.get("owner_kind", ""),
             "dst_owner_kind": dst_endpoint.get("owner_kind", ""),
-            "method": _get_attr(attrs, "http.request.method") or "UNKNOWN",
-            "path": _get_attr(attrs, "url.path") or _get_attr(attrs, "http.route") or "/",
+            "method": (
+                _get_attr(attrs, "http.request.method")
+                or _get_attr(attrs, "http.method")
+                or "UNKNOWN"
+            ),
+            "path": _extract_http_path(attrs),
             "host": _get_attr(attrs, "server.address") or _get_attr(attrs, "http.host") or "",
             "response_status": _get_int_attr(attrs, "http.response.status_code", 0),
             "request_size": _get_int_attr(attrs, "http.request.body.size"),

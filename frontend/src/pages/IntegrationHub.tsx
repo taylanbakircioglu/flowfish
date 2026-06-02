@@ -216,12 +216,17 @@ const L7PreviewBody: React.FC<L7PreviewBodyProps> = ({ l7Summary, l7Tree, tokenP
           })()})</span>,
           children: (() => {
             const rows: any[] = [];
+            // v2.7.0 (Audit v4): per-path edges multiply rows under the same
+            // (svc, proto) block. Including (method, path, cluster) in the
+            // rowKey makes collisions impossible even across multi-cluster
+            // analyses where the same service name can appear twice.
             (l7Tree.matched_services ?? []).forEach((svc: any) => {
+              const svcCluster = svc.cluster || '';
               const downstream = svc.downstream?.by_protocol ?? {};
               Object.entries(downstream).forEach(([proto, deps]: [string, any]) => {
                 (deps ?? []).forEach((d: any, di: number) => {
                   rows.push({
-                    key: `${svc.name}-ds-${proto}-${di}`,
+                    key: `${svcCluster}-${svc.namespace}-${svc.name}-ds-${proto}-${d.http_method || ''}-${d.http_path || ''}-${di}`,
                     source: `${svc.namespace}/${svc.name}`,
                     target: `${d.namespace}/${d.name}`,
                     direction: 'downstream',
@@ -238,7 +243,7 @@ const L7PreviewBody: React.FC<L7PreviewBodyProps> = ({ l7Summary, l7Tree, tokenP
               Object.entries(callers).forEach(([proto, deps]: [string, any]) => {
                 (deps ?? []).forEach((d: any, di: number) => {
                   rows.push({
-                    key: `${svc.name}-cl-${proto}-${di}`,
+                    key: `${svcCluster}-${svc.namespace}-${svc.name}-cl-${proto}-${d.http_method || ''}-${d.http_path || ''}-${di}`,
                     source: `${d.namespace}/${d.name}`,
                     target: `${svc.namespace}/${svc.name}`,
                     direction: 'caller',

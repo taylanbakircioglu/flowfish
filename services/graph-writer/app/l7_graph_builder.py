@@ -129,9 +129,24 @@ class L7EdgeBuffer:
         dst.last_seen = datetime()
 
     WITH src, dst, row
-    MERGE (src)-[r:L7_COMMUNICATES_WITH {analysis_id: row.analysis_id}]->(dst)
-    SET r.protocol = row.protocol, r.http_method = row.http_method,
-        r.http_path = row.http_path,
+    // v2.7.0 (Audit v4): MERGE key includes (http_method, http_path) so that
+    // each distinct endpoint becomes its own edge. The previous {analysis_id}-
+    // only key collapsed every request between (src, dst) into a single edge
+    // and overwrote `http_path` on every upsert — Service Map and Integration
+    // Hub therefore always showed the *last observed* path (typically the
+    // health-check or another short path). Operators who want a single
+    // aggregated edge for canvas rendering should query graph-query with
+    // `aggregate=protocol`; the storage layer keeps per-path granularity so
+    // both views are derivable.
+    //
+    // coalesce(...) on the key components guarantees Cypher gets a string
+    // (Neo4j refuses null in MERGE key); empty string is a valid sentinel.
+    MERGE (src)-[r:L7_COMMUNICATES_WITH {
+        analysis_id: row.analysis_id,
+        http_method: coalesce(row.http_method, ''),
+        http_path: coalesce(row.http_path, '')
+    }]->(dst)
+    SET r.protocol = row.protocol,
         r.cluster_id = row.cluster_id, r.cluster_name = row.cluster_name,
         r.total_latency_ms = coalesce(r.total_latency_ms, 0.0) + row.latency_ms,
         r.request_count = coalesce(r.request_count, 0) + 1,
@@ -163,12 +178,21 @@ class L7EdgeBuffer:
     LIMIT 100
     """
 
+    # v2.7.0 (Audit v4): migrate cyphers must use the SAME 3-property MERGE key
+    # as the main upsert above (analysis_id, http_method, http_path). Without
+    # this the dedup pass would collapse per-path edges back into a single
+    # edge per (src, dst) — silently undoing the path-recovery fix every
+    # `_DEDUP_EVERY_N_FLUSHES` cycles.
     _MIGRATE_OUT_CYPHER = """
     MATCH (s:L7Workload {id: $sid})-[r:L7_COMMUNICATES_WITH]->(t)
     MATCH (g:L7Workload {id: $gid})
     WITH r, g,
       CASE WHEN t.id = $sid THEN g ELSE t END AS target
-    MERGE (g)-[nr:L7_COMMUNICATES_WITH {analysis_id: r.analysis_id}]->(target)
+    MERGE (g)-[nr:L7_COMMUNICATES_WITH {
+        analysis_id: r.analysis_id,
+        http_method: coalesce(r.http_method, ''),
+        http_path: coalesce(r.http_path, '')
+    }]->(target)
     ON CREATE SET nr = properties(r)
     ON MATCH SET nr.request_count = nr.request_count + coalesce(r.request_count, 0),
         nr.total_latency_ms = nr.total_latency_ms + coalesce(r.total_latency_ms, 0),
@@ -186,7 +210,11 @@ class L7EdgeBuffer:
     MATCH (s)-[r:L7_COMMUNICATES_WITH]->(stale:L7Workload {id: $sid})
     MATCH (g:L7Workload {id: $gid})
     WITH s, r, g
-    MERGE (s)-[nr:L7_COMMUNICATES_WITH {analysis_id: r.analysis_id}]->(g)
+    MERGE (s)-[nr:L7_COMMUNICATES_WITH {
+        analysis_id: r.analysis_id,
+        http_method: coalesce(r.http_method, ''),
+        http_path: coalesce(r.http_path, '')
+    }]->(g)
     ON CREATE SET nr = properties(r)
     ON MATCH SET nr.request_count = nr.request_count + coalesce(r.request_count, 0),
         nr.total_latency_ms = nr.total_latency_ms + coalesce(r.total_latency_ms, 0),

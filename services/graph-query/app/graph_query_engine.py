@@ -1575,8 +1575,17 @@ class GraphQueryEngine:
                     "name": name or "",
                     "namespace": ns or "",
                     "cluster": cluster or "",
-                    "inbound_count": 0,
-                    "outbound_count": 0,
+                    # v2.7.0 (Audit v4): switched from per-edge counters to
+                    # distinct-peer sets. The Neo4j MERGE key now includes
+                    # http_method + http_path, so a single (src → dst) pair
+                    # produces N edges (one per endpoint). Counting edges
+                    # directly would inflate outbound_count from 1 to N,
+                    # turning the response into a misleading "X dependencies"
+                    # signal in the UI. By bucketing (peer_id, protocol) into
+                    # sets we report distinct downstream / upstream services
+                    # — which is what operators expect.
+                    "inbound_peers": set(),
+                    "outbound_peers": set(),
                     "request_count": 0,
                     "error_count": 0,
                     # Always parse metadata so server-side filters can run.
@@ -1592,6 +1601,7 @@ class GraphQueryEngine:
         for row in result.get("data", []):
             rc = int(row.get("request_count") or 0)
             ec = int(row.get("error_count") or 0)
+            proto = str(row.get("protocol") or "")
             s = touch(
                 row.get("src_id"), row.get("src_name"), row.get("src_namespace"), row.get("src_cluster"),
                 row.get("src_labels"), row.get("src_annotations"), row.get("src_owner_kind"),
@@ -1601,11 +1611,13 @@ class GraphQueryEngine:
                 row.get("dst_labels"), row.get("dst_annotations"), row.get("dst_owner_kind"),
             )
             if s:
-                by_id[s]["outbound_count"] += 1
+                if d:
+                    by_id[s]["outbound_peers"].add((d, proto))
                 by_id[s]["request_count"] += rc
                 by_id[s]["error_count"] += ec
             if d:
-                by_id[d]["inbound_count"] += 1
+                if s:
+                    by_id[d]["inbound_peers"].add((s, proto))
                 by_id[d]["request_count"] += rc
                 by_id[d]["error_count"] += ec
 
@@ -1647,8 +1659,10 @@ class GraphQueryEngine:
                 "name": w["name"],
                 "namespace": w["namespace"],
                 "cluster": w["cluster"],
-                "inbound_count": w["inbound_count"],
-                "outbound_count": w["outbound_count"],
+                # v2.7.0 (Audit v4): derive counts from distinct-peer sets so
+                # per-path edges don't inflate dependency counts.
+                "inbound_count": len(w["inbound_peers"]),
+                "outbound_count": len(w["outbound_peers"]),
                 "request_count": req,
                 "error_count": err,
                 "error_rate_percent": rate,

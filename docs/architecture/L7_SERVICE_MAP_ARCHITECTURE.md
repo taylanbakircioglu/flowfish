@@ -58,6 +58,37 @@ The L7 Service Map extends Flowfish's network observability from L4 (TCP/UDP) to
 - Does NOT add analysis_id or cluster_id
 - Exposes pull API for Flowfish to consume
 
+#### HTTP Path Extraction (v2.7.0+, Audit v4)
+
+The transformer recovers the HTTP request path from a span by walking the
+OpenTelemetry HTTP semantic-convention lookup chain. This is necessary
+because Beyla emits **different attributes for SERVER and CLIENT spans**:
+
+| Span kind | Stable attr (Beyla ≥ 3) | Legacy attr (OTel < 1.21) | Notes |
+|-----------|-------------------------|---------------------------|-------|
+| SERVER    | `url.path`              | `http.target`             | Path component only. `http.route` carries the templated form when the server framework exposes it. |
+| CLIENT    | `url.full`              | `http.url`                | Absolute URL — transformer parses the path component out via `urllib.parse.urlsplit`. |
+
+Lookup order inside `event_transformer._extract_http_path`:
+
+1. `url.path` — server, stable
+2. `http.route` — server, templated form (used when only this exists)
+3. `url.full` — client, stable (path parsed out)
+4. `http.target` — server, legacy (query string stripped)
+5. `http.url` — client, legacy (path parsed out)
+6. `"/"` — fallback (preserves historical edge shape)
+
+Relative-path guard: `urlsplit("garbage").path` returns `"garbage"` because
+the stdlib treats bare tokens as relative URLs. The helper only accepts the
+parsed path when (`scheme` is present) **or** (`path` starts with `/`) —
+otherwise it falls through to the next attribute. This prevents malformed
+`url.full` payloads from poisoning the per-path edge MERGE key in Neo4j.
+
+The HTTP branch trigger in `_transform_single_span` was widened in v2.7.0
+to include `url.full`, `http.url`, and `http.target` so CLIENT spans no
+longer get dropped silently. gRPC and DNS heuristics still take priority
+to prevent misclassification.
+
 ### Layer 2 - L7 Ingestion Service (Flowfish central)
 - Polls events via K8s API Service Proxy
 - Adds analysis_id, cluster_id, cluster_name
@@ -139,6 +170,53 @@ The install script also creates a namespace-scoped Role for `services/proxy` (al
   - Indexes: `l7_workload_owner_kind`, `l7_workload_network_type`
 - `L7_COMMUNICATES_WITH` relationships
 
+#### Per-Path Edge Model (v2.7.0+, Audit v4)
+
+Each `L7_COMMUNICATES_WITH` relationship represents a **single (source, target,
+analysis_id, http_method, http_path) tuple**. The graph-writer's MERGE
+key was extended in v2.7.0 from `{analysis_id}` to the full 3-property
+composite key:
+
+```cypher
+MERGE (src)-[r:L7_COMMUNICATES_WITH {
+    analysis_id: row.analysis_id,
+    http_method: coalesce(row.http_method, ''),
+    http_path: coalesce(row.http_path, '')
+}]->(dst)
+```
+
+Before this change every request between `(src, dst)` was upserted onto a
+single edge, with `r.http_path` overwriting the previous value on each
+flush — so the Service Map and Integration Hub effectively showed a
+random recent path (typically the most frequent low-cardinality endpoint
+such as `/health`). The new key keeps one edge per endpoint, so high-fan-out
+clients (e.g. an API gateway that reaches `/users/{id}`, `/orders/{id}`,
+`/payments/{txn}`) materialise as a small set of stable edges.
+
+`coalesce(..., '')` ensures the MERGE key never contains `null` (Cypher
+refuses null in MERGE keys); empty string is a valid sentinel for spans
+that genuinely lack method/path metadata.
+
+**Relationship indexes** (Neo4j 4.3+):
+- `l7_comm_analysis ON (r.analysis_id)` — existing, drives per-analysis filters
+- `l7_comm_protocol ON (r.protocol)` — existing
+- `l7_comm_method ON (r.http_method)` — added v2.7.0
+- `l7_comm_path ON (r.http_path)` — added v2.7.0
+
+**Dedup migration:** `_MIGRATE_OUT_CYPHER` and `_MIGRATE_IN_CYPHER` use the
+same 3-property MERGE key when re-pointing edges from `namespace='unknown'`
+placeholders to real workloads. Without this the dedup pass would
+silently collapse per-path edges back to a single edge every
+`_DEDUP_EVERY_N_FLUSHES` cycles, re-introducing the bug.
+
+#### Aggregation in graph-query
+
+`get_l7_dependency_summary` keeps **distinct-peer sets** internally so the
+per-path edge multiplication does not inflate `inbound_count` /
+`outbound_count` in the API response. A workload that talks to one
+downstream service over five endpoints shows `outbound_count = 1` (with
+`request_count` totalled across all five edges).
+
 ## Metadata Enrichment
 
 L7 workloads are enriched with Kubernetes metadata via the `k8s_metadata` cache in `flowfish-l7-collector`. The cache resolves IPs using multiple sources:
@@ -150,7 +228,7 @@ L7 workloads are enriched with Kubernetes metadata via the `k8s_metadata` cache 
 
 ### Hostname Resolution
 
-When Beyla sends hostnames instead of IPs (e.g., `worker5.example.com`, `kafka.test-cdc-kafka`, `svc.ns.svc.cluster.local`), the `resolve_hostname()` function resolves them through a 4-tier pipeline:
+When Beyla sends hostnames instead of IPs (e.g., `worker5.example.com`, `kafka.example-ns`, `svc.ns.svc.cluster.local`), the `resolve_hostname()` function resolves them through a 4-tier pipeline:
 
 1. **Node hostname** — exact match against `_hostname_cache` (e.g., `worker5.example.com` → Node-Network)
 2. **K8s FQDN** — `*.svc.cluster.local` parsed to extract namespace and service name
@@ -213,3 +291,38 @@ The Service Map supports multiple layout algorithms:
 | Concentric | Places high-degree nodes at center, expanding outward |
 | Organic / Spiral | Golden-angle phyllotaxis pattern |
 | Error-Centric | Places high-error-rate nodes at center |
+
+### Canvas Edge Bundling (v2.7.0+)
+
+The Neo4j per-path edge model means a single dependency between two
+workloads can materialise as tens of raw edges (one per HTTP endpoint).
+React Flow renders one visual edge per `Edge` object, so passing the raw
+edges to the canvas would stack tens of arrows on top of each other and
+make the labels unreadable.
+
+`ServiceMap.tsx` therefore bundles raw edges by `(source_id, target_id,
+protocol)` in `rfEdges`. Each bundle becomes **one** React Flow edge with:
+
+- **Aggregated label** — total requests, request-weighted average latency,
+  protocol, and `N paths` suffix when the bundle covers more than one
+  endpoint.
+- **`data.paths` array** — full per-path breakdown carried alongside the
+  aggregate so the drawer can show individual `(method, path,
+  request_count, error_count, avg_latency_ms)` rows without an extra
+  backend round-trip.
+- **Primary endpoint** — `data.httpMethod` / `data.httpPath` are still
+  populated from the heaviest path so legacy code paths (CSV/JSON
+  export, third-party integrations) keep working.
+
+The CSV edge export expands `data.paths` into one row per endpoint so an
+operator running `Export → CSV` still sees every path. JSON export
+spreads `data` verbatim, so consumers automatically see the `paths`
+array as a structured field.
+
+The drawer's "Connections" tab iterates `rawEdges` (un-bundled) so the
+operator sees one row per `(peer, protocol, method, path)` — the
+expected behaviour for a detailed view.
+
+`request_count` totals are computed correctly in both the bundled and
+un-bundled paths because every raw edge contributes its own
+`request_count`; bundling sums them.

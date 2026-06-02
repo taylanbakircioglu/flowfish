@@ -6,6 +6,7 @@ import json
 from typing import Callable, Optional
 from aio_pika import connect_robust, Message, IncomingMessage
 from aio_pika.abc import AbstractRobustConnection, AbstractRobustChannel
+from aio_pika.exceptions import ChannelPreconditionFailed
 
 from app.config import settings
 
@@ -62,22 +63,47 @@ class RabbitMQConsumer:
     async def start_consuming(self, queue_name: str):
         """Start consuming from a queue"""
         try:
+            # Use a dedicated channel per consumer. RabbitMQ closes the channel
+            # when a queue is redeclared with arguments that differ from the
+            # existing definition; an isolated channel keeps that failure from
+            # tearing down every other consumer sharing one channel.
+            channel = await self.connection.channel()
+            await channel.set_qos(prefetch_count=settings.prefetch_count)
+
             q_args = {
                 "x-message-ttl": 86400000,
                 "x-max-length": 1000000,
             }
             if queue_name.startswith("flowfish.queue.l7_"):
                 q_args["x-dead-letter-exchange"] = "flowfish.l7.dlx"
-            queue = await self.channel.declare_queue(
-                queue_name,
-                durable=True,
-                auto_delete=False,
-                arguments=q_args,
-            )
+            try:
+                queue = await channel.declare_queue(
+                    queue_name,
+                    durable=True,
+                    auto_delete=False,
+                    arguments=q_args,
+                )
+            except ChannelPreconditionFailed:
+                # The queue already exists with different arguments (e.g. created
+                # by an older build, or by another service, without the
+                # dead-letter-exchange). RabbitMQ forbids changing a durable
+                # queue's arguments on redeclare and closes the channel, so we
+                # re-open one and bind to the existing queue as-is instead of
+                # crashing the service. Dead-lettering stays inactive for that
+                # legacy queue until it is recreated during maintenance.
+                logger.warning(
+                    "Queue %s already exists with different arguments; using the "
+                    "existing definition (dead-lettering inactive until the queue "
+                    "is recreated).",
+                    queue_name,
+                )
+                channel = await self.connection.channel()
+                await channel.set_qos(prefetch_count=settings.prefetch_count)
+                queue = await channel.declare_queue(queue_name, passive=True)
 
             l7_exchange_name = self.L7_QUEUE_EXCHANGE_MAP.get(queue_name)
             if l7_exchange_name:
-                exchange = await self.channel.declare_exchange(
+                exchange = await channel.declare_exchange(
                     l7_exchange_name, type="topic", durable=True
                 )
                 await queue.bind(exchange, routing_key="#")

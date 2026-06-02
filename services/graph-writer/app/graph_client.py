@@ -107,6 +107,13 @@ class GraphClient:
                     "CREATE INDEX l7_workload_network_type IF NOT EXISTS FOR (w:L7Workload) ON (w.network_type)",
                     "CREATE INDEX l7_comm_analysis IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.analysis_id)",
                     "CREATE INDEX l7_comm_protocol IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.protocol)",
+                    # v2.7.0 (Audit v4): per-path edges introduce (http_method,
+                    # http_path) as part of the MERGE key. The summary/graph
+                    # queries filter and group on these properties heavily, so
+                    # we index both. Neo4j 4.3+ supports relationship property
+                    # indexes; idempotent via IF NOT EXISTS.
+                    "CREATE INDEX l7_comm_method IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.http_method)",
+                    "CREATE INDEX l7_comm_path IF NOT EXISTS FOR ()-[r:L7_COMMUNICATES_WITH]-() ON (r.http_path)",
                 ]
                 
                 for index in indexes:

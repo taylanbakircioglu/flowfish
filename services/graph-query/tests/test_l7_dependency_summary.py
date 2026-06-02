@@ -1,7 +1,7 @@
 """Unit tests for ``GraphQueryEngine.get_l7_dependency_summary``.
 
-These tests cover the seven scenarios from the Integration Hub L7 Audit v3
-plan that the new filter/aggregation logic must satisfy:
+These tests cover the Integration Hub L7 Audit v3 filter/aggregation
+behaviour plus the Audit v4 per-path edge accounting:
 
 1. Annotation exact match
 2. Annotation fnmatch glob
@@ -12,6 +12,11 @@ plan that the new filter/aggregation logic must satisfy:
    the response but still allows the engine to filter on them
 7. ``filter_noise_annotations`` strips infrastructure annotations only
    when opted in
+8. (v2.7.0 / Audit v4) Per-path edges between the same (src, dst) MUST
+   count as ONE outbound peer — not N. The Neo4j storage layer now
+   creates a separate L7_COMMUNICATES_WITH edge per (method, path);
+   bucketing peers in a set inside the summary aggregator keeps
+   dependency counts stable for the UI.
 
 The tests run against the real engine code with ``execute_query`` swapped
 out for a stub fixture (``mock_engine``) — no Neo4j required.
@@ -41,6 +46,7 @@ def _row(
     dst_owner_kind: str = "Deployment",
     request_count: int = 1,
     error_count: int = 0,
+    protocol: str = "HTTP",
 ) -> Dict[str, Any]:
     """Build a Neo4j-shaped row matching the Cypher RETURN clause."""
     return {
@@ -54,6 +60,7 @@ def _row(
         "dst_cluster": dst_cluster,
         "request_count": request_count,
         "error_count": error_count,
+        "protocol": protocol,
         "src_labels": src_labels,
         "src_annotations": src_annotations,
         "src_owner_kind": src_owner_kind,
@@ -296,3 +303,103 @@ def test_filter_noise_annotations_is_opt_in(mock_engine):
     assert "kubectl.kubernetes.io/last-applied-configuration" not in api_on["annotations"]
     assert "kubernetes.io/psp" not in api_on["annotations"]
     assert api_on["annotations"] == {"example.com/project": "NBA"}
+
+
+# ---------------------------------------------------------------------------
+# 8. (v2.7.0 / Audit v4) Per-path edge accounting — five rows representing
+#    one (src, dst) pair with five distinct (method, path) endpoints must
+#    still produce outbound_count = 1 (one peer) and inbound_count = 1
+#    (one caller). The request_count totals add up across edges.
+#
+#    Before the fix, this Cypher RETURN shape would inflate outbound_count
+#    to 5 because the aggregator incremented a per-edge counter. UI consumers
+#    would then report "5 dependencies" for a single downstream service.
+# ---------------------------------------------------------------------------
+
+
+def test_per_path_edges_collapse_to_single_peer_count(mock_engine):
+    engine, set_rows = mock_engine
+    # Same (src, dst) pair, five different endpoints — Neo4j now stores
+    # one edge per (method, path), so the engine receives 5 rows.
+    set_rows([
+        _row("w-api", "w-db", src_name="api", dst_name="db",
+             request_count=10, protocol="HTTP"),
+        _row("w-api", "w-db", src_name="api", dst_name="db",
+             request_count=20, protocol="HTTP"),
+        _row("w-api", "w-db", src_name="api", dst_name="db",
+             request_count=30, protocol="HTTP"),
+        _row("w-api", "w-db", src_name="api", dst_name="db",
+             request_count=40, protocol="HTTP"),
+        _row("w-api", "w-db", src_name="api", dst_name="db",
+             request_count=50, protocol="HTTP"),
+    ])
+
+    resp = engine.get_l7_dependency_summary(analysis_id="A1")
+
+    api = next(w for w in resp["workloads"] if w["id"] == "w-api")
+    db = next(w for w in resp["workloads"] if w["id"] == "w-db")
+
+    # Distinct peer counting: api has ONE downstream (db), db has ONE caller (api).
+    assert api["outbound_count"] == 1, "5 per-path edges to the same destination = 1 peer"
+    assert api["inbound_count"] == 0
+    assert db["inbound_count"] == 1, "5 per-path edges from the same caller = 1 peer"
+    assert db["outbound_count"] == 0
+
+    # Request counts still aggregate across all edges.
+    assert api["request_count"] == 150
+    assert db["request_count"] == 150
+
+
+def test_per_path_edges_distinct_per_protocol(mock_engine):
+    """Same (src, dst) pair with HTTP and gRPC traffic counts as TWO
+    outbound peers — protocol is part of the peer identity in the
+    distinct-set bucketing.
+    """
+    engine, set_rows = mock_engine
+    set_rows([
+        _row("w-api", "w-svc", src_name="api", dst_name="svc",
+             request_count=5, protocol="HTTP"),
+        _row("w-api", "w-svc", src_name="api", dst_name="svc",
+             request_count=15, protocol="HTTP"),
+        _row("w-api", "w-svc", src_name="api", dst_name="svc",
+             request_count=7, protocol="GRPC"),
+    ])
+
+    resp = engine.get_l7_dependency_summary(analysis_id="A1")
+
+    api = next(w for w in resp["workloads"] if w["id"] == "w-api")
+    # Same destination, two protocols — counts as two peer relationships.
+    assert api["outbound_count"] == 2
+
+
+def test_per_path_edges_with_filter_active_keeps_peer_semantics(mock_engine):
+    """The filter sweep that emits ``is_matched`` must not double-count
+    matched workloads when per-path edges fan out.
+    """
+    engine, set_rows = mock_engine
+    # Three per-path edges from the matched workload to the same dst.
+    matched_ann = json.dumps({"example.com/project": "NBA"})
+    other_ann = json.dumps({"example.com/project": "OTHER"})
+    set_rows([
+        _row("w-nba", "w-db", src_name="nba", dst_name="db",
+             src_annotations=matched_ann, dst_annotations=other_ann,
+             request_count=5),
+        _row("w-nba", "w-db", src_name="nba", dst_name="db",
+             src_annotations=matched_ann, dst_annotations=other_ann,
+             request_count=10),
+        _row("w-nba", "w-db", src_name="nba", dst_name="db",
+             src_annotations=matched_ann, dst_annotations=other_ann,
+             request_count=15),
+    ])
+
+    resp = engine.get_l7_dependency_summary(
+        analysis_id="A1",
+        annotation_key="example.com/project",
+        annotation_value="NBA",
+    )
+
+    assert resp["summary"]["total_matched"] == 1
+    assert resp["summary"]["total_workloads"] == 2
+    nba = next(w for w in resp["workloads"] if w["id"] == "w-nba")
+    assert nba["outbound_count"] == 1  # ONE downstream peer
+    assert nba["request_count"] == 30  # sum across paths
