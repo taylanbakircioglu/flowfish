@@ -34,7 +34,7 @@ passlib==1.7.4
 bcrypt==4.0.1  # Pin bcrypt version for passlib compatibility
 python-multipart>=0.0.18  # CVE-2024-24762 fix
 authlib>=1.6.5  # CVE-2024-37568, CVE-2025-59420, CVE-2025-61920 fix
-PyJWT==2.8.0  # For simple auth
+PyJWT==2.13.0  # For simple auth
 
 # Kubernetes client
 kubernetes>=31.0.0  # CVE-2024-37891 urllib3 fix
