@@ -20,7 +20,7 @@ asyncio==3.4.3
 structlog==24.1.0
 
 # Configuration
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 pydantic>=2.7.0  # Required by FastAPI 0.121+
 pydantic-settings>=2.3.0
 
